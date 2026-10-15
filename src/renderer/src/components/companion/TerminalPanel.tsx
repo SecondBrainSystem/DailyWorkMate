@@ -62,12 +62,12 @@ function TerminalView({ session, visible, chinese, screenReaderMode, fresh, onAt
   return <div className="unified-terminal-view" role="tabpanel" id={'terminal-panel-' + session.id} aria-labelledby={'terminal-tab-' + session.id}>
     <div ref={host} className="unified-terminal-host" />
     {(error || session.error) && <p className="companion-terminal-error" role="alert">{error || session.error}</p>}
-    <div className="unified-terminal-footer"><span role="status">{session.status === 'running' ? chinese ? '运行中' : 'Running' : session.status === 'starting' ? chinese ? '正在启动…' : 'Starting…' : chinese ? '已结束' : 'Ended'}</span><span title={session.directory}>{session.directory}</span></div>
+    <div className="unified-terminal-footer"><span role="status">{session.status === 'running' ? chinese ? '运行中' : 'Running' : session.status === 'starting' ? chinese ? '正在启动…' : 'Starting…' : chinese ? '已结束' : 'Ended'}</span><button type="button" className="terminal-open-folder" title={session.directory} aria-label={chinese ? '打开终端当前文件夹' : 'Open current terminal folder'} onClick={() => { void window.electronAPI.companion.openTerminalDirectory(session.id).catch(reason => setError(reason instanceof Error ? reason.message : String(reason))) }}><FolderOpen size={14} /><span>{session.directory}</span></button></div>
   </div>
 }
 
-export function TerminalPanel({ chinese, visible, workspaces, model, prepareOpenCode, onOpenWork, screenReaderMode = false }: {
-  chinese: boolean; visible: boolean; workspaces: WorkspaceGrant[]; model: string; prepareOpenCode: () => Promise<void>; onOpenWork?: () => void; screenReaderMode?: boolean
+export function TerminalPanel({ chinese, visible, workspaces, model, prepareOpenCode, onOpenWork, createdTerminalId, screenReaderMode = false }: {
+  chinese: boolean; visible: boolean; workspaces: WorkspaceGrant[]; model: string; prepareOpenCode: () => Promise<void>; onOpenWork?: () => void; createdTerminalId?: string; screenReaderMode?: boolean
 }) {
   const api = window.electronAPI?.terminal
   const [state, setState] = useState<TerminalState | null>(null)
@@ -85,6 +85,12 @@ export function TerminalPanel({ chinese, visible, workspaces, model, prepareOpen
   const operation = useRef(false)
   const accepted = useRef<TerminalState | null>(null)
   const freshTerminal = useRef('')
+  useEffect(() => {
+    if (!createdTerminalId || !api) return
+    freshTerminal.current = createdTerminalId
+    setCreating(false)
+    void api.get().then(accept).catch(report)
+  }, [createdTerminalId, api])
   const accept = (next: TerminalState) => { if (mounted.current) { accepted.current = next; setState(next) } }
   const report = (reason: unknown) => { if (mounted.current) setError(reason instanceof Error ? reason.message : String(reason)) }
   useEffect(() => {

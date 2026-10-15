@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertCircle, ArrowUpRight, Bot, ChevronLeft, Eye, EyeOff, FileText, Folder, FolderCog, History, LoaderCircle, Mic, Plus, RefreshCw, Send, Settings2, Sparkles, Square, Terminal, Upload, Volume2, VolumeX, X } from 'lucide-react'
+import { AlertCircle, ArrowUpRight, Bot, ChevronLeft, Eye, EyeOff, FileText, Folder, FolderCog, History, LoaderCircle, Mic, Pencil, Plus, RefreshCw, Send, Settings2, Sparkles, Square, Terminal, Upload, Volume2, VolumeX, X } from 'lucide-react'
 import { ErrorText } from '@/components/ui/error-text'
 import { MessageMarkdown } from '@/components/chat/MessageMarkdown'
 import { errorText } from '@/lib/errors'
@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Avatar } from '@/components/companion/Avatar'
 import { CompanionSettings } from '@/components/companion/CompanionSettings'
 import { OpenCodePanel } from '@/components/companion/OpenCodePanel'
+import { FolderDropDialog, useFolderDrop } from '@/components/companion/FolderDropDialog'
 import { WorkSessions } from '@/components/companion/WorkSessions'
 import { ModelCheckBadge } from '@/components/ui/model-check-badge'
 import { isVerifiableModel, peekPreverify, preverifyModel, useModelPreverification } from '@/lib/modelPreverify'
@@ -70,6 +71,8 @@ export function Companion({ visible = true }: { visible?: boolean }) {
   const [groupsOpen, setGroupsOpen] = useState(false)
   // Folder grants live in one dialog; each Work session picks its folder when it opens.
   const [foldersOpen, setFoldersOpen] = useState(false)
+  const [dropped, setDropped] = useState<{ paths: string[]; target: 'workspace' | 'terminal' } | null>(null)
+  const [createdTerminalId, setCreatedTerminalId] = useState('')
   const [notice, setNotice] = useState('')
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -587,7 +590,14 @@ export function Companion({ visible = true }: { visible?: boolean }) {
     </div>
   </>
 
-  return <div ref={page} className={'companion-page' + (!chatView ? ' is-work' : '')} data-companion-ready={!!snapshot && !!conversation && !historyBusy}>
+  const drop = useFolderDrop(!!snapshot && (!chatView || foldersOpen) && !dropped && !settingsOpen && !groupsOpen && !openCodeOpen, paths => {
+    setContinuous(false); voice.stop()
+    setDropped({ paths, target: terminalOpen && !foldersOpen ? 'terminal' : 'workspace' })
+    setFoldersOpen(false)
+  }, showError)
+
+  return <div {...drop.handlers} ref={page} className={'companion-page' + (!chatView ? ' is-work' : '')} data-companion-ready={!!snapshot && !!conversation && !historyBusy}>
+    {drop.dragging && <div className="folder-drop-overlay" role="status"><Folder size={30} /><span>{chinese ? '松开以设置文件夹用途、权限和分组' : 'Drop to choose folder access and groups'}</span></div>}
     <PageHeader icon={Sparkles} title={copy.title} description={copy.subtitle} actions={<><button type="button" role="switch" aria-checked={speechEnabled} aria-label={chinese ? '朗读回复' : 'Read replies aloud'} className="companion-speech-switch" disabled={savingControl || !snapshot} onClick={() => { void toggleSpeech() }}>{speechEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}{chinese ? speechEnabled ? '朗读：开' : '朗读：关' : speechEnabled ? 'Read aloud on' : 'Read aloud off'}</button>
       {chatView && <Button variant="outline" size="sm" disabled={locked || !snapshot} onClick={() => { void control(() => api.saveSettings({ ...settings, avatarVisible: !avatarVisible })) }}>{avatarVisible ? <EyeOff className="mr-2 h-3.5 w-3.5" /> : <Eye className="mr-2 h-3.5 w-3.5" />}{chinese ? avatarVisible ? '隐藏形象' : '显示形象' : avatarVisible ? 'Hide avatar' : 'Show avatar'}</Button>}
       <Button variant="outline" size="sm" disabled={locked || !snapshot} onClick={() => { setContinuous(false); voice.stop(); setSettingsOpen(true) }}><Settings2 className="mr-2 h-3.5 w-3.5" />{copy.settings}</Button></>} />
@@ -599,7 +609,7 @@ export function Companion({ visible = true }: { visible?: boolean }) {
       {chatView && avatarVisible && <section className="companion-stage">
         <div className="companion-stage-header"><span className="companion-eyebrow" aria-hidden="true"><span className="companion-online" /></span><button className="companion-icon-button" title={copy.avatar + ' · ' + copy.avatarHint} aria-label={copy.avatar} disabled={locked || !snapshot} onClick={() => { void control(() => settings.avatarMode === '3d' ? api.pickAvatarModel() : api.pickAvatar()) }}><Sparkles size={16} /></button><button className="companion-icon-button" aria-label={chinese ? '恢复默认形象' : 'Reset avatar'} title={chinese ? '恢复默认形象' : 'Reset avatar'} disabled={locked || !snapshot} onClick={() => { if (window.confirm(chinese ? '恢复默认形象？' : 'Reset the avatar?')) void control(() => settings.avatarMode === '3d' ? api.resetAvatarModel() : api.resetAvatar()) }}><RefreshCw size={16} /></button></div>
         <Avatar state={state} image={snapshot?.avatarUrl || ''} name={settings.name} level={voice.level} avatarMode={settings.avatarMode} modelUrl={snapshot?.avatarModelUrl || ''} />
-        <h2 className="companion-name">{settings.name}</h2>
+        <h2 className="companion-name flex max-w-full items-center justify-center gap-2"><span className="min-w-0 break-words">{settings.name}</span><button type="button" className="companion-icon-button shrink-0" aria-label={chinese ? '修改助手名字' : 'Edit assistant name'} title={copy.name} disabled={locked || !snapshot} onClick={() => { setContinuous(false); voice.stop(); setSettingsOpen(true) }}><Pencil size={14} /></button></h2>
         <div className={'companion-status ' + (state !== 'idle' ? 'companion-active' : '')}><div className="companion-voice-bars"><span /><span /><span /></div>{snapshot ? copy[state] : copy.loading}</div>
         <details className="companion-stage-options" open={stageOptionsOpen} onToggle={event => saveStageOptions(event.currentTarget.open)}>
           <summary>{chinese ? '形象与朗读' : 'Avatar & reading'}</summary>
@@ -634,10 +644,11 @@ export function Companion({ visible = true }: { visible?: boolean }) {
           : copy.freeReadOnly}</p>}
         {workView && notice && <p className="companion-notice" role="status">{notice}</p>}
         {(workView || terminalOpen) && !browserId && !historyOpen && error && <div className="companion-error" role="alert"><AlertCircle size={15} className="mt-0.5 shrink-0" /><span className="flex-1"><ErrorText error={error} /></span><button aria-label={copy.cancel} onClick={() => setError('')}><X size={13} /></button></div>}
+        {!chatView && <p className="folder-drop-hint">{chinese ? '可从文件管理器拖入文件夹，设置用途、权限和分组。' : 'Drag folders from your file manager to choose access and groups.'}</p>}
         {snapshot && <WorkSessions work={work} snapshot={snapshot} copy={copy} chinese={chinese} models={[...models, ...freeCatalogue.models.map(item => item.id)]} visible={workView} screenReaderMode={!!snapshot.accessibilitySupportEnabled} prepare={prepareWorkTerminal}
           loadHistory={async id => (await companionHistory.get(id))?.messages.filter(message => (message.role === 'user' || message.role === 'assistant') && message.content.trim()).map(({ role, content }) => ({ role: role as 'user' | 'assistant', content }))}
           onFolders={openFolders} onAddFolder={() => { void control(() => api.addWorkspace()) }} onError={showError} />}
-        {(window.electronAPI?.terminal || terminalOpen) && terminalMounted && <div hidden={!terminalOpen}><Suspense fallback={null}><TerminalPanel chinese={chinese} visible={terminalOpen} workspaces={snapshot?.workspaces || []} model={selectedModel} prepareOpenCode={() => prepareWorkTerminal(selectedModel)} onOpenWork={() => { showView('agent'); if (snapshot?.workspaces[0]) openWorkSession({ workspaceId: snapshot.workspaces[0].id, groupId: '', accessScope: 'group', relativePath: '' }); else openFolders() }} screenReaderMode={!!snapshot?.accessibilitySupportEnabled} /></Suspense></div>}
+        {(window.electronAPI?.terminal || terminalOpen) && terminalMounted && <div hidden={!terminalOpen}><Suspense fallback={null}><TerminalPanel createdTerminalId={createdTerminalId} chinese={chinese} visible={terminalOpen} workspaces={snapshot?.workspaces || []} model={selectedModel} prepareOpenCode={() => prepareWorkTerminal(selectedModel)} onOpenWork={() => { showView('agent'); if (snapshot?.workspaces[0]) openWorkSession({ workspaceId: snapshot.workspaces[0].id, groupId: '', accessScope: 'group', relativePath: '' }); else openFolders() }} screenReaderMode={!!snapshot?.accessibilitySupportEnabled} /></Suspense></div>}
         {chatView && <><div className="border-b px-5 py-3"><ChatWorkspaceAccess chinese={chinese} selection={chatWorkspace} onChange={chooseChatWorkspace} disabled={locked || voice.speaking} snapshot={snapshot || undefined} onSnapshot={applySnapshot}
           collapsible summary={engineLabel(chatEngine)} trailing={<select className="companion-select" aria-label={copy.agentEngine} title={copy.agentEngine} value={chatEngine} disabled={locked || voice.speaking} onChange={event => chooseChatEngine(event.target.value as ChatEngine)}>
             <option value="chat">{engineLabel('chat')}</option><option value="opencode">OpenCode v2</option><option value="claude" disabled={!snapshot?.claudeCode?.available && chatEngine !== 'claude'}>Claude Code{snapshot?.claudeCode?.available ? '' : chinese ? '（未安装）' : ' (not installed)'}</option>
@@ -683,9 +694,10 @@ export function Companion({ visible = true }: { visible?: boolean }) {
         </>}
       </section>
     </div>
+    {dropped && snapshot && <FolderDropDialog paths={dropped.paths} target={dropped.target} snapshot={snapshot} chinese={chinese} onClose={() => setDropped(null)} onImported={next => { applySnapshot(next); setFoldersOpen(true) }} onTerminal={id => { setCreatedTerminalId(id); showView('terminal') }} />}
     <Dialog open={foldersOpen} onOpenChange={setFoldersOpen}><DialogContent className="companion-settings max-h-[88vh] max-w-3xl overflow-y-auto">
       <DialogHeader><DialogTitle className="flex items-center gap-2"><FolderCog size={18} />{copy.folderAccess}</DialogTitle><DialogDescription>{copy.folderAccessHint}</DialogDescription></DialogHeader>
-      <AuthorizedFolders embedded chinese={chinese} workspaces={snapshot?.workspaces || []} groups={snapshot?.groups || []} sessionCounts={sessionCounts} disabled={savingControl || !snapshot} onAdd={() => { void control(() => api.addWorkspace()) }} onGroups={() => { setFoldersOpen(false); setContinuous(false); voice.stop(); setGroupsOpen(true) }} onBrowse={id => { setFoldersOpen(false); void openFolder(id, '') }} onAccess={(id, writable) => { if (!window.confirm(chinese ? '更改权限会重连受影响的会话，继续？' : 'Changing permissions reconnects affected sessions. Continue?')) return; void control(() => api.updateWorkspace(id, writable)) }} onRemove={id => { if (!window.confirm(chinese ? '撤销授权会停止受影响的会话，继续？' : 'Removing access stops affected sessions. Continue?')) return; void control(() => api.updateWorkspace(id, null)) }} onWork={openWorkSession} />
+      <AuthorizedFolders onError={showError} embedded chinese={chinese} workspaces={snapshot?.workspaces || []} groups={snapshot?.groups || []} sessionCounts={sessionCounts} disabled={savingControl || !snapshot} onAdd={() => { void control(() => api.addWorkspace()) }} onGroups={() => { setFoldersOpen(false); setContinuous(false); voice.stop(); setGroupsOpen(true) }} onBrowse={id => { setFoldersOpen(false); void openFolder(id, '') }} onAccess={(id, writable) => { if (!window.confirm(chinese ? '更改权限会重连受影响的会话，继续？' : 'Changing permissions reconnects affected sessions. Continue?')) return; void control(() => api.updateWorkspace(id, writable)) }} onRemove={id => { if (!window.confirm(chinese ? '撤销授权会停止受影响的会话，继续？' : 'Removing access stops affected sessions. Continue?')) return; void control(() => api.updateWorkspace(id, null)) }} onWork={openWorkSession} />
     </DialogContent></Dialog>
     {settingsOpen && snapshot && <CompanionSettings settings={settings} home={snapshot.home} copy={copy} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />}
     {groupsOpen && snapshot && <WorkspaceGroupsPanel chinese={chinese} groups={snapshot.groups || []} workspaces={snapshot.workspaces} onClose={() => setGroupsOpen(false)} onSave={group => updateGroup(() => api.saveWorkspaceGroup(group))} onDelete={id => updateGroup(() => api.deleteWorkspaceGroup(id))} />}

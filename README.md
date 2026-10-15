@@ -10,7 +10,7 @@ DailyWorkMate is a desktop companion for everyday work. Talk through a plan, let
 
 ![Assistant with a sample daily plan](docs/screenshots/assistant.png)
 
-- **Chat and plan:** streaming replies, conversation history, model selection, and an editable assistant name and persona.
+- **Chat and plan:** streaming replies, conversation history, model selection, and an editable assistant name and persona. The default name is **DailyWorkMate**; use the pencil beside it or **Character & voice → Assistant name** to save your own.
 - **From conversation to action:** chat-only mode can hand file tasks to a workspace agent when a workspace is connected and the model supports the handoff tool.
 - **Voice:** microphone input, optional spoken replies, full or summarized reading, and voice settings. Local recognition and synthesis require the optional speech resources; system voices and compatible speech APIs are also supported.
 - **Your companion:** the included octopus, a custom image, or a supported GLB/GLTF avatar with a 3D viewer.
@@ -19,10 +19,11 @@ DailyWorkMate is a desktop companion for everyday work. Talk through a plan, let
 
 ![Authorized folders and read/edit permissions](docs/screenshots/workspaces.png)
 
-Authorize folders, group related directories, and choose **read only** or **can edit** access. Each Work tab is a separate agent session bound to a folder or group, with its model, engine and scope visible. Recent sessions can be reopened.
+Drag one or more local folders from your file manager into Work (or use **Add folder**). In the confirmation panel, choose an existing group or create one, and set **read only** or **can edit** access. Each Work tab is a separate agent session bound to a folder or group, with its model, engine and scope visible. Recent sessions can be reopened.
 
 | Feature | Purpose |
 | --- | --- |
+| Open folder | Use the folder icon on the Work tab bar or beside an authorized folder to open its directory in your system file manager. |
 | File browser | Browse authorized text files and attach their contents to a conversation. |
 | Folder groups | Work across related folders, or narrow a task to one subfolder. |
 | OpenCode | Use a native OpenCode v2 session inside the app; install the optional runtime with the setup script. |
@@ -38,7 +39,8 @@ Shell commands run with your operating-system account's permissions. Folder rule
 The **Terminal** tab is a real PTY terminal with xterm.js. On Windows it supports **PowerShell, CMD and installed WSL distributions**. Choosing OpenCode opens a folder-bound Work session.
 
 - Keep multiple terminal tabs open and switch views without restarting their processes.
-- See the current directory on each tab; use normal shell history, copy output, and resize the terminal.
+- Drop a folder to choose **Open a terminal here** or **Add to authorized workspaces**.
+- Click the folder icon or path in the footer to open the current directory; it follows `cd` changes. Use normal shell history, copy output, and resize the terminal.
 - Restore unclosed tabs at startup. If their processes have exited, restoration starts new shells in the saved directories.
 - Optionally keep terminals running after the app closes and reattach later. Live process continuity lasts while the background host is alive, and does not survive a reboot.
 

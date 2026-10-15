@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { CompanionAPI } from '../shared/companion'
 import { IpcChannels } from '../main/ipc/channels'
 import type { 
@@ -745,6 +745,7 @@ const trayAPI = {
 
 const electronAPI = {
   terminal: Object.fromEntries(Object.entries(IpcChannels.TERMINAL).map(([name, channel]) => [name, (...args: unknown[]) => ipcRenderer.invoke(channel, ...args)])) as unknown as import('../shared/terminal').TerminalManagerAPI,
+  getPathForFile: (file: File) => webUtils.getPathForFile(file),
   companion: Object.fromEntries(Object.entries(IpcChannels.COMPANION).map(([name, channel]) => [name, (...args: unknown[]) => ipcRenderer.invoke(channel, ...args)])) as unknown as CompanionAPI,
   proxy: proxyAPI,
   store: storeAPI,

@@ -3,12 +3,13 @@ import { mkdir, readFile, writeFile, rename, realpath, stat, unlink, readdir, cp
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { DEFAULT_COMPANION_SETTINGS, validateSettings, boundedText } from '../../shared/companion'
-import type { CompanionSettings, CompanionMessage, WorkspaceGrant, WorkspaceGroup, WorkspaceGroupInput } from '../../shared/companion'
+import { DEFAULT_COMPANION_SETTINGS, validateSettings, boundedText, migrateCompanionName } from '../../shared/companion'
+import type { CompanionSettings, CompanionMessage, WorkspaceGrant, WorkspaceGroup, WorkspaceGroupInput, WorkspaceImportInput, DroppedFolder } from '../../shared/companion'
+import { localDirectory } from './folders'
 import { AVATAR_MODEL_MAX_BYTES, validateAvatarModel } from '../../shared/avatarModel'
 import { validateWorkspaceGroup } from './workspaceGroups'
 
-interface SavedState { settings: CompanionSettings; workspaces: WorkspaceGrant[]; groups: WorkspaceGroup[]; messages: CompanionMessage[] }
+interface SavedState { nameVersion?: number; settings: CompanionSettings; workspaces: WorkspaceGrant[]; groups: WorkspaceGroup[]; messages: CompanionMessage[] }
 export function companionHome(): string {
   if (process.env.DAILYWORKMATE_COMPANION_HOME) return path.resolve(process.env.DAILYWORKMATE_COMPANION_HOME)
   if (!app.isPackaged) return path.join(app.getAppPath(), 'companion')
@@ -49,7 +50,7 @@ export class CompanionStorage {
         const input = JSON.parse(text) as SavedState
         const decrypt = (value: string) => { try { return this.crypt(boundedText(value, 'encrypted speech key', 16000), false) } catch (error) { this.warnings.push('Speech API key could not be decrypted. Re-enter the key in settings.'); console.error('[Companion] Cannot decrypt speech key:', error instanceof Error ? error.message : String(error)); return '' } }
         const recoverEndpoint = <T extends string>(mode: T, endpoint: { baseUrl?: string }): T | 'local' => mode === 'api' && !endpoint?.baseUrl ? 'local' : mode
-        const settings = validateSettings({ ...input.settings,
+        const settings = validateSettings({ ...(input.nameVersion ? input.settings : migrateCompanionName(input.settings)),
           sttMode: recoverEndpoint(input.settings.sttMode, input.settings.stt), ttsMode: recoverEndpoint(input.settings.ttsMode, input.settings.tts),
           stt: { ...input.settings.stt, apiKey: decrypt(input.settings.stt.apiKey) },
           tts: { ...input.settings.tts, apiKey: decrypt(input.settings.tts.apiKey) },
@@ -68,9 +69,9 @@ export class CompanionStorage {
         }
         const settings = structuredClone(DEFAULT_COMPANION_SETTINGS)
         const locale = app.getLocale()
-        saved = { settings: { ...settings, language: locale, ...(locale.toLowerCase().startsWith('zh') ? {} : { name: 'Companion', persona: 'You are a helpful assistant. Reply in the user’s language. Ask before taking actions that change files.' }) }, workspaces: [], groups: [], messages: [] }
+        saved = { settings: { ...settings, language: locale, ...(locale.toLowerCase().startsWith('zh') ? {} : { persona: 'You are DailyWorkMate, a helpful assistant. Reply in the user’s language. Ask before taking actions that change files.' }) }, workspaces: [], groups: [], messages: [] }
       }
-      this.state = saved
+      this.state = { ...saved, nameVersion: 1 }
     }
     return structuredClone(this.state)
   }
@@ -103,7 +104,7 @@ export class CompanionStorage {
 
   private update(change: (state: SavedState) => SavedState): Promise<void> {
     const operation = this.pending.then(async () => {
-      const state = change(await this.get())
+      const state = { ...change(await this.get()), nameVersion: 1 }
       const disk = { ...state, settings: { ...state.settings,
         stt: { ...state.settings.stt, apiKey: this.crypt(state.settings.stt.apiKey, true) },
         tts: { ...state.settings.tts, apiKey: this.crypt(state.settings.tts.apiKey, true) },
@@ -133,6 +134,44 @@ export class CompanionStorage {
       if (state.workspaces.length >= 32) throw new Error('At most 32 folders can be authorized')
       if (state.workspaces.some(grant => path.relative(grant.path, directory) === '')) return state
       return { ...state, workspaces: [...state.workspaces, { id: randomUUID(), path: directory, name: path.basename(directory) || directory, writable: false }] }
+    })
+  }
+  async inspectFolders(paths: string[]): Promise<DroppedFolder[]> {
+    if (!Array.isArray(paths) || !paths.length || paths.length > 32) throw new Error('一次请选择 1–32 个文件夹。 / Select 1–32 folders at a time.')
+    const directories = await Promise.all(paths.map(localDirectory))
+    const state = await this.get()
+    return directories.filter((directory, index) => directories.findIndex(other => path.relative(other, directory) === '') === index).map(directory => {
+      const existing = state.workspaces.find(grant => path.relative(grant.path, directory) === '')
+      return { path: directory, name: path.basename(directory) || directory, writable: existing?.writable ?? false, ...(existing ? { workspaceId: existing.id } : {}) }
+    })
+  }
+  async importWorkspaces(input: WorkspaceImportInput) {
+    if (!input || !Array.isArray(input.folders) || !input.folders.length || input.folders.length > 32) throw new Error('Invalid folder import')
+    const entries = await Promise.all(input.folders.map(async folder => {
+      if (!folder || typeof folder.writable !== 'boolean') throw new Error('Invalid workspace access')
+      const directory = await localDirectory(folder.path)
+      if (path.relative(directory, folder.path) !== '') throw new Error('文件夹目标已变化，请重新拖入。 / Folder target changed; drop it again.')
+      return { path: directory, writable: folder.writable }
+    }))
+    if (entries.some((folder, index) => entries.findIndex(other => path.relative(other.path, folder.path) === '') !== index)) throw new Error('Duplicate folder import')
+    const groupId = boundedText(input.groupId ?? '', 'group ID', 80)
+    const name = boundedText(input.newGroupName ?? '', 'group name', 80).trim()
+    if (input.newGroupName !== undefined && !name) throw new Error('请输入分组名称。 / Enter a group name.')
+    if (groupId && name) throw new Error('Choose an existing group or create a new one')
+    await this.update(state => {
+      const group = groupId ? state.groups.find(item => item.id === groupId) : undefined
+      if (groupId && !group) throw new Error('This workspace group no longer exists')
+      if (name && state.groups.length >= 64) throw new Error('At most 64 workspace groups can be created')
+      const imports = entries.map(folder => {
+        const existing = state.workspaces.find(grant => path.relative(grant.path, folder.path) === '')
+        return existing ? { ...existing, writable: folder.writable } : { ...folder, id: randomUUID(), name: path.basename(folder.path) || folder.path }
+      })
+      const workspaces = [...state.workspaces.map(grant => imports.find(folder => folder.id === grant.id) || grant), ...imports.filter(folder => !state.workspaces.some(grant => grant.id === folder.id))]
+      if (workspaces.length > 32) throw new Error('At most 32 folders can be authorized')
+      const members = imports.map(folder => folder.id)
+      const groups = group ? state.groups.map(item => item.id === group.id ? { ...item, workspaceIds: [...new Set([...item.workspaceIds, ...members])] } : item)
+        : name ? [...state.groups, validateWorkspaceGroup({ name, workspaceIds: members }, workspaces, randomUUID())] : state.groups
+      return { ...state, workspaces, groups }
     })
   }
   updateWorkspace(id: string, writable: boolean | null) {

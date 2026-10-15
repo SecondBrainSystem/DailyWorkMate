@@ -1,4 +1,4 @@
-import { app, dialog, ipcMain, type BrowserWindow } from 'electron'
+import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron'
 import path from 'node:path'
 import { IpcChannels } from '../ipc/channels'
 import { CompanionStorage } from './storage'
@@ -12,10 +12,11 @@ import { OpenCodeRuntimeUpdates } from './runtimeUpdates'
 import { configureOpenCodeFreeModelCache, getOpenCodeFreeModels } from './opencodeModels'
 import { SpeechService } from './speech'
 import { storeManager } from '../store/store'
-import { listWorkspaceFiles, readWorkspaceFile } from './workspaces'
+import { listWorkspaceFiles, readWorkspaceFile, resolveWorkspacePath } from './workspaces'
+import { openLocalDirectory } from './folders'
 import type { CompanionAPI, CompanionSettings, CompanionMessage, AgentInput } from '../../shared/companion'
 import { agentEngine, boundedText, validateSettings, type AgentEngine } from '../../shared/companion'
-import { validateTerminalCreate } from '../../shared/terminal'
+import { terminalId, validateTerminalCreate, type TerminalState } from '../../shared/terminal'
 
 let terminalManager: TerminalClient | undefined
 let resetCompanionData: (() => Promise<void>) | undefined
@@ -132,6 +133,16 @@ export function registerCompanionHandlers(window: BrowserWindow, ensureProxy: ()
       const result = await dialog.showOpenDialog(window, { properties: ['openDirectory'] })
       if (!result.canceled && result.filePaths[0]) { await storage.addWorkspace(result.filePaths[0]); await refreshAccess(); await manager.synchronize() }
       return snapshot()
+    },
+    inspectFolders: paths => storage.inspectFolders(paths),
+    importWorkspaces: async input => { await storage.importWorkspaces(input); await refreshAccess(); await manager.synchronize(); return snapshot(false) },
+    openWorkspace: async (id, relativePath = '') => openLocalDirectory(await resolveWorkspacePath(await storage.grant(id), relativePath), directory => shell.openPath(directory)),
+    openTerminalDirectory: async id => {
+      const checked = terminalId(id)
+      const state: TerminalState = await manager.command('state')
+      const session = state.sessions.find(item => item.id === checked)
+      if (!session) throw new Error('终端已关闭。 / This terminal is closed.')
+      await openLocalDirectory(session.directory, directory => shell.openPath(directory))
     },
     // Only Work tabs whose folder permissions changed reconnect; the rest keep running.
     updateWorkspace: async (id: string, writable: boolean | null) => { await storage.updateWorkspace(id, writable); await refreshAccess(); await manager.synchronize(); return snapshot() },

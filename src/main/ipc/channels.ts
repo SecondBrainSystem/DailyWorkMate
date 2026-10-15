@@ -4,6 +4,8 @@ export const IpcChannels = {
     poll: 'terminal:poll', write: 'terminal:write', resize: 'terminal:resize', savePreferences: 'terminal:savePreferences', pickDirectory: 'terminal:pickDirectory',
   },
   COMPANION: {
+    inspectFolders: 'companion:inspectFolders', importWorkspaces: 'companion:importWorkspaces',
+    openWorkspace: 'companion:openWorkspace', openTerminalDirectory: 'companion:openTerminalDirectory',
     openTerminal: 'companion:openTerminal', pollTerminal: 'companion:pollTerminal',
     writeTerminal: 'companion:writeTerminal', resizeTerminal: 'companion:resizeTerminal', closeTerminal: 'companion:closeTerminal',
     localSpeechStatus: 'companion:localSpeechStatus',

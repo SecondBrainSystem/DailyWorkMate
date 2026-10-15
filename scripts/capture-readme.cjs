@@ -11,6 +11,7 @@ const output = path.join(root, 'docs', 'screenshots')
 fs.mkdirSync(workspace); fs.mkdirSync(output, { recursive: true })
 fs.writeFileSync(path.join(workspace, 'weekly-plan.md'), '# Weekly plan\n\n- Review meeting notes\n- Prepare the project brief\n- Choose the next three actions\n')
 fs.writeFileSync(path.join(workspace, 'meeting-notes.md'), '# Meeting notes\n\nA small, local documentation demo.\n')
+app.on('window-all-closed', () => {})
 app.setPath('userData', path.join(scratch, 'profile')); app.disableHardwareAcceleration()
 buildSync({ stdin: { contents: "export { TerminalClient } from './src/main/terminal/client.ts'; export { DEFAULT_COMPANION_SETTINGS } from './src/shared/companion.ts';", resolveDir: root }, outfile: path.join(scratch, 'modules.cjs'), bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
 const { TerminalClient, DEFAULT_COMPANION_SETTINGS } = require(path.join(scratch, 'modules.cjs'))
@@ -22,7 +23,7 @@ const snapshot = {
     { id: 'reference', name: 'Reference', path: 'C:\\Work\\Reference', writable: false },
   ], groups: [{ id: 'weekly', name: '每周工作', workspaceIds: ['notes', 'reference'] }],
   messages: [
-    { id: 'demo-user', role: 'user', mode: 'chat', createdAt: Date.now() - 30000, content: '早上好，小伴。今天有项目评审、整理会议纪要和准备周报，帮我排一个轻量的工作计划。' },
+    { id: 'demo-user', role: 'user', mode: 'chat', createdAt: Date.now() - 30000, content: '早上好，DailyWorkMate。今天有项目评审、整理会议纪要和准备周报，帮我排一个轻量的工作计划。' },
     { id: 'demo-assistant', role: 'assistant', mode: 'chat', createdAt: Date.now(), model: 'Demo model', content: '早上好！今天可以先安排三件事：\n\n**09:00 · 项目评审**\n列出待确认的问题，记录关键决定。\n\n**11:00 · 会议纪要**\n整理结论、负责人和下一步行动。\n\n**15:00 · 起草周报**\n回顾本周进展，选出下周的优先事项。\n\n需要整理文件时，选择一个授权工作区，我们一起完成。' },
   ], home: 'companion', avatarUrl: '', avatarModelUrl: '', runtimeAvailable: true, claudeCode: { available: true, path: 'claude' },
 }
@@ -57,14 +58,18 @@ app.whenReady().then(async () => {
   await js(`${button('终端')}.click()`)
   await wait('!!document.querySelector(".unified-terminal")', 'terminal panel')
   const api = manager.api(async () => workspace)
-  await api.create({ id: '11111111-1111-4111-8111-111111111111', kind: 'powershell', directory: workspace, cols: 110, rows: 24 })
+  // Open the first shell through the UI so xterm answers its initial terminal probes.
+  await wait(`!!document.querySelector('input[aria-label="终端工作目录"]')`, 'terminal form')
+  await js(`(() => { const el = document.querySelector('input[aria-label="终端工作目录"]'); Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(el, ${JSON.stringify(workspace)}); el.dispatchEvent(new Event('input', { bubbles: true })); })()`)
+  await sleep(150); await js(`${button('打开终端')}.click()`)
+  await wait('!!document.querySelector(".xterm-helper-textarea")', 'PowerShell attached')
+  const psId = (await api.get()).activeId
   await api.create({ id: '22222222-2222-4222-8222-222222222222', kind: 'cmd', directory: workspace, cols: 110, rows: 24 })
-  await api.select('11111111-1111-4111-8111-111111111111')
-  await js(`${button('聊天')}.click()`); await sleep(150); await js(`${button('终端')}.click()`)
-  await wait('document.querySelectorAll(".unified-terminal-tab").length === 2 && !!document.querySelector(".xterm-helper-textarea")', 'two terminal tabs attached')
+  await api.select(psId)
+  await wait('document.querySelectorAll(".unified-terminal-tab").length === 2', 'two terminal tabs')
   await sleep(1600)
   // Use an explicit demo prompt so the screenshot contains no personal account or absolute machine paths.
-  await api.write('11111111-1111-4111-8111-111111111111', "function global:prompt { 'PS DailyNotes> ' }; Clear-Host; Write-Output 'DailyWorkMate / local terminal'; Get-ChildItem -Name; Get-Content .\\weekly-plan.md\r")
+  await api.write(psId, "function global:prompt { 'PS DailyNotes> ' }; Clear-Host; Write-Output 'DailyWorkMate / local terminal'; Get-ChildItem -Name; Get-Content .\\weekly-plan.md\r")
   await sleep(1000)
   await wait('document.querySelector(".xterm-rows")?.textContent.includes("Weekly plan")', 'real shell output rendered')
   await capture('terminal')

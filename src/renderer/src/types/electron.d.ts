@@ -504,6 +504,7 @@ interface ToolCallingAPI {
 interface ElectronAPI {
   terminal: import('../../../shared/terminal').TerminalManagerAPI
   companion: import('../../../shared/companion').CompanionAPI
+  getPathForFile: (file: File) => string
   proxy: ProxyAPI
   store: StoreAPI
   providers: ProvidersAPI

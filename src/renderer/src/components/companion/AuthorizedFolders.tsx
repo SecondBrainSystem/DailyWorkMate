@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, FileText, Folder, FolderPlus, Layers, Search, Terminal, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, FileText, Folder, FolderOpen, FolderPlus, Layers, Search, Terminal, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import type { WorkspaceGrant, WorkspaceGroup } from '@shared/companion'
 import type { WorkScope } from '@/lib/workSessions'
 
-export function AuthorizedFolders({ chinese, workspaces, groups, disabled, embedded = false, sessionCounts = {}, onAdd, onGroups, onBrowse, onAccess, onRemove, onWork }: {
+export function AuthorizedFolders({ chinese, workspaces, groups, disabled, embedded = false, sessionCounts = {}, onAdd, onGroups, onBrowse, onAccess, onRemove, onWork, onError }: {
   chinese: boolean; workspaces: WorkspaceGrant[]; groups: WorkspaceGroup[]; disabled: boolean
   /** Open Work sessions per `folder:<id>` / `group:<id>`, so each grant shows what uses it. */
   sessionCounts?: Record<string, number>
@@ -13,6 +13,7 @@ export function AuthorizedFolders({ chinese, workspaces, groups, disabled, embed
   onAdd(): void; onGroups(): void; onBrowse(id: string): void; onAccess(id: string, writable: boolean): void; onRemove(id: string): void
   /** Opens a new Work session in this folder or group. */
   onWork(scope: WorkScope): void
+  onError(message: string): void
 }) {
   const used = (key: string) => sessionCounts[key] ? <span className="work-chip is-used">{chinese ? sessionCounts[key] + ' 个会话' : sessionCounts[key] + (sessionCounts[key] === 1 ? ' session' : ' sessions')}</span> : null
   const [query, setQuery] = useState('')
@@ -43,6 +44,7 @@ export function AuthorizedFolders({ chinese, workspaces, groups, disabled, embed
       {(!collapsed.includes(section.id) || !!term) && <div className="px-3">{!section.folders.length && <p className="py-3 text-sm text-[var(--text-muted)]">{chinese ? '添加一个文件夹开始工作。' : 'Add a folder to get started.'}</p>}
         {section.folders.map(folder => <div key={folder.id} data-authorized-folder={folder.id} className="flex flex-wrap items-center gap-3 border-t border-[var(--glass-border)] py-3 first:border-t-0"><Folder size={17} className="shrink-0 text-[var(--text-muted)]" /><div className="min-w-[140px] flex-1"><p className="break-words font-medium">{folder.name}{used('folder:' + folder.id)}</p><p className="break-all text-sm text-[var(--text-muted)]">{folder.path}</p></div>
           <div className="flex flex-wrap items-center gap-1"><select className="rounded-lg border border-[var(--glass-border)] bg-[var(--bg-primary)] p-2 text-sm" aria-label={folder.name + (chinese ? ' 访问权限' : ' access')} value={folder.writable ? 'write' : 'read'} disabled={disabled} onChange={event => onAccess(folder.id, event.target.value === 'write')}><option value="read">{chinese ? '只读' : 'Read only'}</option><option value="write">{chinese ? '可编辑' : 'Can edit'}</option></select>
+            <button type="button" className="companion-icon-button" title={chinese ? '在文件管理器中打开' : 'Open in file manager'} aria-label={(chinese ? '打开文件夹 ' : 'Open folder ') + folder.name} disabled={disabled} onClick={() => { void window.electronAPI.companion.openWorkspace(folder.id).catch(error => onError(error instanceof Error ? error.message : String(error))) }}><FolderOpen size={16} /></button>
             <Button size="sm" variant="ghost" disabled={disabled} onClick={() => onWork({ workspaceId: folder.id, groupId: '', accessScope: 'group', relativePath: '' })}><Terminal size={15} className="mr-1" />{chinese ? '新建会话' : 'New session'}</Button>
             <button className="companion-icon-button" title={chinese ? '浏览文件' : 'Browse files'} aria-label={chinese ? '浏览文件' : 'Browse files'} disabled={disabled} onClick={() => onBrowse(folder.id)}><FileText size={16} /></button><button className="companion-icon-button" title={chinese ? '移除授权' : 'Remove access'} aria-label={(chinese ? '移除授权 ' : 'Remove access ') + folder.name} disabled={disabled} onClick={() => onRemove(folder.id)}><Trash2 size={16} /></button>
           </div>

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
-import { validateSettings } from '../../../../shared/companion'
+import { renameCompanion, validateSettings } from '../../../../shared/companion'
 import { errorText } from '@/lib/errors'
 import type { CompanionSettings as Settings } from '@shared/companion'
 import type { CompanionCopy } from './copy'
@@ -28,7 +28,7 @@ export function CompanionSettings({ settings, home, copy, onClose, onSave }: {
     const refresh = setInterval(() => { void window.electronAPI.companion.localSpeechStatus().then(setLocalStatus).catch(error => setError(errorText(error, chinese))) }, 5000)
     return () => { clearInterval(refresh); audio.current?.pause(); if (previewUrl.current) URL.revokeObjectURL(previewUrl.current); window.speechSynthesis?.removeEventListener('voiceschanged', update) }
   }, [])
-  const field = (key: 'name' | 'language' | 'voice', label: string) => <label className="companion-field">{label}<input value={draft[key]} onChange={event => setDraft({ ...draft, [key]: event.target.value })} /></label>
+  const field = (key: 'name' | 'language' | 'voice', label: string) => <label className="companion-field">{label}<input aria-label={label} maxLength={key === 'name' ? 80 : undefined} value={draft[key]} onChange={event => setDraft(key === 'name' ? renameCompanion(draft, event.target.value) : { ...draft, [key]: event.target.value })} /></label>
   const endpoint = (key: 'stt' | 'tts') => (
     <fieldset className="companion-endpoint"><legend>{copy[key]}</legend>
       <label className="companion-field">{copy.baseUrl}<input placeholder="http://127.0.0.1:8080/v1" value={draft[key].baseUrl} onChange={event => setDraft({ ...draft, [key]: { ...draft[key], baseUrl: event.target.value } })} /></label>

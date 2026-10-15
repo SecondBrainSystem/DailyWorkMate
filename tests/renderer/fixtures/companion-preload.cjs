@@ -1,9 +1,9 @@
-const { contextBridge, ipcRenderer } = require('electron')
+const { contextBridge, ipcRenderer, webUtils } = require('electron')
 const qaWorkspace = process.argv.find(arg => arg.startsWith('--companion-qa-workspace='))?.slice('--companion-qa-workspace='.length)
 const port = Number(process.argv.find(arg => arg.startsWith('--companion-qa-port='))?.split('=')[1])
 let config = { proxyHost: '127.0.0.1', proxyPort: port, apiKeys: [], enableApiKey: false, theme: 'light', language: 'en-US' }
 let state = JSON.parse(localStorage.getItem('companion-qa') || 'null') || {
-  settings: { name: '小伴', persona: 'A reliable companion.', model: 'qa-model', autoSpeak: false, ttsMode: 'local', language: 'zh-CN', systemVoice: '', voice: 'alloy', speechRate: 1, speechVolume: 1, speechPitch: 1, readingMode: 'summary', avatar: '', avatarVisible: true, avatarMode: '2d', avatarModel: '', stt: { baseUrl: '', model: 'whisper-1', apiKey: '' }, tts: { baseUrl: '', model: 'tts-1', apiKey: '' } },
+  settings: { name: 'DailyWorkMate', persona: 'A reliable companion.', model: 'qa-model', autoSpeak: false, ttsMode: 'local', language: 'zh-CN', systemVoice: '', voice: 'alloy', speechRate: 1, speechVolume: 1, speechPitch: 1, readingMode: 'summary', avatar: '', avatarVisible: true, avatarMode: '2d', avatarModel: '', stt: { baseUrl: '', model: 'whisper-1', apiKey: '' }, tts: { baseUrl: '', model: 'tts-1', apiKey: '' } },
   workspaces: [], groups: [], messages: [], home: 'companion/data', avatarUrl: '', avatarModelUrl: '', runtimeAvailable: true,
 }
 state = { ...state, settings: { ...state.settings, systemFallback: state.settings.systemFallback ?? true, localVoice: state.settings.localVoice || 'auto', localEngine: state.settings.localEngine || 'fast' } }
@@ -32,6 +32,7 @@ const freeCatalogue = {
   updatedAt: 1791377132482, stale: false,
 }
 contextBridge.exposeInMainWorld('electronAPI', {
+  getPathForFile: file => webUtils.getPathForFile(file),
   ...(process.argv.includes('--unified-terminal') ? { terminal: Object.fromEntries(['get','create','select','close','restart','poll','write','resize','savePreferences','pickDirectory'].map(name => [name, (...args) => ipcRenderer.invoke('qa:terminal:' + name, ...args)])) } : {}),
   app: { openExternal: async url => { record('openExternal', url); return true } },
   config: { get: async () => config, update: async updates => { config = { ...config, ...updates }; return true }, onConfigChanged: () => () => {} },
@@ -89,6 +90,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     },
     saveSettings: async settings => { const result = save({ ...state, settings }); return { ...result, assetsIncluded: false, avatarUrl: '', avatarModelUrl: '', avatarModelError: undefined } },
     saveMessages: async messages => { save({ ...state, messages }) },
+    openWorkspace: async (id, relativePath = '') => { record('openWorkspace', { id, relativePath }); return ipcRenderer.invoke('qa:folder:openWorkspace', id, relativePath) },
+    openTerminalDirectory: async id => { record('openTerminalDirectory', id); return ipcRenderer.invoke('qa:folder:openTerminalDirectory', id) },
+    inspectFolders: paths => ipcRenderer.invoke('qa:folder:inspectFolders', paths),
+    importWorkspaces: async input => { const next = await ipcRenderer.invoke('qa:folder:importWorkspaces', input); return save({ ...state, workspaces: next.workspaces, groups: next.groups }) },
     addWorkspace: async () => { const count = state.workspaces.length; return save({ ...state, workspaces: [...state.workspaces, { id: count ? 'qa-folder-' + count : 'qa-folder', path: count ? (qaWorkspace || 'C:/QA/project') + '-' + count : qaWorkspace || 'C:/QA/project', name: count ? 'Project ' + count : 'Project', writable: false }] }) },
     updateWorkspace: async (id, writable) => grantsChanged(save({ ...state, workspaces: writable === null ? state.workspaces.filter(grant => grant.id !== id) : state.workspaces.map(grant => grant.id === id ? { ...grant, writable } : grant) })),
     saveWorkspaceGroup: async input => { record('saveWorkspaceGroup', input); const group = { ...input, id: input.id || 'qa-group-' + Date.now() }; return save({ ...state, groups: [...state.groups.filter(item => item.id !== group.id), group] }) },

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
-import { ChevronLeft, Folder, FolderCog, FolderPlus, History, Pencil, Layers, LoaderCircle, Plus, Terminal as TerminalIcon, Trash2, X } from 'lucide-react'
+import { ChevronLeft, Folder, FolderCog, FolderOpen, FolderPlus, History, Pencil, Layers, LoaderCircle, Plus, Terminal as TerminalIcon, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { TerminalPhase } from './OpenCodeTerminal'
@@ -111,6 +111,7 @@ export function WorkSessions({ work, snapshot, copy, chinese, visible, screenRea
   return <div className="work-sessions" hidden={!visible}>
     <Dialog open={!!rename} onOpenChange={open => { if (!open) setRename(null) }}><DialogContent><DialogHeader><DialogTitle>{chinese ? '会话标题' : 'Session title'}</DialogTitle><DialogDescription>{chinese ? '标题只用于区分标签，不会影响任务。' : 'The title helps identify this tab and does not interrupt the task.'}</DialogDescription></DialogHeader><input className="rounded border bg-background p-2" maxLength={120} aria-label={chinese ? '会话标题' : 'Session title'} value={rename?.title || ''} onChange={event => setRename(current => current ? { ...current, title: event.target.value } : current)} /><DialogFooter><Button variant="outline" onClick={() => setRename(null)}>{copy.cancel}</Button><Button onClick={() => { if (rename) work.rename(rename.id, rename.title); setRename(null) }}>{copy.save}</Button></DialogFooter></DialogContent></Dialog>
     <div className="work-session-bar">
+      {active && <button type="button" className="companion-icon-button" aria-label={chinese ? '打开工作区当前文件夹' : 'Open current workspace folder'} title={chinese ? '在文件管理器中打开当前文件夹' : 'Open current folder in file manager'} disabled={!workspaces.some(folder => folder.id === active.workspaceId)} onClick={() => { void window.electronAPI.companion.openWorkspace(active.workspaceId, active.accessScope === 'folder' ? active.relativePath : '').catch(error => onError(error instanceof Error ? error.message : String(error))) }}><FolderOpen size={16} /></button>}
       {active && <button className="companion-icon-button" aria-label={chinese ? '修改会话标题' : 'Rename session'} title={chinese ? '修改会话标题' : 'Rename session'} onClick={() => setRename({ id: active.id, title: active.title || '' })}><Pencil size={14} /></button>}
       <div ref={strip} className="work-session-tabs" role="tablist" aria-label={chinese ? '工作会话' : 'Work sessions'}>
         {work.open.map((session, index) => {

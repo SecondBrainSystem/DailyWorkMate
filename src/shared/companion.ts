@@ -3,6 +3,12 @@ export type AvatarState = 'idle' | 'listening' | 'thinking' | 'speaking' | 'work
 export interface WorkspaceGrant { id: string; path: string; name: string; writable: boolean }
 export interface WorkspaceGroup { id: string; name: string; workspaceIds: string[] }
 export interface WorkspaceGroupInput { id?: string; name: string; workspaceIds: string[] }
+export interface DroppedFolder { path: string; name: string; workspaceId?: string; writable: boolean }
+export interface WorkspaceImportInput {
+  folders: Array<{ path: string; writable: boolean }>
+  groupId?: string
+  newGroupName?: string
+}
 export interface SpeechEndpoint { baseUrl: string; model: string; apiKey: string }
 export interface CompanionSettings {
   name: string
@@ -107,6 +113,10 @@ export interface CompanionAPI {
   resetAvatar: () => Promise<CompanionSnapshot>
   resetAvatarModel: () => Promise<CompanionSnapshot>
   addWorkspace: () => Promise<CompanionSnapshot>
+  inspectFolders: (paths: string[]) => Promise<DroppedFolder[]>
+  importWorkspaces: (input: WorkspaceImportInput) => Promise<CompanionSnapshot>
+  openWorkspace: (id: string, relativePath?: string) => Promise<void>
+  openTerminalDirectory: (id: string) => Promise<void>
   updateWorkspace: (id: string, writable: boolean | null) => Promise<CompanionSnapshot>
   saveWorkspaceGroup: (group: WorkspaceGroupInput) => Promise<CompanionSnapshot>
   deleteWorkspaceGroup: (id: string) => Promise<CompanionSnapshot>
@@ -133,13 +143,29 @@ export interface TerminalSnapshot {
 const LEGACY_COMPANION_PERSONA = '你是小伴，一位友好、可靠的虚拟伙伴。用用户使用的语言自然地回答，根据问题需要提供完整的解释，不必为了朗读缩短文字。普通聊天不能访问文件或执行操作；如需操作文件，请引导用户切换到工作模式。不要声称完成了未执行的操作。'
 
 export const DEFAULT_COMPANION_SETTINGS: CompanionSettings = {
-  name: '小伴',
-  persona: '你是小伴，一位友好、可靠的虚拟伙伴。用用户使用的语言自然地回答，根据问题需要提供完整的解释，不必为了朗读缩短文字。需要访问文件时使用当前授权工作区的工具，未连接工作区时提示用户选择工作区。不要声称完成了未执行的操作。',
+  name: 'DailyWorkMate',
+  persona: '你是 DailyWorkMate，一位友好、可靠的虚拟伙伴。用用户使用的语言自然地回答，根据问题需要提供完整的解释，不必为了朗读缩短文字。需要访问文件时使用当前授权工作区的工具，未连接工作区时提示用户选择工作区。不要声称完成了未执行的操作。',
   model: '', autoSpeak: true, speechEnabled: true, ttsMode: 'local', localVoice: 'auto', localEngine: 'fast', systemFallback: true, language: 'zh-CN', systemVoice: '',
   voice: 'alloy', speechRate: 1, speechVolume: 1, speechPitch: 1, readingMode: 'summary', avatar: '',
   avatarVisible: true, avatarMode: '2d', avatarModel: '', sttMode: 'local',
   stt: { baseUrl: '', model: 'whisper-1', apiKey: '' },
   tts: { baseUrl: '', model: 'tts-1', apiKey: '' },
+}
+
+/** Upgrade only the former defaults; leave user-written names and instructions intact. */
+export function migrateCompanionName(settings: CompanionSettings): CompanionSettings {
+  const name = ['小伴', 'Companion'].includes(settings.name) ? 'DailyWorkMate' : settings.name
+  const previousPersona = DEFAULT_COMPANION_SETTINGS.persona.replace(' DailyWorkMate', '小伴')
+  const persona = [previousPersona, LEGACY_COMPANION_PERSONA].includes(settings.persona)
+    ? DEFAULT_COMPANION_SETTINGS.persona.replace('DailyWorkMate', name) : settings.persona
+  return { ...settings, name, persona }
+}
+
+export function renameCompanion(settings: CompanionSettings, name: string): CompanionSettings {
+  const defaultPersona = DEFAULT_COMPANION_SETTINGS.persona.replace('DailyWorkMate', settings.name)
+  const english = 'You are ' + settings.name + ', a helpful assistant. Reply in the user’s language. Ask before taking actions that change files.'
+  return { ...settings, name, persona: settings.persona === defaultPersona ? DEFAULT_COMPANION_SETTINGS.persona.replace('DailyWorkMate', name)
+    : settings.persona === english ? english.replace('You are ' + settings.name + ',', 'You are ' + name + ',') : settings.persona }
 }
 
 export function boundedText(value: unknown, name: string, limit: number, required = false): string {
