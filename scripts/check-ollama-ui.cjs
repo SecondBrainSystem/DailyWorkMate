@@ -1,0 +1,135 @@
+// Hidden Electron QA using mock IPC and a separate profile; run after npm run build.
+const { app, BrowserWindow } = require('electron')
+const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
+const root = path.resolve(__dirname, '..')
+const output = path.join(root, 'tmp/qa')
+fs.mkdirSync(output,{recursive:true})
+app.setPath('userData',path.join(output,`ollama-ui-profile-${process.pid}`))
+app.disableHardwareAcceleration()
+let window
+const errors=[]
+const results=[]
+const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms))
+const js=code=>window.webContents.executeJavaScript(code,true)
+const button=text=>`[...document.querySelectorAll('button')].find(el=>el.textContent.trim()===${JSON.stringify(text)})`
+async function waitFor(code,label) {
+  for(let i=0;i<100;i++){if(await js(code))return;await delay(40)}
+  throw new Error(`Timed out: ${label}`)
+}
+async function click(selector) {
+  await js(`(${selector}).scrollIntoView({block:'center',behavior:'instant'})`)
+  await delay(120)
+  const point=await js(`(()=>{const el=(${selector});if(!el)throw new Error('Missing control');const r=el.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`)
+  window.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point})
+  window.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point})
+  await delay(60)
+}
+async function input(value) {
+  await js(`(()=>{const el=document.querySelector('input[aria-label="Node base URL"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,${JSON.stringify(value)});el.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+  await delay(40)
+}
+async function screenshot(name) {
+  await delay(650)
+  await js('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+  if(!window.webContents.debugger.isAttached())window.webContents.debugger.attach('1.3')
+  const {data}=await window.webContents.debugger.sendCommand('Page.captureScreenshot',{format:'png',captureBeyondViewport:false})
+  fs.writeFileSync(path.join(output,name),Buffer.from(data,'base64'))
+}
+app.whenReady().then(async()=>{
+  window=new BrowserWindow({show:false,width:1280,height:1050,webPreferences:{preload:path.join(root,'tests/renderer/fixtures/ollama-preload.cjs'),contextIsolation:true,sandbox:false,backgroundThrottling:false,offscreen:true}})
+  window.webContents.on('console-message',(_event,level,message)=>{if(level>=3)errors.push(message)})
+  await window.loadFile(path.join(root,'out/renderer/index.html'),{hash:'/ollama'})
+  await waitFor(`document.body.textContent.includes('QA initial load failed')`,'load error')
+  await click(button('Retry'))
+  await waitFor(`document.querySelector('[data-ollama-ready="true"]')`,'loaded nodes')
+  results.push('initial load error is visible and retry recovers')
+  await input('http://failed.invalid')
+  await click(button('Add'))
+  await waitFor(`document.body.textContent.includes('QA import failed')`,'import failure')
+  assert.equal(await js(`document.querySelector('input[aria-label="Node base URL"]').value`),'http://failed.invalid')
+  await input('not-a-url');await click(button('Add'))
+  await waitFor(`document.body.textContent.includes('These addresses could not be imported')`,'invalid URL detail')
+  results.push('import failures preserve input and show invalid addresses')
+  // Locate by translation fallback so label wording changes remain reviewable.
+  const forceControl=`document.querySelector('[role="switch"]')`
+  await js('window.ollamaQA.failSave(true)')
+  await click(forceControl)
+  assert.equal(await js(`${forceControl}.disabled`),true)
+  await waitFor(`document.body.textContent.includes('QA save failed')`,'routing save failure')
+  assert.equal(await js(`${forceControl}.getAttribute('aria-checked')`),'false')
+  await js('window.ollamaQA.failSave(false)')
+  await click(forceControl)
+  await waitFor(`${forceControl}.getAttribute('aria-checked')==='true' && !${forceControl}.disabled`,'routing saved')
+  results.push('routing controls lock while saving and retain the saved value after failure')
+  await click(`document.querySelector('[data-node-id="node-a"] button[aria-expanded]')`)
+  assert.equal(await js(`document.querySelectorAll('[data-model-test-status="untested"]').length`),3)
+  assert.equal(await js(`document.querySelectorAll('[data-model-test-status="failed"]').length`),0)
+  assert.equal(await js(`document.body.textContent.includes('Old bulk timeout')`),false)
+  assert.deepEqual(await js('window.ollamaQA.state().modelTests'),[])
+  await click(button('Refresh all model lists'))
+  await waitFor(`window.ollamaQA.state().scans.length===2 && !${button('Refresh all model lists')}.disabled`,'catalog refresh')
+  assert.deepEqual(await js('window.ollamaQA.state().modelTests'),[])
+  const testButton=`document.querySelector('[data-model-name="qwen3:8b"] button[aria-label="Test model qwen3:8b"]')`
+  await js(`(${testButton}).scrollIntoView({block:'center',behavior:'instant'});(${testButton}).focus()`)
+  window.webContents.sendInputEvent({type:'keyDown',keyCode:'Space'})
+  window.webContents.sendInputEvent({type:'keyUp',keyCode:'Space'})
+  await waitFor(`document.querySelector('[data-model-name="qwen3:8b"] [data-model-test-status="checking"]')`,'selected model pending')
+  assert.equal(await js(`document.querySelectorAll('[data-model-test-status="checking"]').length`),1)
+  await waitFor(`document.querySelector('[data-model-name="qwen3:8b"] [data-model-test-status="passed"]')`,'selected model success')
+  assert.deepEqual(await js('window.ollamaQA.state().modelTests'),[{id:'node-a',model:'qwen3:8b'}])
+  await js('window.ollamaQA.failTest(true)')
+  await click(`document.querySelector('[data-model-name="${'organization/model-with-a-very-long-name-and-context-window-128k:quantized-q4_k_m'}"] button[aria-label^="Test model "]')`)
+  await waitFor(`document.querySelector('[data-model-test-status="failed"]')`,'selected model failure')
+  assert.equal(await js(`document.querySelectorAll('[data-model-test-status="failed"]').length`),1)
+  assert.equal(await js(`document.querySelectorAll('[data-model-test-status="passed"]').length`),1)
+  assert.equal(await js(`document.querySelectorAll('[data-model-test-status="untested"]').length`),1)
+  assert.equal(await js('window.ollamaQA.state().modelTests.length'),2)
+  results.push('refresh runs no inference; keyboard/pointer tests affect only the clicked model; legacy errors stay neutral')
+  await click(button('Unpin'))
+  await waitFor(`!window.ollamaQA.state().config.modelMappings['disabled-model'].preferredProviderId`, 'disabled model unpinned')
+  assert.equal(await js(`window.ollamaQA.state().config.modelMappings['disabled-model'].preferredProviderId`),undefined)
+  await click(button('Save Authentication and Refresh Models'))
+  await waitFor(`window.ollamaQA.state().authInputs.length===1`,'auth save')
+  assert.deepEqual(await js('window.ollamaQA.state().authInputs[0]'),{type:'bearer'})
+  assert.equal(await js('window.ollamaQA.state().modelTests.length'),2)
+  results.push('disabled models can be unpinned and blank authentication preserves saved values')
+  // Freeze decorative motion so a screenshot represents the settled layout after resize/theme changes.
+  await window.webContents.insertCSS('*,*::before,*::after{transition:none!important;animation:none!important}')
+  for(const theme of ['light','dark']) {
+    await js(`document.documentElement.dataset.theme=${JSON.stringify(theme)}`)
+    await delay(700)
+    for(const width of [1280,760,390]) {
+      window.setSize(width,1050);await delay(350)
+      const overflow=await js(`document.documentElement.scrollWidth > innerWidth + 1 || [...document.querySelectorAll('main')].some(el=>el.scrollWidth > el.clientWidth + 1)`)
+      assert.equal(overflow,false,`Document overflows at ${width}px ${theme}`)
+      const clippedButtons=await js(`[...document.querySelectorAll('[data-ollama-ready] .glass-card button')].filter(el=>{const r=el.getBoundingClientRect();const p=el.closest('.glass-card').getBoundingClientRect();return r.width>0&&(r.left<p.left-1||r.right>p.right+1||el.scrollWidth>el.clientWidth+1)}).map(el=>el.textContent.trim())`)
+      assert.deepEqual(clippedButtons,[],`Clipped controls at ${width}px ${theme}`)
+      await js(`document.querySelector('main').scrollTo({top:0,behavior:'instant'})`)
+      await screenshot(`ollama-${theme}-${width}.png`)
+      await js(`document.querySelector('[data-node-id="node-a"]').scrollIntoView({block:'start',behavior:'instant'})`)
+      await screenshot(`ollama-${theme}-${width}-models.png`)
+    }
+  }
+  const unnamed=await js(`[...document.querySelectorAll('[data-ollama-ready] input:not([type=file]),[data-ollama-ready] [role=switch],[data-ollama-ready] [role=combobox]')].filter(el=>!el.getAttribute('aria-label')&&!el.labels?.length).map(el=>el.outerHTML)`)
+  assert.deepEqual(unnamed,[])
+  if(!window.webContents.debugger.isAttached())window.webContents.debugger.attach('1.3')
+  const {nodes:accessibility}=await window.webContents.debugger.sendCommand('Accessibility.getFullAXTree')
+  const controls=accessibility.filter(node=>!node.ignored&&['combobox','switch','textbox'].includes(node.role?.value))
+  assert.ok(controls.length>=7,'Expected node, routing and log controls in the accessibility tree')
+  assert.deepEqual(controls.filter(node=>!node.name?.value),[])
+  fs.writeFileSync(path.join(output,'ollama-accessibility.json'),JSON.stringify(controls.map(node=>({role:node.role.value,name:node.name.value})),null,2))
+  window.webContents.debugger.detach()
+  results.push('light/dark at 1280, 760 and 390px: screenshots, reflow and control names checked')
+  assert.deepEqual(errors,[])
+  fs.writeFileSync(path.join(output,'ollama-ui-results.json'),JSON.stringify({results,errors},null,2))
+  console.log(JSON.stringify({results,errors},null,2))
+  app.quit()
+}).catch(async error=>{
+  if (window && !window.isDestroyed()) {
+    await screenshot('ollama-ui-failure.png')
+    fs.writeFileSync(path.join(output,'ollama-ui-failure.json'),JSON.stringify(await js(`({state:window.ollamaQA.state(),buttons:[...document.querySelectorAll('button')].filter(el=>['Unpin','Save Authentication and Rescan'].includes(el.textContent.trim())).map(el=>({text:el.textContent,disabled:el.disabled,rect:el.getBoundingClientRect().toJSON()}))})`),null,2))
+  }
+  console.error(error);app.exit(1)
+})

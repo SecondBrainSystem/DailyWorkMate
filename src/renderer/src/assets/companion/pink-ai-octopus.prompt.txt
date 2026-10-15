@@ -1,0 +1,11 @@
+Generated with the built-in imagegen tool, transparent_background=true.
+
+Use case: stylized-concept
+Asset type: desktop AI companion mascot, single transparent PNG cutout
+Primary request: a cute pink AI octopus virtual companion.
+Subject: one adorable small pastel pink octopus with a big rounded head, eight short soft curling arms with tiny pale suction cups, large glossy expressive dark eyes, subtle pink cheek blush, a small happy smile, and a tiny pearlescent cyan glowing AI indicator on its forehead.
+Style/medium: polished soft 3D clay toy illustration, friendly and charming, clean silhouette legible at small desktop avatar sizes.
+Composition/framing: whole body centered, frontal slightly three-quarter view, all arms inside frame, generous transparent padding, square canvas.
+Lighting/mood: soft studio lighting, cozy and cheerful.
+Color palette: blush pink, rose pink, soft peach highlights, a subtle cyan AI accent.
+Constraints: truly transparent background; isolated character only; no floor, no backdrop, no text, no watermark, no surrounding objects.

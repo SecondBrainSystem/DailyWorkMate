@@ -1,0 +1,30 @@
+/* Font sizes follow the user's base size, including the companion's custom CSS. */
+.sidebar-nav-item { font-size: .9375rem; }
+.companion-page .companion-eyebrow { font-size: .6875rem; letter-spacing: .14em; }
+.companion-page .companion-status,
+.companion-page .companion-tabs button,
+.companion-page .companion-select,
+.companion-page .companion-suggestion,
+.companion-page .companion-error,
+.companion-page .companion-folder-name,
+.companion-page .companion-field,
+.companion-settings .companion-field,
+.companion-settings .companion-endpoint legend { font-size: .875rem; }
+.companion-page .companion-name { font-size: 1.375rem; }
+.companion-page .companion-empty h2 { font-size: 1.5rem; }
+.companion-page .companion-empty p { font-size: .9375rem; }
+.companion-page .companion-message-body,
+.companion-page .companion-composer textarea { font-size: 1rem; line-height: 1.75; }
+.companion-page .companion-message-label,
+.companion-page .companion-composer-note,
+.companion-page .companion-folder-path,
+.companion-page .companion-task,
+.companion-page .companion-permission pre,
+.companion-page .companion-playback-controls p,
+.companion-page .companion-notice { font-size: .75rem; line-height: 1.6; }
+.companion-page .companion-composer-footer { flex-wrap: wrap; }
+.companion-page .companion-composer-footer > .flex { margin-left: auto; }
+.companion-page .companion-compact-controls { grid-template-columns: minmax(0, 1fr) minmax(240px, 1fr); }
+@media (max-width: 1000px) {
+  .companion-page .companion-compact-controls { grid-template-columns: minmax(0, 1fr); }
+}

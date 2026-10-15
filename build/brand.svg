@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="tile" x2="1" y2="1"><stop stop-color="#26324f"/><stop offset="1" stop-color="#101727"/></linearGradient>
+    <linearGradient id="pink" x2="0.3" y2="1"><stop stop-color="#ffd4eb"/><stop offset="1" stop-color="#eb8cba"/></linearGradient>
+  </defs>
+  <rect x="12" y="12" width="488" height="488" rx="112" fill="url(#tile)"/>
+  <g fill="none" stroke="url(#pink)" stroke-width="33" stroke-linecap="round">
+    <path d="M178 247 Q142 271 112 248 Q91 229 76 244"/>
+    <path d="M334 247 Q370 271 400 248 Q421 229 436 244"/>
+    <path d="M186 266 Q144 322 103 297"/>
+    <path d="M326 266 Q368 322 409 297"/>
+    <path d="M210 282 Q180 359 143 331"/>
+    <path d="M302 282 Q332 359 369 331"/>
+    <path d="M238 288 Q231 376 198 353"/>
+    <path d="M274 288 Q281 376 314 353"/>
+  </g>
+  <path d="M144 209 C144 128 179 80 256 80 C333 80 368 128 368 209 C368 277 316 301 256 301 C196 301 144 277 144 209Z" fill="url(#pink)"/>
+  <ellipse cx="206" cy="130" rx="25" ry="12" transform="rotate(-27 206 130)" fill="#fff" opacity=".5"/>
+  <ellipse cx="212" cy="209" rx="15" ry="22" fill="#252b45"/>
+  <ellipse cx="300" cy="209" rx="15" ry="22" fill="#252b45"/>
+  <circle cx="217" cy="201" r="5" fill="#fff"/><circle cx="305" cy="201" r="5" fill="#fff"/>
+  <ellipse cx="183" cy="240" rx="20" ry="10" fill="#dc6fa4" opacity=".55"/>
+  <ellipse cx="329" cy="240" rx="20" ry="10" fill="#dc6fa4" opacity=".55"/>
+  <path d="M243 242 Q256 257 269 242" fill="none" stroke="#7c3e67" stroke-width="6" stroke-linecap="round"/>
+  <text x="256" y="448" text-anchor="middle" font-family="Segoe UI,Arial,sans-serif" font-size="81" font-weight="800" letter-spacing="4" fill="#fff5fc">DWM</text>
+</svg>

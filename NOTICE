@@ -1,0 +1,9 @@
+DailyWorkMate
+
+Derived from Chat2API (https://github.com/xiaoY233/Chat2API), licensed under GPL-3.0.
+Upstream contributors retain copyright in their contributions; the GPL-3.0 license is preserved.
+The upstream name remains only in attribution and compatibility identifiers needed to read existing data.
+Copyright (c) 2026 DailyWorkMate contributors for the DailyWorkMate changes.
+
+Electron, OpenCode, Claude Code, node-pty and optional speech runtimes/models are separate projects.
+Their respective licenses and notices are preserved in their distributions.
