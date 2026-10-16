@@ -77,8 +77,8 @@ export interface BuiltinProviderConfig extends Provider {
 }
 
 interface ProxyAPI {
-  start: (port?: number) => Promise<boolean>
-  stop: () => Promise<boolean>
+  start: (port?: number, host?: string) => Promise<boolean>
+  stop: (port?: number, host?: string) => Promise<boolean>
   getStatus: () => Promise<ProxyStatus>
   getModels: () => Promise<Array<{ id: string }>>
   onStatusChanged: (callback: (status: ProxyStatus) => void) => () => void
@@ -502,6 +502,7 @@ interface ToolCallingAPI {
 }
 
 interface ElectronAPI {
+  inference: import('../../../shared/inference').InternalInferenceAPI
   terminal: import('../../../shared/terminal').TerminalManagerAPI
   companion: import('../../../shared/companion').CompanionAPI
   getPathForFile: (file: File) => string

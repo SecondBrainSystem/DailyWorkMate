@@ -1,6 +1,7 @@
 import path from 'node:path'
 import type { WorkspaceGrant } from '../../shared/companion'
-import { OPENCODE_INFERENCE_BASE_URL, type OpenCodeFreeModel } from './opencodeModels.ts'
+import { openCodeFreeModelBaseURL, type OpenCodeFreeModel } from './opencodeModels.ts'
+import type { ModelConnection } from '../../shared/modelConnection'
 
 type Rule = { action: string; resource: string; effect: 'allow' | 'deny' | 'ask' }
 const secretPatterns = ['*.env', '*.env.*', '*credentials*', '*.pem', '*.key', '*/.ssh/*', '*/.aws/*', '*/.gnupg/*']
@@ -9,15 +10,16 @@ const secretPatterns = ['*.env', '*.env.*', '*credentials*', '*.pem', '*.key', '
 export function buildOpenCodeV2Config(
   grants: WorkspaceGrant[], current: WorkspaceGrant, model: string, baseURL: string,
   _worktree?: string, freeModel?: OpenCodeFreeModel, guardDirectory?: string, allowShell = true, autoApproveCommands = false,
+  connection?: ModelConnection,
 ) {
   if (!model || /[{}#\r\n\0]/.test(model)) throw new Error('Invalid OpenCode model identifier')
   if (!guardDirectory || !path.isAbsolute(guardDirectory) || /[{}\r\n\0]/.test(guardDirectory)) throw new Error('OpenCode V2 requires its managed workspace guard')
   if (!grants.some(grant => grant.id === current.id && grant.path === current.path && grant.writable === current.writable)) throw new Error('Selected workspace is not authorized')
   const providerID = freeModel ? 'opencode' : 'dailyworkmate'
-  const modelID = freeModel?.apiModel || model
+  const modelID = freeModel?.apiModel || connection?.model || model
   if (!modelID || /[{}#\r\n\0]/.test(modelID)) throw new Error('Invalid OpenCode model identifier')
   const selection = { providerID, model: modelID }
-  const endpoint = freeModel ? OPENCODE_INFERENCE_BASE_URL : baseURL
+  const endpoint = freeModel ? openCodeFreeModelBaseURL(freeModel) : connection?.baseURL || baseURL
   const url = new URL(endpoint)
   if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error('Invalid OpenCode provider URL')
   const patterns = (grant: WorkspaceGrant, relative: boolean) => {
@@ -46,7 +48,7 @@ export function buildOpenCodeV2Config(
     { action: 'permission', resource: '*', effect: 'deny' },
     ...policyPermissions.slice(1),
   ]
-  const pkg = freeModel?.protocol === 'messages' ? '@opencode/ai/providers/anthropic'
+  const pkg = freeModel?.protocol === 'messages' || connection?.protocol === 'anthropic' ? '@opencode/ai/providers/anthropic'
     : freeModel?.protocol === 'responses' ? '@opencode/ai/providers/openai'
       : '@opencode/ai/providers/openai-compatible'
   const selectedModel = {
@@ -75,7 +77,7 @@ export function buildOpenCodeV2Config(
         name: freeModel ? 'OpenCode' : 'DailyWorkMate', package: pkg,
         env: freeModel ? [] : ['DAILYWORKMATE_PROXY_KEY'],
         settings: { baseURL: endpoint, apiKey: freeModel ? 'public' : '{env:DAILYWORKMATE_PROXY_KEY}', transport: 'http' },
-        ...(freeModel ? {} : { headers: { 'X-DailyWorkMate-Model-Selection': 'explicit' } }),
+        ...(freeModel ? {} : { headers: connection?.direct ? { ...connection.headers } : { 'X-DailyWorkMate-Model-Selection': 'explicit', ...connection?.headers } }),
         models: { [modelID]: selectedModel },
       },
     },

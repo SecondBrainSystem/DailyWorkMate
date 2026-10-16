@@ -48,16 +48,23 @@
 .companion-speech-switch[aria-checked=true]{color:var(--companion-accent)}
 .companion-speech-switch:disabled{opacity:.5;cursor:not-allowed}
 .companion-speech-switch:focus-visible,.companion-tabs button:focus-visible{outline:2px solid var(--companion-accent);outline-offset:3px}
-.is-work .companion-chat{min-height:0;border-radius:16px}
+.is-work .companion-chat{height:clamp(520px,calc(100dvh - 10rem),1000px);min-height:0;border-radius:16px}
 .companion-terminal{position:relative;display:flex;flex-direction:column;min-width:0;height:clamp(440px,70vh,850px);background:#16181d;color:#e4e4e7}
 .companion-terminal-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 14px;border-bottom:1px solid #ffffff18;font-size:12px}
 .companion-terminal-toolbar>span{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
 .companion-terminal-toolbar button{color:#e4e4e7;gap:6px}
 .companion-terminal-toolbar button:hover{background:#ffffff12}
 .companion-terminal-state{color:#aaa5b5;font-size:11px}
-.companion-terminal-host{flex:1;min-height:0;min-width:0;overflow:hidden;padding:10px 12px}
+.companion-terminal-host{flex:1;min-height:0;min-width:0;overflow:hidden;padding:12px}
 .companion-terminal-host[hidden]{display:none}
 .companion-terminal-host .xterm{height:100%}
+/* xterm measures repeated glyphs to build its width cache. Chromium's CJK punctuation
+   trimming makes those samples narrower than isolated punctuation in the rendered row,
+   so text drifts past the cell grid and the IME overlay covers already-entered characters.
+   Use full punctuation spacing in both the rows and their hidden measuring elements. */
+.companion-terminal-host .xterm,.unified-terminal-host .xterm{text-spacing-trim:space-all}
+/* FitAddon measures the parent's CSS size; exclude its padding from that measurement. */
+.companion-terminal-host,.unified-terminal-host{box-sizing:content-box}
 .companion-terminal-loading{position:absolute;top:45%;left:0;width:100%;display:flex;align-items:center;justify-content:center;gap:10px;font-size:13px;pointer-events:none}
 .companion-terminal-error{padding:10px 14px;color:#ffb4be;font-size:12px;overflow-wrap:anywhere}
 
@@ -67,6 +74,7 @@
 .unified-terminal-preferences label{display:flex;align-items:flex-start;gap:9px;font-size:12px;cursor:pointer;min-height:36px}
 .unified-terminal-preferences input{accent-color:var(--companion-accent);margin-top:3px;width:16px;height:16px}
 .unified-terminal-preferences small{display:block;color:var(--text-muted);font-size:11px;line-height:1.7;margin-top:3px}
+.unified-terminal-preferences>p{flex-basis:100%;font-size:11px;line-height:1.6;color:var(--text-muted);margin:0}
 .unified-terminal-tabs{display:flex;align-items:center;flex-wrap:wrap;gap:4px;padding:7px 10px;border-bottom:1px solid var(--terminal-border)}
 .unified-terminal-tabs>div[role=tablist]{display:flex;flex:1;min-width:0;overflow-x:auto;gap:5px}
 .unified-terminal-tab{display:flex;flex-shrink:0;align-items:center;border:1px solid transparent;border-radius:7px;overflow:hidden;color:#aaa5b5}
@@ -86,8 +94,8 @@
 .unified-terminal-footer>span:last-child{overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
 .terminal-empty{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;min-height:280px;padding:30px;text-align:center}.terminal-empty h2{font-size:20px}.terminal-empty p{font-size:12px;line-height:1.7;color:#aaa5b5}
 .unified-terminal :is(button,input,select):focus-visible{outline:2px solid var(--companion-accent);outline-offset:2px}
-@media(max-width:700px){.unified-terminal-preferences{gap:12px;padding:12px}.unified-terminal-preferences label{flex-basis:100%}.unified-terminal-create{padding:12px}.terminal-directory-field{flex-basis:100%}.unified-terminal-view{height:55vh;min-height:350px}.unified-terminal-host{padding:8px 6px}}
-@media(max-width:700px){.companion-terminal{height:65vh;min-height:400px}.companion-terminal-host{padding:8px 6px}.companion-chat-header>div{max-width:100%;flex-wrap:wrap}}
+@media(max-width:700px){.unified-terminal-preferences{gap:12px;padding:12px}.unified-terminal-preferences label{flex-basis:100%}.unified-terminal-create{padding:12px}.terminal-directory-field{flex-basis:100%}.unified-terminal-host{padding:8px 6px}}
+@media(max-width:700px){.companion-terminal-host{padding:8px 6px}.companion-chat-header>div{max-width:100%;flex-wrap:wrap}}
 /* Unified folder access dialog */
 .companion-workspaces.is-embedded{margin-top:0;border:0;border-radius:0;box-shadow:none;padding:0;background:transparent}
 .companion-folder-button{max-width:16rem}
@@ -103,7 +111,7 @@
 .work-session-tab [role=tab]{display:flex;align-items:center;gap:7px;min-width:0;padding:5px 6px 5px 9px;font-size:12px;min-height:32px}
 .work-session-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .work-session-dot{flex-shrink:0;width:7px;height:7px;border-radius:50%;background:#77727f}
-.work-session-dot[data-phase=running]{background:#87c3a3}.work-session-dot[data-phase=starting]{background:#e4b363}.work-session-dot[data-phase=error]{background:#ffb4be}
+.work-session-dot[data-phase=running]{background:#87c3a3}.work-session-dot[data-phase=starting],.work-session-dot[data-phase=recovering]{background:#e4b363}.work-session-dot[data-phase=error]{background:#ffb4be}
 .work-session-close{display:grid;flex-shrink:0;place-items:center;width:24px;height:24px;margin-right:3px;border-radius:5px;color:inherit;opacity:.7}
 .work-session-close:hover{opacity:1;background:#ffffff14;color:#ffb4be}
 .work-sessions :is(button,select):focus-visible{outline:2px solid var(--companion-accent);outline-offset:1px}
@@ -113,7 +121,7 @@
 .work-sessions .work-chip[data-access=edit]{color:#9fd8b7}.work-sessions .work-chip[data-access=read]{color:#b9c2d6}.work-sessions .work-chip[data-access=mixed]{color:#efc77f}
 .work-chip.is-used{margin-left:8px;background:#b9669122;color:var(--companion-accent)}
 .companion-terminal-toolbar{gap:10px;padding:6px 10px;min-height:38px}
-.companion-terminal-state{flex-shrink:0;margin-left:auto}.companion-terminal-state[data-phase=running]{color:#87c3a3}.companion-terminal-state[data-phase=error]{color:#ffb4be}
+.companion-terminal-state{flex-shrink:0;margin-left:auto}.companion-terminal-state[data-phase=running]{color:#87c3a3}.companion-terminal-state[data-phase=recovering]{color:#e4b363}.companion-terminal-state[data-phase=error]{color:#ffb4be}
 .companion-terminal-toolbar>.work-session-details{display:flex;flex:1;flex-wrap:nowrap;align-items:center;gap:7px;min-width:0;color:#cfcbd8}
 .work-session-details>svg{flex-shrink:0}
 .work-session-path{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -140,8 +148,14 @@
 .work-scope-path{font-size:11.5px;color:var(--text-muted);overflow-wrap:anywhere}
 .work-scope-summary .companion-read-button{justify-self:start;padding:2px 0}
 .work-dialog-empty{display:grid;justify-items:start;gap:12px;font-size:13px;color:var(--text-secondary)}
-.is-work .companion-terminal{height:clamp(340px,calc(100dvh - 16.5rem),860px)}
-@media(max-width:700px){.work-session-bar{flex-wrap:wrap}.work-session-tabs{flex-basis:100%}.work-session-model,.work-session-details .work-chip{display:none}.is-work .companion-terminal{height:62vh;min-height:360px}}
+/* Work and Terminal share one outer height; their toolbars consume space inside it. */
+.is-work :is(.work-sessions,.companion-terminal-panel,.unified-terminal):not([hidden]){display:flex;flex:1;flex-direction:column;min-height:0;overflow:hidden}
+.is-work :is(.companion-terminal,.unified-terminal-view){flex:1;min-height:0;height:auto}
+.is-work :is(.work-panel,.terminal-empty){flex:1;min-height:0;overflow:auto}
+.is-work .work-sessions>div:not([hidden]):has(>.work-panel){display:flex;flex:1;flex-direction:column;min-height:0}
+.is-work :is(.unified-terminal-options,.unified-terminal-tabs,.unified-terminal-create,.unified-terminal-footer,.work-session-bar,.companion-terminal-toolbar,.companion-terminal-notice,.companion-terminal-error,.folder-drop-hint){flex-shrink:0}
+.is-work .companion-terminal-error{max-height:30%;overflow:auto}
+@media(max-width:700px){.work-session-bar{flex-wrap:wrap}.work-session-tabs{flex-basis:100%}.work-session-model,.work-session-details .work-chip{display:none}}
 /* Collapsible terminal startup options */
 .unified-terminal-options{background:var(--glass-bg);color:var(--text-primary);border-bottom:1px solid var(--glass-border)}
 .unified-terminal-options-toggle{display:flex;width:100%;align-items:center;gap:8px;padding:8px 14px;font-size:12px;font-weight:500;text-align:left}
@@ -156,8 +170,40 @@
 .terminal-task{max-width:11rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .terminal-kind{flex-shrink:0;border-radius:5px;padding:1px 5px;background:#ffffff14;color:#aaa5b5;font-size:10px;line-height:1.4}
 
+/* Focus mode keeps the same terminal nodes; their ResizeObservers refit the PTYs. */
+.companion-session-controls{margin-left:auto}
+.companion-focus-toggle{flex-shrink:0;gap:6px;min-height:36px}
+html:has(.companion-page.is-focus-mode) :is(.app-sidebar,.app-topbar){display:none}
+html:has(.companion-page.is-focus-mode) .app-content{overflow:hidden;scrollbar-gutter:auto}
+html:has(.companion-page.is-focus-mode) .app-page:has(.is-focus-mode){height:100%;max-width:none;margin:0;padding:0;animation:none}
+html:has(.companion-page.is-focus-mode) .app-content>.app-page:not(:has(.is-focus-mode)){display:none}
+.companion-page.is-focus-mode{display:flex;flex-direction:column;max-width:none;height:100dvh;margin:0}
+.is-focus-mode>.page-header,.is-focus-mode .companion-session-controls,.is-focus-mode .folder-drop-hint,.is-focus-mode .unified-terminal-options{display:none}
+.is-focus-mode>.companion-layout{display:flex;flex:1;min-height:0;gap:0}
+.is-focus-mode .companion-chat{flex:1;min-height:0;height:100%;border:0;border-radius:0;box-shadow:none}
+.is-focus-mode .companion-chat-header{padding:8px 12px;gap:8px}
+.is-focus-mode .companion-focus-toggle{margin-left:auto}
+.is-focus-mode :is(.companion-terminal-panel,.unified-terminal,.unified-terminal-view,.work-sessions,.companion-terminal){display:flex;flex:1;flex-direction:column;min-height:0;height:auto}
+.is-focus-mode :is(.companion-terminal-panel,.unified-terminal,.work-sessions){overflow:hidden}
+.is-focus-mode :is(.unified-terminal-tabs,.unified-terminal-create,.unified-terminal-footer,.work-session-bar,.companion-terminal-toolbar,.companion-terminal-notice,.companion-terminal-error){flex-shrink:0}
+.is-focus-mode .work-panel,.is-focus-mode .terminal-empty{flex:1;min-height:0;overflow:auto}
+.is-focus-mode .work-sessions>div:has(>.work-panel){display:flex;flex:1;min-height:0;flex-direction:column}
+.is-focus-mode .companion-chat>:is([role=alert],[role=status]){flex-shrink:0}
+@media(max-width:540px){.is-focus-mode .companion-chat-header{padding:6px}.is-focus-mode .companion-tabs button{padding:7px 8px}.is-focus-mode .companion-focus-toggle{padding:6px 8px}}
+
 .companion-page{position:relative}
 .folder-drop-overlay{position:absolute;inset:0;z-index:80;pointer-events:none;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;border:2px dashed var(--companion-accent);border-radius:18px;background:var(--bg-primary);opacity:.94;color:var(--companion-accent);font-size:16px;text-align:center;padding:24px}
 .folder-drop-hint{padding:6px 16px;font-size:11px;color:var(--text-muted);border-bottom:1px solid var(--glass-border)}
+.companion-hints{flex-shrink:0;min-width:0;border-bottom:1px solid var(--glass-border);font-size:12px;color:var(--text-muted)}
+.companion-hints>summary{display:flex;align-items:center;gap:8px;min-height:36px;padding:6px 16px;cursor:pointer;list-style:none}
+.companion-hints>summary::-webkit-details-marker{display:none}
+.companion-hints>summary>svg{flex-shrink:0}
+.companion-hints[open]>summary>svg{transform:rotate(90deg)}
+.companion-hints>summary:focus-visible{outline:2px solid var(--companion-accent);outline-offset:-3px}
+.companion-hints-status{flex:1;min-width:0;text-align:right;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.companion-hints-body{display:grid;gap:10px;max-height:min(28vh,200px);overflow:auto;padding:4px 16px 12px;line-height:1.6}
+.companion-hints-catalogue{display:flex;align-items:flex-start;gap:12px}
+.companion-hints-catalogue>button{flex-shrink:0}
+.companion-hints .folder-drop-hint{padding:0;border:0;font-size:inherit}
 .terminal-open-folder{display:flex;align-items:center;gap:7px;min-width:0;max-width:85%;text-align:right}
 .terminal-open-folder>svg{flex-shrink:0}.terminal-open-folder>span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.terminal-open-folder:hover{color:#fff}.terminal-open-folder:focus-visible{outline:2px solid var(--companion-accent);outline-offset:3px}

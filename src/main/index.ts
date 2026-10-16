@@ -1,13 +1,17 @@
 import './branding'
-import { app, BrowserWindow, nativeTheme } from 'electron'
+import { app, BrowserWindow, nativeTheme, dialog } from 'electron'
 import { join } from 'path'
 import { createWindow, getMainWindow, loadUrl, loadFile, openDevTools } from './window/manager'
 import { createTrayManager, TrayManager } from './tray/TrayManager'
 import { registerIpcHandlers } from './ipc/handlers'
 import { UpdaterManager } from './updater'
 import { storeManager } from './store/store'
-import { keepTerminalProxyAlive } from './companion/ipc'
+import { shutdownCompanion, companionPsmuxDirectories } from './companion/ipc'
+import { defaultPsmuxDirectories, discoverPsmux, closePsmux } from './terminal/psmux'
+import { createQuitController } from './quit'
 import { readStartupOptions } from './startupOptions'
+import { internalInferenceBridge } from './inference/bridge'
+import { sessionManager } from './proxy/sessionManager'
 
 // Prevent uncaught exceptions from crashing the app
 process.on('uncaughtException', (error) => {
@@ -64,6 +68,7 @@ if (!gotTheLock) {
 }
 
 let trayManager: TrayManager | null = null
+let relaunchOnQuit = false
 
 async function initializeApp(): Promise<void> {
   app.on('ready', async () => {
@@ -85,20 +90,35 @@ async function initializeApp(): Promise<void> {
     }
   })
 
-  app.on('before-quit', event => {
-    if (keepTerminalProxyAlive()) {
-      event.preventDefault()
-      app.isQuitting = false
-      getMainWindow()?.hide()
-      trayManager?.notifyBackground()
-      return
-    }
-    app.isQuitting = true
-  })
+  app.on('before-quit', createQuitController({
+    confirm: async () => {
+      app.isQuitting = true
+      const sessions = await discoverPsmux([...defaultPsmuxDirectories(), ...await companionPsmuxDirectories()])
+      if (!sessions.length) return true
+      const chinese = storeManager.getConfig().language === 'zh-CN'
+      const result = await dialog.showMessageBox({ type: 'question', title: 'DailyWorkMate',
+        message: chinese ? '退出时是否关闭 psmux 会话？' : 'Close psmux sessions when quitting?',
+        detail: (chinese ? '检测到以下会话，可能包含其他终端启动的会话。关闭会同时清理其预热进程；保留后可用 psmux 重新连接。普通终端和工作任务仍会停止。\n\n' : 'These sessions may include sessions started in other terminals. Closing also stops their standby processes. Retained sessions can be reattached with psmux. Ordinary terminals and work tasks will stop.\n\n') + sessions.map(session => session.name + ' — ' + session.directory).join('\n'),
+        buttons: chinese ? ['关闭这些会话并退出', '保留 psmux 并退出', '取消退出'] : ['Close these sessions and quit', 'Keep psmux and quit', 'Cancel'], defaultId: 1, cancelId: 2, noLink: true })
+      if (result.response === 2) return false
+      if (result.response === 0) await closePsmux(sessions)
+      return true
+    },
+    cleanup: async () => { await shutdownCompanion(); await cleanup() },
+    canCommit: () => app.isQuitting === true,
+    commit: () => { if (relaunchOnQuit) app.relaunch(); app.quit() },
+    cancel: error => {
+      app.isQuitting = false; relaunchOnQuit = false
+      if (error) {
+        console.error('[App] Quit cleanup failed:', error)
+        const chinese = storeManager.getConfig().language === 'zh-CN'
+        dialog.showErrorBox(chinese ? '未能完成退出' : 'Unable to finish quitting', (chinese ? '清理进程时出现问题，软件仍保持打开，请重试。\n' : 'Process cleanup failed. The application remains open; please retry.\n') + (error instanceof Error ? error.message : String(error)))
+      }
+    },
+  }))
 
   app.on('will-quit', () => {
     trayManager?.destroy()
-    cleanup()
   })
 }
 
@@ -147,15 +167,17 @@ async function loadAppContent(mainWindow: BrowserWindow): Promise<void> {
   }
 }
 
-function cleanup(): void {
+async function cleanup(): Promise<void> {
   console.log('Application is exiting, performing cleanup...')
+  sessionManager.destroy()
+  await internalInferenceBridge.stop()
   storeManager.flushPendingWrites()
   const updaterManager = UpdaterManager.getInstance()
   updaterManager.destroy()
 }
 
 export function restartApp(): void {
-  app.relaunch()
+  relaunchOnQuit = true
   app.quit()
 }
 

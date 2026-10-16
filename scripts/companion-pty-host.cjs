@@ -1,10 +1,19 @@
 // Runs with Electron's Node mode. Native PTY handles never live in the application process.
-let terminal, ending = false
+let terminal, ending = false, exited = false
 function finish(code) {
   if (ending) return
   ending = true
-  try { terminal?.kill() } catch (error) { report(error) }
-  process.exit(code)
+  // ConPTY closes asynchronously. Exiting this helper immediately can strand its shell/tools.
+  if (!terminal) { process.exit(code); return }
+  const timer = setTimeout(() => process.exit(code), 8000)
+  const done = () => { clearTimeout(timer); process.exit(code) }
+  if (exited) {
+    try { terminal.kill() } catch (error) { report(error) }
+    setTimeout(done, 100)
+  } else {
+    terminal.onExit(done)
+    try { terminal.kill() } catch (error) { report(error); done() }
+  }
 }
 function report(error) {
   const data = '\r\nOpenCode terminal error: ' + (error instanceof Error ? error.message : String(error)) + '\r\n'
@@ -16,8 +25,9 @@ process.on('message', message => {
     if (message.type === 'open') {
       if (terminal) throw new Error('Terminal already started')
       terminal = require(message.module).spawn(message.file, message.args, message.options)
+      if (process.connected) process.send({ type: 'ready', pid: terminal.pid })
       terminal.onData(data => { if (process.connected && !ending) process.send({ type: 'data', data }) })
-      terminal.onExit(({ exitCode }) => finish(exitCode || 0))
+      terminal.onExit(({ exitCode }) => { exited = true; finish(exitCode || 0) })
     } else if (message.type === 'write') terminal?.write(message.data)
     else if (message.type === 'resize') terminal?.resize(message.cols, message.rows)
     else if (message.type === 'close') finish(0)

@@ -22,7 +22,7 @@ export class ProxyStatusManager {
   }
 
   private config: ProxyConfig = {
-    port: 32123,
+    port: 11434,
     host: '0.0.0.0',
     timeout: 120000,
     retryCount: 3,
@@ -88,7 +88,7 @@ export class ProxyStatusManager {
   stop(): void {
     this.isRunning = false
     this.startTime = null
-    this.statistics.activeConnections = 0
+    // Internal chat/CLI requests may still be active after the public API stops.
   }
 
   /**

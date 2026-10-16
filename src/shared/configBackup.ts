@@ -1,5 +1,5 @@
 import type { AppConfig } from './types'
-const keys = ['language', 'theme', 'uiTypography', 'proxyPort', 'proxyHost', 'loadBalanceStrategy', 'modelMappings', 'ollamaRouting', 'modelFeatureDefaults', 'autoStart', 'autoStartProxy', 'minimizeToTray', 'logLevel', 'logRetentionDays', 'requestLogConfig', 'requestTimeout', 'retryCount', 'oauthProxyMode', 'sessionConfig', 'contextManagement', 'toolCallingConfig'] as const
+const keys = ['language', 'theme', 'uiTypography', 'proxyPort', 'proxyHost', 'additionalProxyListeners', 'loadBalanceStrategy', 'modelMappings', 'ollamaRouting', 'modelFeatureDefaults', 'autoStart', 'autoStartProxy', 'minimizeToTray', 'logLevel', 'logRetentionDays', 'requestLogConfig', 'requestTimeout', 'retryCount', 'oauthProxyMode', 'sessionConfig', 'contextManagement', 'toolCallingConfig'] as const
 export function configurationBackup(value: AppConfig): Partial<AppConfig> {
   return Object.fromEntries(keys.filter(key => value[key] !== undefined).map(key => [key, value[key]]))
 }

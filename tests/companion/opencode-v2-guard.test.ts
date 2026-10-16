@@ -91,9 +91,23 @@ test('V2 free configuration binds one native public model and never configures a
   assert.deepEqual(Object.keys(config.providers), ['opencode'])
   assert.deepEqual(config.model, { providerID: 'opencode', model: 'test-free' })
   assert.equal(config.providers.opencode.settings.apiKey, 'public')
-  assert.equal(config.providers.opencode.settings.baseURL, 'https://opencode.ai/inference/v1')
+  assert.equal(config.providers.opencode.settings.baseURL, 'https://opencode.ai/inference/openai/v1')
   assert.deepEqual(Object.keys(config.providers.opencode.models), ['test-free'])
   assert.equal(config.providers.opencode.models['test-free'].cost?.input, 0)
+})
+
+test('V2 uses the resolved upstream model and native provider protocol without the external proxy', async () => {
+  const { root, grant } = await fixture()
+  for (const protocol of ['openai', 'anthropic'] as const) {
+    const connection = { baseURL: 'https://models.example.test/api/v1', apiKey: 'not-written-to-config', model: 'upstream-model', protocol, direct: true, headers: { 'X-Project': '{env:DAILYWORKMATE_MODEL_HEADER_0}' } }
+    const config = buildOpenCodeV2Config([grant], grant, 'display-alias', '', undefined, undefined, path.join(root, 'guard'), true, false, connection)
+    assert.deepEqual(config.model, { providerID: 'dailyworkmate', model: 'upstream-model' })
+    assert.equal(config.providers.dailyworkmate.settings.baseURL, connection.baseURL)
+    assert.equal(config.providers.dailyworkmate.package, protocol === 'anthropic' ? '@opencode/ai/providers/anthropic' : '@opencode/ai/providers/openai-compatible')
+    assert.deepEqual(config.providers.dailyworkmate.headers, connection.headers)
+    assert.equal(config.plugins[0].options.modelID, connection.model, 'the workspace guard allows precisely the resolved model')
+    assert.doesNotMatch(JSON.stringify(config), /not-written-to-config|11434|X-DailyWorkMate-Model-Selection/)
+  }
 })
 
 test('V2 guard rewrites valid paths, denies readonly modifications and every unrecognized tool', async () => {

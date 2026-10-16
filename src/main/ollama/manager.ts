@@ -7,6 +7,7 @@ import { parseOllamaUrlList } from './urls'
 import { buildOllamaHeaders, isOllamaResponse, mergeOllamaAuth } from './transport'
 import { createOllamaAgents } from '../proxy/connectionAgents'
 import { impossibleTimingReason, syntheticCatalogReason } from './authenticity'
+import { isOllamaModelUsable } from '../../shared/ollamaAvailability'
 import type {
   Account,
   OllamaAuthInput,
@@ -201,15 +202,18 @@ export async function probeEndpoint(baseUrl: string, model: string, headers: Rec
   imitation?: string
 }> {
   let lastError = 'No compatible invocation endpoint returned a usable response'
+  const deadline = Date.now() + timeout
   const probes = [...ENDPOINT_PROBES].sort((a, b) => Number(b.endpoint === preferredEndpoint) - Number(a.endpoint === preferredEndpoint))
   for (const probe of probes) {
     signal?.throwIfAborted()
     const start = Date.now()
+    const remaining = deadline - start
+    if (remaining <= 0) return { error: `Model test timed out after ${timeout}ms` }
     try {
       const response = await axios.post(`${baseUrl}${probe.path}`, probe.body(model), {
         headers: probe.endpoint === 'claude_chat' ? { ...headers, 'anthropic-version': '2023-06-01' } : headers,
-        timeout,
-        ...createOllamaAgents(timeout),
+        timeout: remaining,
+        ...createOllamaAgents(remaining),
         signal, maxRedirects: 0,
         validateStatus: () => true,
       })
@@ -218,11 +222,15 @@ export async function probeEndpoint(baseUrl: string, model: string, headers: Rec
         const imitation = probe.endpoint.startsWith('ollama_') ? impossibleTimingReason(response.data, latency) : undefined
         return imitation ? { error: imitation, imitation, latency } : { endpoint: probe.endpoint, latency }
       }
-      lastError = `HTTP ${response.status} from ${probe.path}`
+      const detail = response.data?.error?.message || response.data?.error
+      lastError = `HTTP ${response.status} from ${probe.path}${typeof detail === 'string' ? `: ${detail}` : ''}`
+      if (response.status >= 200 && response.status < 300) lastError = `No usable model response from ${probe.path}`
       if (response.status === 401 || response.status === 403) return { error: `Authentication failed: ${lastError}` }
     } catch (error) {
       if (signal?.aborted) throw error
       lastError = error instanceof Error ? error.message : String(error)
+      // Changing HTTP paths cannot fix an unreachable host or a spent time budget.
+      if (axios.isAxiosError(error) && !error.response) return { error: lastError }
     }
   }
   return { error: lastError }
@@ -267,21 +275,24 @@ function createNodeProvider(url: string): Provider {
 export class OllamaNodeManager {
   private static scans = new Map<string, { controller: AbortController; promise: Promise<OllamaNodeSummary> }>()
   private static scanProgress = new Map<string, { providerId: string; model: string; completed: number; total: number }>()
+  private static recoverySuppressed = new Set<string>()
 
   static getScanProgress() {
     return Array.from(this.scanProgress.values(), progress => ({ ...progress }))
   }
 
   static cancelScan(providerId: string): void {
+    this.recoverySuppressed.add(providerId)
     this.scans.get(providerId)?.controller.abort()
     this.modelTests.get(providerId)?.abort()
+    this.visionTests.get(providerId)?.abort()
   }
   private static recoveryTimer: NodeJS.Timeout | undefined
   static startRecovery(): void {
     if (this.recoveryTimer) return
     this.recoveryTimer = setInterval(() => {
       if (this.scans.size || this.modelTests.size || this.visionTests.size) return
-      const node = ProviderManager.getAll().find(provider => provider.upstreamKind === 'ollama' && provider.enabled && (provider.status === 'offline' || provider.status === 'unknown') && Date.now() - (provider.lastStatusCheck || 0) >= 60000)
+      const node = ProviderManager.getAll().find(provider => provider.upstreamKind === 'ollama' && provider.enabled && !this.recoverySuppressed.has(provider.id) && (provider.status === 'offline' || provider.status === 'unknown') && Date.now() - (provider.lastStatusCheck || 0) >= 60000)
       if (node) void this.scan(node.id).catch(error => console.error('[Ollama] Recovery failed:', error instanceof Error ? error.message : String(error)))
     }, 60000)
     this.recoveryTimer.unref()
@@ -337,8 +348,8 @@ export class OllamaNodeManager {
   static scan(providerId: string): Promise<OllamaNodeSummary> {
     const existing = this.scans.get(providerId)
     if (existing) return existing.promise
-    if (this.modelTests.has(providerId)) throw new Error('This node already has a test in progress')
-    this.visionTests.get(providerId)?.abort()
+    if (this.modelTests.has(providerId) || this.visionTests.has(providerId)) throw new Error('This node already has a test in progress')
+    this.recoverySuppressed.delete(providerId)
     const controller = new AbortController()
     this.scanProgress.set(providerId, { providerId, model: '', completed: 0, total: 0 })
     const promise = this.scanNode(providerId, controller.signal).finally(() => {
@@ -362,16 +373,17 @@ export class OllamaNodeManager {
 
     try {
       const { models, endpoint, imitation } = await discoverCatalog(provider.apiEndpoint, headers, signal)
+      signal.throwIfAborted()
       this.scanProgress.set(providerId, { providerId, model: '', completed: 0, total: models.length })
       logNode('info', provider, `Discovered ${models.length} model(s)`, { models })
-      signal.throwIfAborted()
       const currentProvider = ProviderManager.getById(providerId)
       if (!currentProvider) throw new Error('Ollama node was deleted during its scan')
-      // Refresh only the catalog. Keep explicit test results; retire errors from old bulk probes.
+      // Retire previous success/failure evidence before testing the refreshed catalog.
+      // No endpoint is exposed until this refresh has actually tested the model.
       const ollamaModels = Object.fromEntries(models.map(name => {
         const previous = currentProvider.ollamaModels?.[name]
-        return [name, previous?.testStatus ? { ...previous, endpoint: previous.endpoint || endpoint } : {
-          name, endpoint: previous?.endpoint || endpoint, testStatus: 'untested' as const,
+        return [name, {
+          name, testStatus: 'untested' as const,
           vision: previous?.vision || 'unknown' as const, visionSource: previous?.visionSource,
         }]
       }))
@@ -394,11 +406,25 @@ export class OllamaNodeManager {
           errorMessage: undefined,
         })
       }
-      logNode('info', updated!, `Catalog refreshed: ${models.length} model(s); no inference tests run`)
-      return toSummary(updated!)
+      const timeout = this.modelTestTimeout()
+      for (const [index, model] of models.entries()) {
+        signal.throwIfAborted()
+        this.scanProgress.set(providerId, { providerId, model, completed: index, total: models.length })
+        const result = await scanModel(provider.apiEndpoint, model, headers, signal, timeout, currentProvider.ollamaModels?.[model]?.endpoint || endpoint)
+        signal.throwIfAborted()
+        this.saveModelResult(providerId, model, result)
+        this.scanProgress.set(providerId, { providerId, model: '', completed: index + 1, total: models.length })
+      }
+      const completed = ProviderManager.getById(providerId)!
+      const passed = Object.values(completed.ollamaModels || {}).filter(model => model.testStatus === 'passed').length
+      logNode('info', completed, `Refresh completed: ${passed}/${models.length} model(s) passed`)
+      return toSummary(completed)
     } catch (error) {
       // Cancelled scans must not overwrite a new credential set or a deleted node.
-      if (signal.aborted) throw new Error('Ollama node scan cancelled')
+      if (signal.aborted) {
+        logNode('info', provider, 'Node testing cancelled; completed results retained')
+        throw new Error('Ollama node scan cancelled')
+      }
       const message = error instanceof Error ? error.message : String(error)
       const updated = ProviderManager.update(providerId, {
         status: 'offline',
@@ -409,6 +435,27 @@ export class OllamaNodeManager {
       logNode('error', updated!, `Node scan failed: ${message}`)
       return toSummary(updated!)
     }
+  }
+
+  private static modelTestTimeout(): number {
+    return Math.min(Math.max(storeManager.getConfig().requestTimeout || 120000, 1000), 300000)
+  }
+
+  private static saveModelResult(providerId: string, model: string, result: OllamaModelMetadata & { imitation?: string }): OllamaModelMetadata {
+    const current = ProviderManager.getById(providerId)
+    if (!current) throw new Error('Ollama node was deleted during its model test')
+    const previous = current.ollamaModels?.[model]
+    const { imitation, ...tested } = result
+    const metadata: OllamaModelMetadata = {
+      ...tested,
+      endpoint: tested.endpoint || previous?.endpoint,
+      ...(previous?.visionSource === 'manual-test' && tested.vision === 'unknown'
+        ? { vision: previous.vision, visionSource: previous.visionSource } : {}),
+    }
+    ProviderManager.update(providerId, { ollamaModels: { ...(current.ollamaModels || {}), [model]: metadata }, ...(imitation ? { imitationWarning: imitation } : {}) })
+    if (imitation) logNode('warn', current, `Node imitates Ollama: ${imitation}`, { model })
+    logNode(tested.testStatus === 'passed' ? 'info' : 'warn', current, `Model test ${tested.testStatus}: ${model}`, { model, error: tested.error })
+    return metadata
   }
 
   static async testModel(providerId: string, model: string): Promise<OllamaModelMetadata> {
@@ -422,27 +469,14 @@ export class OllamaNodeManager {
       throw new Error('This node already has a test in progress')
     }
     const controller = new AbortController()
+    this.recoverySuppressed.delete(providerId)
     this.modelTests.set(providerId, controller)
     this.scanProgress.set(providerId, { providerId, model, completed: 0, total: 1 })
     try {
       logNode('info', provider, `Model test started: ${model}`, { model })
-      const timeout = Math.min(Math.max(storeManager.getConfig().requestTimeout || 120000, 1000), 300000)
-      const { imitation, ...result } = await scanModel(provider.apiEndpoint, model, buildOllamaHeaders(getNodeAccount(providerId), provider.headers), controller.signal, timeout, provider.ollamaModels[model].endpoint)
+      const result = await scanModel(provider.apiEndpoint, model, buildOllamaHeaders(getNodeAccount(providerId), provider.headers), controller.signal, this.modelTestTimeout(), provider.ollamaModels[model].endpoint)
       controller.signal.throwIfAborted()
-      const current = ProviderManager.getById(providerId)
-      if (!current) throw new Error('Ollama node was deleted during its model test')
-      const previous = current.ollamaModels?.[model]
-      const metadata: OllamaModelMetadata = {
-        ...result,
-        endpoint: result.endpoint || previous?.endpoint,
-        ...(previous?.visionSource === 'manual-test' && result.vision === 'unknown'
-          ? { vision: previous.vision, visionSource: previous.visionSource } : {}),
-      }
-      // A model test affects only this row, never the node's account or other models.
-      ProviderManager.update(providerId, { ollamaModels: { ...(current.ollamaModels || {}), [model]: metadata }, ...(imitation ? { imitationWarning: imitation } : {}) })
-      if (imitation) logNode('warn', provider, `Node imitates Ollama: ${imitation}`, { model })
-      logNode(result.testStatus === 'passed' ? 'info' : 'warn', provider, `Model test ${result.testStatus}: ${model}`, { model, error: result.error })
-      return metadata
+      return this.saveModelResult(providerId, model, result)
     } catch (error) {
       if (controller.signal.aborted) throw new Error('Ollama node scan cancelled')
       logNode('error', provider, `Model test failed: ${model}`, { model, error: error instanceof Error ? error.message : String(error) })
@@ -469,7 +503,8 @@ export class OllamaNodeManager {
   static setModelEnabled(providerId: string, model: string, enabled: boolean): OllamaNodeSummary {
     const provider = ProviderManager.getById(providerId)
     if (!provider || provider.upstreamKind !== 'ollama') throw new Error('Ollama node not found')
-    if (!provider.ollamaModels?.[model]?.endpoint) throw new Error('This model has no usable endpoint')
+    if (typeof enabled !== 'boolean' || !provider.ollamaModels?.[model]) throw new Error('Invalid model selection')
+    if (enabled && !isOllamaModelUsable(provider, provider.ollamaModels[model])) throw new Error('This model is unavailable. Refresh and test the node before enabling it.')
     if (enabled) storeManager.restoreModel(providerId, model)
     else storeManager.removeModel(providerId, model)
     return toSummary(provider)
@@ -482,6 +517,7 @@ export class OllamaNodeManager {
     if (!account) throw new Error('Ollama node account not found')
     const credentials = mergeOllamaAuth(auth, account.credentials)
     this.cancelOperations(providerId)
+    this.recoverySuppressed.delete(providerId)
     AccountManager.update(account.id, {
       credentials,
       status: 'active',
@@ -528,6 +564,7 @@ export class OllamaNodeManager {
     const headers = buildOllamaHeaders(account, provider.headers)
     const controller = new AbortController()
     this.visionTests.set(providerId, controller)
+    this.scanProgress.set(providerId, { providerId, model, completed: 0, total: 1 })
     try {
       logNode('info', provider, `Vision test started: ${model}`, { model })
       const result = await this.runVisionRequest(provider.apiEndpoint, model, headers, controller.signal)
@@ -539,7 +576,6 @@ export class OllamaNodeManager {
         ...existing,
         vision: result,
         visionSource: 'manual-test',
-        testedAt: Date.now(),
       }
       ProviderManager.update(providerId, {
         ollamaModels: { ...(current.ollamaModels || {}), [model]: metadata },
@@ -549,8 +585,14 @@ export class OllamaNodeManager {
         vision: result,
       })
       return metadata
+    } catch (error) {
+      if (controller.signal.aborted) throw new Error('Ollama node scan cancelled')
+      throw error
     } finally {
-      if (this.visionTests.get(providerId) === controller) this.visionTests.delete(providerId)
+      if (this.visionTests.get(providerId) === controller) {
+        this.visionTests.delete(providerId)
+        this.scanProgress.delete(providerId)
+      }
     }
   }
 

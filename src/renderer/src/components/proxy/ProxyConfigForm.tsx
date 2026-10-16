@@ -9,6 +9,7 @@ import { useProxyStore } from '@/stores/proxyStore'
 import { useToast } from '@/hooks/use-toast'
 import { Server, AlertCircle } from 'lucide-react'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { getProxyListeners, listenerKey, normalizeListenerHost, validateListenerHost, validateListenerPort } from './listener-utils'
 
 interface ProxyConfigFormProps {
   onConfigChange?: () => void
@@ -21,17 +22,19 @@ interface FormErrors {
 
 export function ProxyConfigForm({ onConfigChange }: ProxyConfigFormProps) {
   const { t } = useTranslation()
-  const { proxyConfig, proxyStatus, setProxyConfig, saveAppConfig, startProxy, stopProxy, isLoading } = useProxyStore()
+  const { appConfig, proxyConfig, setProxyConfig, saveAppConfig, startProxy, stopProxy, isLoading } = useProxyStore()
   const { toast } = useToast()
+  const savedPort = appConfig?.proxyPort ?? proxyConfig.port
+  const savedHost = appConfig?.proxyHost || proxyConfig.host
 
   const initialConfigRef = useRef({
-    port: proxyConfig.port.toString(),
-    host: proxyConfig.host,
+    port: savedPort.toString(),
+    host: savedHost,
   })
 
   const [formData, setFormData] = useState({
-    port: proxyConfig.port.toString(),
-    host: proxyConfig.host,
+    port: savedPort.toString(),
+    host: savedHost,
   })
 
   const [errors, setErrors] = useState<FormErrors>({})
@@ -41,33 +44,21 @@ export function ProxyConfigForm({ onConfigChange }: ProxyConfigFormProps) {
 
   useEffect(() => {
     const newFormData = {
-      port: proxyConfig.port.toString(),
-      host: proxyConfig.host,
+      port: savedPort.toString(),
+      host: savedHost,
     }
-    setFormData(newFormData)
+    if (!hasChanges) setFormData(newFormData)
     initialConfigRef.current = newFormData
-  }, [])
+  }, [savedPort, savedHost])
 
   const validatePort = (value: string): string | undefined => {
-    const port = parseInt(value, 10)
-    if (isNaN(port)) return t('proxy.portMustBeNumber')
-    if (port < 1 || port > 65535) return t('proxy.portRangeError')
-    if (port < 1024 && port !== 80 && port !== 443) {
-      return t('proxy.portPrivilege')
-    }
-    return undefined
+    const error = validateListenerPort(value)
+    return error ? t(error) : undefined
   }
 
   const validateHost = (value: string): string | undefined => {
-    if (!value.trim()) return t('proxy.bindAddressEmpty')
-    const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/
-    const ipv6Regex = /^\[?[0-9a-fA-F:]+\]?$/
-    const hostnameRegex = /^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/
-
-    if (!ipv4Regex.test(value) && !ipv6Regex.test(value) && !hostnameRegex.test(value) && value !== 'localhost') {
-      return t('proxy.invalidIpOrHostname')
-    }
-    return undefined
+    const error = validateListenerHost(value)
+    return error ? t(error) : undefined
   }
 
   const handlePortChange = (value: string) => {
@@ -98,10 +89,16 @@ export function ProxyConfigForm({ onConfigChange }: ProxyConfigFormProps) {
       return
     }
 
-    const newPort = parseInt(formData.port, 10)
-    const newHost = formData.host
-    const portOrHostChanged = newPort !== proxyConfig.port || newHost !== proxyConfig.host
-    const isProxyRunning = proxyStatus?.isRunning
+    const newPort = Number(formData.port)
+    const newHost = normalizeListenerHost(formData.host)
+    const portOrHostChanged = listenerKey({ port: newPort, host: newHost }) !== listenerKey({ port: savedPort, host: savedHost })
+    const state = useProxyStore.getState()
+    const isProxyRunning = getProxyListeners({ port: savedPort, host: savedHost }, [], state.proxyStatus)[0].isRunning
+
+    if (portOrHostChanged && isProxyRunning && newPort === savedPort) {
+      toast({ title: t('proxy.changePrimaryTitle'), description: t('proxy.samePortHostChange'), variant: 'destructive' })
+      return
+    }
 
     if (portOrHostChanged && isProxyRunning) {
       setShowRestartDialog(true)
@@ -112,14 +109,28 @@ export function ProxyConfigForm({ onConfigChange }: ProxyConfigFormProps) {
   }
 
   const performSave = async (newPort: number, newHost: string) => {
-    setProxyConfig({ port: newPort, host: newHost })
+    const state = useProxyStore.getState()
+    const previous = { port: state.appConfig?.proxyPort ?? state.proxyConfig.port, host: state.appConfig?.proxyHost || state.proxyConfig.host }
+    const nextKey = listenerKey({ port: newPort, host: newHost })
+    const additional = (state.appConfig?.additionalProxyListeners ?? []).filter(endpoint => listenerKey(endpoint) !== nextKey)
+    const preservePrevious = nextKey !== listenerKey(previous)
+      && getProxyListeners(previous, [], state.proxyStatus)[0].isRunning
+      && !additional.some(endpoint => listenerKey(endpoint) === listenerKey(previous))
+    const nextAdditional = preservePrevious ? [...additional, previous] : additional
+    if (nextAdditional.length > 32) {
+      toast({ title: t('common.error'), description: t('proxy.listenerLimit'), variant: 'destructive' })
+      return false
+    }
 
     const success = await saveAppConfig({
       proxyPort: newPort,
       proxyHost: newHost,
+      additionalProxyListeners: nextAdditional,
     })
 
     if (success) {
+      setProxyConfig({ port: newPort, host: newHost })
+      setFormData({ port: newPort.toString(), host: newHost })
       setHasChanges(false)
       initialConfigRef.current = {
         port: newPort.toString(),
@@ -127,42 +138,36 @@ export function ProxyConfigForm({ onConfigChange }: ProxyConfigFormProps) {
       }
       toast({
         title: t('common.success'),
-        description: t('proxy.proxyConfigUpdated'),
+        description: t(preservePrevious ? 'proxy.primaryChangedPreservingPrevious' : 'proxy.proxyConfigUpdated'),
       })
     } else {
       toast({
         title: t('common.error'),
-        description: t('proxy.configSaveFailed'),
+        description: useProxyStore.getState().error || t('proxy.configSaveFailed'),
         variant: 'destructive',
       })
     }
+    return success
   }
 
   const handleRestartAndSave = async () => {
     setIsRestarting(true)
     try {
-      const newPort = parseInt(formData.port, 10)
-      const newHost = formData.host
-
-      await performSave(newPort, newHost)
-
-      await stopProxy()
-
-      await new Promise(resolve => setTimeout(resolve, 500))
-
-      const success = await startProxy(newPort)
-
-      if (success) {
-        toast({
-          title: t('common.success'),
-          description: t('proxy.proxyRestarted'),
-        })
-      } else {
+      const newPort = Number(formData.port)
+      const newHost = normalizeListenerHost(formData.host)
+      const alreadyRunning = getProxyListeners({ port: newPort, host: newHost }, [], useProxyStore.getState().proxyStatus)[0].isRunning
+      if (!alreadyRunning && !await startProxy(newPort, newHost)) {
         toast({
           title: t('common.error'),
-          description: t('proxy.proxyRestartFailed'),
+          description: useProxyStore.getState().error || t('proxy.listenerStartFailed'),
           variant: 'destructive',
         })
+        return
+      }
+      if (!await performSave(newPort, newHost) && !alreadyRunning) {
+        if (!await stopProxy(newPort, newHost)) {
+          toast({ title: t('common.error'), description: useProxyStore.getState().error || t('proxy.listenerStopFailed'), variant: 'destructive' })
+        }
       }
     } finally {
       setIsRestarting(false)
@@ -183,8 +188,8 @@ export function ProxyConfigForm({ onConfigChange }: ProxyConfigFormProps) {
       <Card>
         <CardHeading
           icon={Server}
-          title={t('proxy.basicConfig')}
-          description={t('proxy.basicConfigDesc')}
+          title={t('proxy.primaryConfigTitle')}
+          description={t('proxy.primaryConfigDescription')}
           actions={hasChanges && (
             <Badge variant="secondary" className="text-xs">
               {t('proxy.unsaved')}
@@ -198,6 +203,9 @@ export function ProxyConfigForm({ onConfigChange }: ProxyConfigFormProps) {
               <Input
                 id="port"
                 type="number"
+                min={1}
+                max={65535}
+                step={1}
                 placeholder="11434"
                 value={formData.port}
                 onChange={(e) => handlePortChange(e.target.value)}
@@ -257,9 +265,9 @@ export function ProxyConfigForm({ onConfigChange }: ProxyConfigFormProps) {
         open={showRestartDialog}
         onOpenChange={setShowRestartDialog}
         busy={isRestarting}
-        title={t('proxy.restartRequired')}
-        description={t('proxy.restartRequiredDesc')}
-        confirmLabel={isRestarting ? t('proxy.restarting') : t('proxy.restartNow')}
+        title={t('proxy.changePrimaryTitle')}
+        description={t('proxy.changePrimaryDescription')}
+        confirmLabel={isRestarting ? t('proxy.saving') : t('proxy.changePrimaryConfirm')}
         onConfirm={handleRestartAndSave}
       />
     </>

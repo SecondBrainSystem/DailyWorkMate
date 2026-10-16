@@ -1,6 +1,7 @@
 import { ipcMain, app, BrowserWindow, shell, session } from 'electron'
 import { applyAutoStart } from '../store/autoStart'
 import { registerCompanionHandlers, clearCompanionData } from '../companion/ipc'
+import { registerInternalInferenceHandlers } from '../inference/ipc'
 import axios from 'axios'
 import { IpcChannels } from './channels'
 import { storeManager } from '../store/store'
@@ -10,12 +11,11 @@ import { ProviderChecker } from '../providers/checker'
 import { CustomProviderManager } from '../providers/custom'
 import { getBuiltinProviders, getBuiltinProvider } from '../providers/builtin'
 import { oauthManager } from '../oauth/manager'
-import { proxyServer as sharedProxyServer, type ProxyServer } from '../proxy/server'
+import { proxyServer as sharedProxyServer } from '../proxy/server'
 import { proxyStatusManager } from '../proxy/status'
 import { internalProxyKey } from '../proxy/internalAuth'
 import { listAvailableModels } from '../proxy/modelCatalog'
 import { sessionManager } from '../proxy/sessionManager'
-import { TrayManager } from '../tray/TrayManager'
 import { ConfigManager } from '../store/config'
 import { generateManagementSecret } from '../proxy/middleware/managementAuth'
 import { UpdaterManager } from '../updater'
@@ -37,30 +37,14 @@ import { addApiProvider, refreshApiModels } from '../providers/apiProviders'
 import { apiProviderStore } from '../providers/apiProviderStore'
 import type { ApiProviderInput, ApiProviderResult } from '../../shared/apiProviders'
 
-let proxyServer: ProxyServer | null = null
-let proxyStartTime: number | null = null
-let proxyStarting: Promise<boolean> | null = null
 const updaterManager = UpdaterManager.getInstance()
 
-async function ensureProxyRunning(mainWindow: BrowserWindow | null, port?: number): Promise<boolean> {
-  if (proxyStarting) return proxyStarting
-  if (sharedProxyServer.isRunning()) return true
-  const operation = (async () => {
-    try {
-      const config = storeManager.getConfig()
-      const proxyPort = port || config.proxyPort, proxyHost = config.proxyHost || '127.0.0.1'
-      const candidate = sharedProxyServer
-      const success = await candidate.start(proxyPort, proxyHost)
-      if (success) {
-        proxyServer = candidate; proxyStartTime = Date.now()
-        TrayManager.getInstance().updateProxyStatus(true)
-        mainWindow?.webContents.send(IpcChannels.PROXY_STATUS_CHANGED, { isRunning: true, port: proxyPort, host: proxyHost, uptime: 0, connections: 0 } satisfies ProxyStatus)
-      }
-      return success
-    } catch (error) { console.error('Failed to start proxy:', error); return false }
-  })()
-  proxyStarting = operation
-  try { return await operation } finally { if (proxyStarting === operation) proxyStarting = null }
+async function ensureProxyRunning(port?: number, host?: string): Promise<boolean> {
+  const config = storeManager.getConfig()
+  // Start the requested public endpoint even when another API listener is already running.
+  const success = await sharedProxyServer.start(port === undefined ? config.proxyPort : port, host === undefined ? config.proxyHost || '127.0.0.1' : host)
+  if (!success) throw new Error(sharedProxyServer.getLastError() || 'Unable to start the local proxy service')
+  return true
 }
 
 const clearChatsHandlers: Record<string, (provider: Provider, account: Account) => Promise<boolean>> = {
@@ -101,11 +85,16 @@ export async function registerIpcHandlers(mainWindow: BrowserWindow | null): Pro
   }
   
   storeManager.setMainWindow(mainWindow)
+  // Internal inference has an application lifetime, independent of public listeners.
+  sessionManager.initialize()
+  const inferenceConfig = storeManager.getConfig()
+  proxyStatusManager.updateConfig({ timeout: inferenceConfig.requestTimeout, retryCount: inferenceConfig.retryCount })
   
   if (mainWindow) {
     OllamaNodeManager.startRecovery()
     app.once('will-quit', () => OllamaNodeManager.stopRecovery())
-    registerCompanionHandlers(mainWindow, () => ensureProxyRunning(mainWindow))
+    registerInternalInferenceHandlers(mainWindow)
+    registerCompanionHandlers(mainWindow)
     oauthManager.setMainWindow(mainWindow)
     updaterManager.initialize(mainWindow)
   }
@@ -115,59 +104,22 @@ export async function registerIpcHandlers(mainWindow: BrowserWindow | null): Pro
   applyAutoStart(config.autoStart)
   if (config.autoStartProxy) {
     console.log('[App] Auto-starting proxy service...')
-    const success = await ensureProxyRunning(mainWindow)
-    console.log(success ? '[App] Proxy service auto-started successfully' : '[App] Proxy service auto-start failed')
+    const endpoints = [{ port: config.proxyPort, host: config.proxyHost }, ...(config.additionalProxyListeners || [])]
+    for (const endpoint of endpoints) {
+      try { await ensureProxyRunning(endpoint.port, endpoint.host) }
+      catch (error) { console.error('[App] Proxy auto-start failed:', error) }
+    }
   }
 
-  ipcMain.handle(IpcChannels.PROXY_START, async (_, port?: number): Promise<boolean> => {
-    const success = await ensureProxyRunning(mainWindow, port)
-    if (success) TrayManager.getInstance().updateProxyStatus(true)
-    return success
+  ipcMain.handle(IpcChannels.PROXY_START, (_, port?: number, host?: string): Promise<boolean> => ensureProxyRunning(port, host))
+
+  ipcMain.handle(IpcChannels.PROXY_STOP, async (_, port?: number, host?: string): Promise<boolean> => {
+    const success = await sharedProxyServer.stop(port, port === undefined ? undefined : host === undefined ? storeManager.getConfig().proxyHost : host)
+    if (!success) throw new Error(sharedProxyServer.getLastError() || 'Unable to stop the local proxy service')
+    return true
   })
 
-  ipcMain.handle(IpcChannels.PROXY_STOP, async (): Promise<boolean> => {
-    try {
-      if (!sharedProxyServer.isRunning()) {
-        return true
-      }
-
-      const success = await sharedProxyServer.stop()
-      
-      if (success) {
-        const status: ProxyStatus = {
-          isRunning: false,
-          port: proxyStatusManager.getPort(),
-          host: storeManager.getConfig().proxyHost || proxyStatusManager.getHost(),
-          uptime: proxyStartTime ? Date.now() - proxyStartTime : 0,
-          connections: 0,
-        }
-        proxyServer = null
-        proxyStartTime = null
-        mainWindow?.webContents.send(IpcChannels.PROXY_STATUS_CHANGED, status)
-        TrayManager.getInstance().updateProxyStatus(false)
-      }
-      
-      return success
-    } catch (error) {
-      console.error('Failed to stop proxy:', error)
-      return false
-    }
-  })
-
-  ipcMain.handle(IpcChannels.PROXY_GET_STATUS, async (): Promise<ProxyStatus> => {
-    const isRunning = proxyServer !== null
-    const port = proxyStatusManager.getPort()
-    const host = isRunning
-      ? proxyStatusManager.getHost()
-      : storeManager.getConfig().proxyHost || proxyStatusManager.getHost()
-    return {
-      isRunning,
-      port,
-      host,
-      uptime: proxyStartTime && isRunning ? Date.now() - proxyStartTime : 0,
-      connections: proxyStatusManager.getStatistics().activeConnections,
-    }
-  })
+  ipcMain.handle(IpcChannels.PROXY_GET_STATUS, (): ProxyStatus => getProxyStatus())
 
   ipcMain.handle(IpcChannels.PROXY_GET_MODELS, () => listAvailableModels())
 
@@ -1070,27 +1022,10 @@ export async function registerIpcHandlers(mainWindow: BrowserWindow | null): Pro
 }
 
 export function getProxyStatus(): ProxyStatus {
-  const isRunning = sharedProxyServer.isRunning()
-  const port = proxyStatusManager.getPort()
-  const host = isRunning
-    ? proxyStatusManager.getHost()
-    : storeManager.getConfig().proxyHost || proxyStatusManager.getHost()
-  return {
-    isRunning,
-    port,
-    host,
-    uptime: proxyStartTime && isRunning ? Date.now() - proxyStartTime : 0,
-    connections: proxyStatusManager.getStatistics().activeConnections,
-  }
-}
-
-export function setProxyStatus(status: ProxyStatus): void {
-  // Status is managed by proxyServer instance, only update startTime here
-  if (status.isRunning && !proxyStartTime) {
-    proxyStartTime = Date.now()
-  } else if (!status.isRunning) {
-    proxyStartTime = null
-  }
+  const status = sharedProxyServer.getStatus()
+  if (status.isRunning) return status
+  const config = storeManager.getConfig()
+  return { ...status, port: config.proxyPort, host: config.proxyHost || '127.0.0.1' }
 }
 
 function registerErrorRecoveryHandlers(mainWindow: BrowserWindow | null): void {

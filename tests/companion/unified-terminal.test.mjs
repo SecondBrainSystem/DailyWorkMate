@@ -24,3 +24,8 @@ test('terminal requests contain only supported fields and cannot inject executab
   assert.ok(!JSON.stringify(native).includes('secret'))
   assert.throws(() => validateTerminalCreate({ ...input, kind: 'opencode', opencode: { workspaceId: 'authorized', model: 'model', accessScope: 'outside' } }))
 })
+
+test('legacy background retention is disabled while preserving the startup restore choice', () => {
+  assert.deepEqual(validateTerminalPreferences({ restoreOnStartup: true, keepRunningOnExit: true }), { restoreOnStartup: true, keepRunningOnExit: false })
+  assert.deepEqual(validateTerminalPreferences({ restoreOnStartup: false, keepRunningOnExit: true }), { restoreOnStartup: false, keepRunningOnExit: false })
+})

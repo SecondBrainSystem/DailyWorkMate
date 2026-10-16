@@ -49,10 +49,10 @@ export function createProxyHeaders(config: Pick<AppConfig, 'enableApiKey' | 'api
 }
 
 /** Deadline for response headers; active generation uses the proxy's idle deadline. */
-export async function fetchWithHeaderTimeout(url: string, init: RequestInit, timeout: number): Promise<Response> {
+export async function fetchWithHeaderTimeout(url: string, init: RequestInit, timeout: number, fetcher: (url: string, init: RequestInit) => Promise<Response> = fetch): Promise<Response> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(new DOMException('Request timed out', 'TimeoutError')), timeout)
-  try { return await fetch(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal }) }
+  try { return await fetcher(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal }) }
   finally { clearTimeout(timer) }
 }
 

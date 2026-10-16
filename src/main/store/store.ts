@@ -1,6 +1,7 @@
 import { normalizeModelFeatureDefaults } from '../../shared/modelFeatures'
 import { normalizeTypography, validateTypography } from '../../shared/typography'
 import { normalizeAccountDailyUsage } from './accountUsage'
+import { isOllamaModelUsable } from '../../shared/ollamaAvailability'
 
 /**
  * Credential Storage Module - Core Storage Implementation
@@ -1655,7 +1656,9 @@ export class StoreManager {
       })
     })
 
-    return effectiveModels
+    return provider.upstreamKind === 'ollama'
+      ? effectiveModels.filter(model => isOllamaModelUsable(provider, model.metadata))
+      : effectiveModels
   }
 
   /**

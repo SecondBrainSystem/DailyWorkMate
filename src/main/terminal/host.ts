@@ -8,12 +8,18 @@ import { DEFAULT_TERMINAL_PREFERENCES, validateTerminalCreate, validateTerminalP
 import type { TerminalCreateInput, TerminalSession, TerminalPreferences, TerminalOutput, TerminalState, ShellKind } from '../../shared/terminal'
 import type { WorkspaceGrant, WorkspaceGroup } from '../../shared/companion'
 import type { ProxyConnection } from '../companion/opencodeConfig'
+import type { ModelConnection } from '../../shared/modelConnection'
 import { OpenCodeService } from '../companion/opencode'
 import { OpenCodeTerminalService } from '../companion/terminal'
-import { terminalSpawner, type TerminalProcess } from '../companion/terminalProcess'
+import { closeAllTerminalProcesses, closeTerminalProcess, terminalSpawner, type TerminalProcess } from '../companion/terminalProcess'
 import { findPowerShell } from './shells'
 
-export interface TerminalContext { workspaces: WorkspaceGrant[]; groups: WorkspaceGroup[]; persona: string; proxy: ProxyConnection; executable: string }
+export interface TerminalContext {
+  workspaces: WorkspaceGrant[]; groups: WorkspaceGroup[]; persona: string; proxy?: ProxyConnection; executable: string
+  /** Resolved by the Electron process; credentials remain in memory and are never saved with tabs. */
+  modelConnections?: Record<string, ModelConnection>
+  modelConnectionErrors?: Record<string, string>
+}
 interface Live { session: TerminalSession; output: string; cursor: number; resume: boolean; pty?: TerminalProcess; agent?: OpenCodeService; native?: OpenCodeTerminalService; cwdPending?: string; scope?: string }
 interface Saved { version: 1; preferences: TerminalPreferences; activeId: string; sessions: Array<{ session: TerminalSession; output: string; resume: boolean }> }
 const LIMIT = 1024 * 1024
@@ -45,8 +51,9 @@ export class TerminalHost {
         if (this.sessions.has(input.id)) throw new Error('Duplicate saved terminal ID')
         const session: TerminalSession = { ...input, title: label[input.kind], createdAt: item.session.createdAt, status: 'exited', error: '',
           ...(input.opencode?.sessionId ? { sessionId: input.opencode.sessionId } : {}) }
-        const output = item.output.slice(-LIMIT / 2)
-        this.sessions.set(input.id, { session, output, cursor: output.length, resume: item.resume })
+        // A new host cannot restore a dead PTY's cursor, modes or alternate screen.
+        // Background hosts retain their actual live output in memory instead.
+        this.sessions.set(input.id, { session, output: '', cursor: 0, resume: item.resume })
       }
       this.activeId = this.sessions.has(saved.activeId) ? saved.activeId : this.sessions.keys().next().value || ''
     } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
@@ -68,7 +75,19 @@ export class TerminalHost {
     ]
   }
   async sync(context: TerminalContext) {
-    this.context = context
+    // Concurrent create requests may resolve different models before either tab exists in state().
+    // Keep their in-memory connections until an explicit resolution failure invalidates that model.
+    this.context = context.modelConnections ? {
+      ...context,
+      modelConnections: {
+        ...Object.fromEntries(Object.entries(this.context?.modelConnections || {}).filter(([model]) => !Object.hasOwn(context.modelConnectionErrors || {}, model))),
+        ...context.modelConnections,
+      },
+      modelConnectionErrors: {
+        ...Object.fromEntries(Object.entries(this.context?.modelConnectionErrors || {}).filter(([model]) => !Object.hasOwn(context.modelConnections!, model))),
+        ...context.modelConnectionErrors,
+      },
+    } : context
     this.shells = this.shells.map(shell => shell.kind === 'opencode' ? { ...shell, available: existsSync(context.executable) && context.workspaces.length > 0 } : shell)
     const scope = this.access(context)
     for (const live of this.sessions.values()) {
@@ -127,12 +146,22 @@ export class TerminalHost {
     if (initial.session.kind === 'opencode') {
       if (!this.context || !initial.session.opencode) throw new Error('Select an authorized folder and model for OpenCode')
       const context = this.context
-      // Grants and proxy settings are read when asked, not copied at start: revoking a folder must make the
+      // Grants and model settings are read when asked, not copied at start: revoking a folder must make the
       // running OpenCode server stale (staleAttachments compares against these), so the tab ends.
       const latest = () => this.context ?? context
       // Each terminal has its own guard/config/SQLite profile. Never rewrite another terminal's permissions.
       const storage = { home: path.join(this.home, 'opencode', id), get: async () => ({ settings: { persona: latest().persona }, workspaces: latest().workspaces, groups: latest().groups, messages: [] }) }
-      const agent = new OpenCodeService(storage as unknown as ConstructorParameters<typeof OpenCodeService>[0], () => latest().proxy, context.executable)
+      const resolveConnection = context.modelConnections ? async (model: string) => {
+        const current = latest()
+        const connection = current.modelConnections?.[model]
+        if (!connection) throw new Error(current.modelConnectionErrors?.[model] || 'Model connection is unavailable. Reconnect the application before starting OpenCode.')
+        return connection
+      } : undefined
+      const agent = new OpenCodeService(storage as unknown as ConstructorParameters<typeof OpenCodeService>[0], () => {
+        const proxy = latest().proxy
+        if (!proxy) throw new Error('Model connection is unavailable. Reconnect the application before starting OpenCode.')
+        return proxy
+      }, context.executable, resolveConnection)
       const native = new OpenCodeTerminalService(agent, storage.home, () => spawn)
       const current = this.live(id)
       this.sessions.set(id, { ...current, agent, native, scope: this.access(context) })
@@ -233,14 +262,15 @@ export class TerminalHost {
   private async stop(id: string) {
     const live = this.live(id)
     this.sessions.set(id, { ...live, pty: undefined, native: undefined, agent: undefined, session: { ...live.session, status: 'exited' } })
-    live.pty?.kill(); await live.native?.close()
+    try { await closeTerminalProcess(live.pty); await live.native?.close() }
+    catch (error) { this.sessions.set(id, live); throw error }
   }
   async close(id: string) {
     const live = this.live(id)
+    await this.stop(id)
     this.sessions.delete(id)
     if (this.activeId === id) this.activeId = this.sessions.keys().next().value || ''
     await this.save()
-    live.pty?.kill(); await live.native?.close()
     if (live.session.kind === 'opencode') {
       const root = path.resolve(this.home, 'opencode'), target = path.resolve(root, id)
       const relative = path.relative(root, target)
@@ -263,12 +293,11 @@ export class TerminalHost {
   }
   async setPreferences(value: TerminalPreferences) { this.preferences = validateTerminalPreferences(value); await this.save(); return this.state() }
   async detach() {
-    if (this.preferences.keepRunningOnExit && [...this.sessions.values()].some(live => ['running', 'starting'].includes(live.session.status))) { await this.save(); return true }
     await this.save()
     for (const live of [...this.sessions.values()]) await this.stop(live.session.id)
     await this.save(); return false
   }
-  async shutdown() { for (const live of [...this.sessions.values()]) await this.stop(live.session.id); await this.save() }
+  async shutdown() { for (const live of [...this.sessions.values()]) await this.stop(live.session.id); await closeAllTerminalProcesses(); await this.save() }
   refreshNative() { for (const live of this.sessions.values()) if (live.native && live.session.status !== 'starting') this.poll(live.session.id, live.cursor) }
   private scheduleSave() { if (!this.saveTimer) this.saveTimer = setTimeout(() => { this.saveTimer = undefined; void this.save().catch(error => console.error('[Terminal] Save failed:', error.message)) }, 1500) }
   async save() {
@@ -276,7 +305,7 @@ export class TerminalHost {
     for (const live of this.sessions.values()) if (live.native && live.session.status !== 'starting') this.poll(live.session.id, 0)
     clearTimeout(this.saveTimer); this.saveTimer = undefined
     const saved: Saved = { version: 1, preferences: { ...this.preferences }, activeId: this.activeId,
-      sessions: [...this.sessions.values()].map(live => ({ session: { ...live.session }, output: live.output.slice(-LIMIT / 2), resume: live.resume })) }
+      sessions: [...this.sessions.values()].map(live => ({ session: { ...live.session }, output: '', resume: live.resume })) }
     const operation = this.saving.then(async () => {
       const temporary = this.file() + '.' + randomUUID() + '.tmp'
       await writeFile(temporary, JSON.stringify(saved), { mode: 0o600 }); await rename(temporary, this.file())

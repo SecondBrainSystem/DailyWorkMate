@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { CompanionAPI } from '../shared/companion'
+import type { InternalInferenceAPI } from '../shared/inference'
 import { IpcChannels } from '../main/ipc/channels'
 import type { 
   Provider, 
@@ -23,11 +24,11 @@ import type {
 } from '../shared/types'
 
 const proxyAPI = {
-  start: (port?: number): Promise<boolean> => 
-    ipcRenderer.invoke(IpcChannels.PROXY_START, port),
+  start: (port?: number, host?: string): Promise<boolean> =>
+    ipcRenderer.invoke(IpcChannels.PROXY_START, port, host),
   
-  stop: (): Promise<boolean> => 
-    ipcRenderer.invoke(IpcChannels.PROXY_STOP),
+  stop: (port?: number, host?: string): Promise<boolean> =>
+    ipcRenderer.invoke(IpcChannels.PROXY_STOP, port, host),
   
   getStatus: (): Promise<ProxyStatus> => 
     ipcRenderer.invoke(IpcChannels.PROXY_GET_STATUS),
@@ -743,7 +744,18 @@ const trayAPI = {
     ipcRenderer.send('tray:quit-app'),
 }
 
+const inferenceAPI: InternalInferenceAPI = {
+  request: input => ipcRenderer.invoke(IpcChannels.INFERENCE.request, input),
+  cancel: id => ipcRenderer.invoke(IpcChannels.INFERENCE.cancel, id),
+  onData: callback => {
+    const handler = (_event: Electron.IpcRendererEvent, value: Parameters<typeof callback>[0]) => callback(value)
+    ipcRenderer.on(IpcChannels.INFERENCE.data, handler)
+    return () => ipcRenderer.removeListener(IpcChannels.INFERENCE.data, handler)
+  },
+}
+
 const electronAPI = {
+  inference: inferenceAPI,
   terminal: Object.fromEntries(Object.entries(IpcChannels.TERMINAL).map(([name, channel]) => [name, (...args: unknown[]) => ipcRenderer.invoke(channel, ...args)])) as unknown as import('../shared/terminal').TerminalManagerAPI,
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   companion: Object.fromEntries(Object.entries(IpcChannels.COMPANION).map(([name, channel]) => [name, (...args: unknown[]) => ipcRenderer.invoke(channel, ...args)])) as unknown as CompanionAPI,

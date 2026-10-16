@@ -7,6 +7,7 @@ import { cn } from '@/lib/utils'
 import { useEffect, useState } from 'react'
 import { useSettingsStore, type Theme } from '@/stores/settingsStore'
 import { toast } from '@/hooks/use-toast'
+import type { ProxyStatus } from '@shared/types'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -42,34 +43,26 @@ export function Header() {
   const [proxyLoading, setProxyLoading] = useState(false)
   const [port, setPort] = useState(11434)
   const [host, setHost] = useState('127.0.0.1')
+  const [serviceCount, setServiceCount] = useState(0)
 
   useEffect(() => {
     if (!window.electronAPI?.proxy?.onStatusChanged) return
 
-    const unsubscribe = window.electronAPI.proxy.onStatusChanged((status) => {
+    let disposed = false
+    const accept = (status: ProxyStatus) => {
+      if (disposed) return
       setProxyEnabled(status.isRunning)
       if (status.port) setPort(status.port)
       setHost(status.host || '127.0.0.1')
-    })
-
-    window.electronAPI.proxy.getStatus().then((status) => {
-      setProxyEnabled(status.isRunning)
-      if (status.port) setPort(status.port)
-      setHost(status.host || '127.0.0.1')
-    })
-
-    window.electronAPI.config?.get?.().then((config) => {
-      if (!config) return
-      setPort(config.proxyPort || 11434)
-      setHost(config.proxyHost || '127.0.0.1')
-    })
-
-    const unsubscribeConfig = window.electronAPI.config?.onConfigChanged?.((config) => {
-      setPort(config.proxyPort || 11434)
-      setHost(config.proxyHost || '127.0.0.1')
-    })
+      setServiceCount(status.listeners?.filter(listener => listener.isRunning).length ?? (status.isRunning ? 1 : 0))
+    }
+    const refresh = () => { void window.electronAPI.proxy.getStatus().then(accept).catch(error => console.error('[Header] Proxy status:', error)) }
+    const unsubscribe = window.electronAPI.proxy.onStatusChanged(accept)
+    refresh()
+    const unsubscribeConfig = window.electronAPI.config?.onConfigChanged?.(refresh)
 
     return () => {
+      disposed = true
       unsubscribe()
       unsubscribeConfig?.()
     }
@@ -81,10 +74,8 @@ export function Header() {
     try {
       if (proxyEnabled) {
         if (!await window.electronAPI.proxy.stop()) throw new Error(t('header.proxyStopFailed'))
-        setProxyEnabled(false)
       } else {
         if (!await window.electronAPI.proxy.start()) throw new Error(t('header.proxyStartFailed'))
-        setProxyEnabled(true)
       }
     } catch (error) {
       console.error('Failed to toggle proxy:', error)
@@ -102,7 +93,7 @@ export function Header() {
     setLanguage(language === 'zh-CN' ? 'en-US' : 'zh-CN')
   }
 
-  const proxyAction = proxyEnabled ? t('proxyStatus.stop') : t('proxyStatus.start')
+  const proxyAction = proxyEnabled ? serviceCount > 1 ? language === 'zh-CN' ? '停止全部服务' : 'Stop all services' : t('proxyStatus.stop') : t('proxyStatus.start')
 
   return (
     <header className="app-topbar">
@@ -137,9 +128,10 @@ export function Header() {
         <span className="proxy-pill-state">
           {proxyEnabled ? t('dashboard.running') : t('dashboard.stopped')}
         </span>
-        <span className="proxy-pill-label">
+        <button type="button" className="proxy-pill-label" title={language === 'zh-CN' ? '管理本地服务' : 'Manage local services'} onClick={() => guardedNavigate('/proxy')}>
           {host}:{port}
-        </span>
+          {serviceCount > 1 && ` +${serviceCount - 1}`}
+        </button>
         <button
           onClick={handleToggleProxy}
           disabled={proxyLoading}

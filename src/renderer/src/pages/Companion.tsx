@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertCircle, ArrowUpRight, Bot, ChevronLeft, Eye, EyeOff, FileText, Folder, FolderCog, History, LoaderCircle, Mic, Pencil, Plus, RefreshCw, Send, Settings2, Sparkles, Square, Terminal, Upload, Volume2, VolumeX, X } from 'lucide-react'
+import { AlertCircle, ArrowUpRight, Bot, ChevronLeft, Eye, EyeOff, FileText, Folder, FolderCog, History, LoaderCircle, Maximize2, Mic, Minimize2, Pencil, Plus, RefreshCw, Send, Settings2, Sparkles, Square, Terminal, Upload, Volume2, VolumeX, X } from 'lucide-react'
 import { ErrorText } from '@/components/ui/error-text'
 import { MessageMarkdown } from '@/components/chat/MessageMarkdown'
 import { errorText } from '@/lib/errors'
@@ -10,10 +10,11 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Avatar } from '@/components/companion/Avatar'
 import { CompanionSettings } from '@/components/companion/CompanionSettings'
 import { OpenCodePanel } from '@/components/companion/OpenCodePanel'
+import { CompanionHints } from '@/components/companion/CompanionHints'
 import { FolderDropDialog, useFolderDrop } from '@/components/companion/FolderDropDialog'
 import { WorkSessions } from '@/components/companion/WorkSessions'
 import { ModelCheckBadge } from '@/components/ui/model-check-badge'
-import { isVerifiableModel, peekPreverify, preverifyModel, useModelPreverification } from '@/lib/modelPreverify'
+import { clearPreverifyCache, isVerifiableModel, peekPreverify, preverifyModel, useModelPreverification } from '@/lib/modelPreverify'
 import { WorkspaceGroupsPanel } from '@/components/companion/WorkspaceGroupsPanel'
 import { AuthorizedFolders } from '@/components/companion/AuthorizedFolders'
 import { companionCopy } from '@/components/companion/copy'
@@ -21,6 +22,7 @@ import { useVoice } from '@/components/companion/useVoice'
 import { ChatHistoryDialog } from '@/components/chat/ChatHistoryDialog'
 import { ChatWorkspaceAccess, WorkspaceAgentStatus } from '@/components/chat/ChatWorkspaceAccess'
 import { useWorkspaceAgent } from '@/hooks/useWorkspaceAgent'
+import { useFocusMode } from '@/hooks/useFocusMode'
 import { chatWorkspaceIdentity, workspaceSelectionFromState, workspaceStateFields, type ChatWorkspaceSelection } from '@/lib/workspaceAgent'
 import { ChatHistoryStorage, createConversation, type ChatConversation, type ChatHistorySummary } from '@/lib/chatHistory'
 import { companionScope as scopeFor } from '@/lib/companionGroups'
@@ -29,7 +31,8 @@ import { createToolRecoveryCandidate, createToolRecoveryRetryInput, type ToolRec
 import { describeWorkScope, useWorkSessions, type WorkScope } from '@/lib/workSessions'
 import { DEFAULT_COMPANION_SETTINGS } from '../../../shared/companion'
 import type { AgentEngine, AvatarState, CompanionMessage, CompanionMode, CompanionSettings as Settings, CompanionSnapshot, WorkspaceEntry, OpenCodeFreeCatalogue } from '@shared/companion'
-import { createProxyHeaders, fetchWithHeaderTimeout, readChatCompletionStream, resolveLocalProxyBaseUrl } from '@/lib/chatClient'
+import { fetchWithHeaderTimeout, readChatCompletionStream } from '@/lib/chatClient'
+import { internalInferenceFetch } from '@/lib/internalInferenceClient'
 import '@/components/companion/companion.css'
 
 // xterm loads the first time the Terminal view opens.
@@ -216,16 +219,12 @@ export function Companion({ visible = true }: { visible?: boolean }) {
     } catch (error) { showError(String(error)) }
   }
 
-  const loadModels = async (start: boolean, signal?: AbortSignal) => {
+  const loadModels = async (signal?: AbortSignal) => {
     const version = ++modelLoadVersion.current
     signal?.throwIfAborted()
-    if (start) {
-      const status = await window.electronAPI.proxy.getStatus()
-      if (!status.isRunning && !(await window.electronAPI.proxy.start())) {
-        throw new Error('Unable to start the proxy. Check proxy settings and port availability.')
-      }
-    }
-    const data = await window.electronAPI.proxy.getModels()
+    const response = await internalInferenceFetch('/v1/models', { signal })
+    if (!response.ok) throw new Error(chinese ? `无法加载模型目录（HTTP ${response.status}）` : `Unable to load models (HTTP ${response.status})`)
+    const { data } = await response.json() as { data?: Array<{ id: string }> }
     signal?.throwIfAborted()
     if (!Array.isArray(data) || data.some(item => !item || typeof item.id !== 'string' || !item.id.trim())) {
       throw new Error(chinese ? '模型目录格式无效，请刷新后重试。' : 'Invalid model catalog. Refresh and try again.')
@@ -265,8 +264,8 @@ export function Companion({ visible = true }: { visible?: boolean }) {
       applyConversation(entry, result.settings.model); setHistoryItems(items)
       historyReady.current = true
     }).catch(error => { if (!cancelled) { historyReady.current = true; setHistoryBusy(false); showError(String(error)) } })
-    void loadModels(false).catch(error => { if (!cancelled) showError(String(error)) })
-    // The model-list status below reports failures without hiding available proxy models.
+    void loadModels().catch(error => { if (!cancelled) showError(String(error)) })
+    // The model-list status below reports failures without hiding configured models.
     void loadFreeModels().catch(() => {})
     // Only a Terminal view left open needs the terminal host at startup.
     if (window.electronAPI.terminal && readView() === 'terminal') void window.electronAPI.terminal.get().then(result => {
@@ -298,6 +297,7 @@ export function Companion({ visible = true }: { visible?: boolean }) {
     }
   }, [visible, workspaceAgent.running, workspaceAgent.cancel, showError])
   const workView = mode === 'agent' && !terminalOpen
+  const focusMode = useFocusMode(visible && (workView || terminalOpen), page)
   useEffect(() => {
     if (!continuous || continuousPaused || !chatView || busy || voice.recording || voice.transcribing || voice.speaking || settingsOpen || groupsOpen || foldersOpen || openCodeOpen || historyOpen || !snapshot) return
     const timer = setTimeout(() => { void voice.startRecording() }, 650)
@@ -370,7 +370,7 @@ export function Companion({ visible = true }: { visible?: boolean }) {
       if (!recovery && spoken === undefined) { setInput(''); setAttachment(null) }
       const freeModel = requestModel.startsWith('opencode-free/')
       if (engine === 'claude' && freeModel) throw new Error(copy.claudeModelsOnly)
-      const ids = freeModel ? [] : await loadModels(true, request.signal)
+      const ids = freeModel ? [] : await loadModels(request.signal)
       if (!requestActive()) return
       const model = requestModel || ids[0]
       // Preserve the user's model; checking its route never substitutes another model.
@@ -379,8 +379,8 @@ export function Companion({ visible = true }: { visible?: boolean }) {
       if (!requestActive()) return
       if (!freeModel) {
         if (!peekPreverify(model)?.ok) setModelVerifying(true)
-        const response = await fetch(resolveLocalProxyBaseUrl(config) + '/v1/models/verify', {
-          method: 'POST', signal: AbortSignal.any([request.signal, AbortSignal.timeout((config.requestTimeout || 120000) * 2 + 10000)]), headers: createProxyHeaders(config), body: JSON.stringify({ model, recover: false }),
+        const response = await internalInferenceFetch('/v1/models/verify', {
+          method: 'POST', signal: AbortSignal.any([request.signal, AbortSignal.timeout((config.requestTimeout || 120000) * 2 + 10000)]), body: JSON.stringify({ model, recover: false }),
         })
         const verification = await response.json() as { model?: string; verified?: boolean; skipped?: boolean; recovered?: boolean; error?: { message?: string } }
         if (!requestActive()) return
@@ -472,15 +472,15 @@ export function Companion({ visible = true }: { visible?: boolean }) {
   }): Promise<boolean> => {
     const info = workspace.workspaceId && snapshot ? describeWorkScope(snapshot, workspace) : undefined
     const handoff = info ? '\n\nThe user connected the workspace "' + info.name + '" (' + info.paths.join(', ') + '). You cannot see its files yourself. When answering needs reading, searching or changing files there, or running commands, call ' + HANDOFF_TOOL + ' instead of guessing.' : ''
-    const request = (tools: boolean) => fetchWithHeaderTimeout(resolveLocalProxyBaseUrl(config) + '/v1/chat/completions', {
+    const request = (tools: boolean) => fetchWithHeaderTimeout('/v1/chat/completions', {
       // The user picked this model; routing rules must not replace it.
-      method: 'POST', signal, headers: { ...createProxyHeaders(config), 'X-DailyWorkMate-Model-Selection': 'explicit' },
+      method: 'POST', signal, headers: { 'X-DailyWorkMate-Model-Selection': 'explicit' },
       body: JSON.stringify({ model, stream: true,
         messages: [...(systemPrompt || handoff ? [{ role: 'system', content: systemPrompt + (tools ? handoff : '') }] : []), ...history, { role: 'user', content: prompt }],
         ...(tools ? { tool_choice: 'auto', tools: [{ type: 'function', function: { name: HANDOFF_TOOL,
           description: 'Hand this request to the workspace agent, which can read, search and edit files in the connected workspace and run commands there.',
           parameters: { type: 'object', properties: { reason: { type: 'string', description: 'What needs the workspace' } }, required: ['reason'] } } }] } : {}) }),
-    }, (config.requestTimeout || 120000) + 10000)
+    }, (config.requestTimeout || 120000) + 10000, internalInferenceFetch)
     const read = async (tools: boolean) => {
       let text = '', handedOff = false
       await readChatCompletionStream(await request(tools), delta => {
@@ -508,7 +508,7 @@ export function Companion({ visible = true }: { visible?: boolean }) {
   const refreshModels = async () => {
     setConnecting(true); setError('')
     try {
-      const results = await Promise.allSettled([loadModels(false), loadFreeModels(true)])
+      const results = await Promise.allSettled([loadModels(), loadFreeModels(true)])
       const ids = results[0].status === 'fulfilled' ? results[0].value : []
       const free = results[1].status === 'fulfilled' ? results[1].value.models : []
       if (!ids.length && !free.length) {
@@ -535,7 +535,9 @@ export function Companion({ visible = true }: { visible?: boolean }) {
   const speechEnabled = settings.speechEnabled !== false
   const prepareWorkTerminal = async (model: string) => {
     if (!isVerifiableModel(model)) return
-    await loadModels(true)
+    await loadModels()
+    // An explicit connection/restart must retry a failed route, not replay its two-minute cache.
+    if (peekPreverify(model)?.ok === false) clearPreverifyCache(model)
     // Check only the requested model's route when connecting a work session.
     const result = await preverifyModel(model)
     if (!result.ok) throw new Error(result.error || (chinese ? '模型验证失败，请更换模型后重试。' : 'Model verification failed. Choose another model and retry.'))
@@ -596,7 +598,7 @@ export function Companion({ visible = true }: { visible?: boolean }) {
     setFoldersOpen(false)
   }, showError)
 
-  return <div {...drop.handlers} ref={page} className={'companion-page' + (!chatView ? ' is-work' : '')} data-companion-ready={!!snapshot && !!conversation && !historyBusy}>
+  return <div {...drop.handlers} ref={page} className={'companion-page' + (!chatView ? ' is-work' : '') + (focusMode.active ? ' is-focus-mode' : '')} data-companion-ready={!!snapshot && !!conversation && !historyBusy}>
     {drop.dragging && <div className="folder-drop-overlay" role="status"><Folder size={30} /><span>{chinese ? '松开以设置文件夹用途、权限和分组' : 'Drop to choose folder access and groups'}</span></div>}
     <PageHeader icon={Sparkles} title={copy.title} description={copy.subtitle} actions={<><button type="button" role="switch" aria-checked={speechEnabled} aria-label={chinese ? '朗读回复' : 'Read replies aloud'} className="companion-speech-switch" disabled={savingControl || !snapshot} onClick={() => { void toggleSpeech() }}>{speechEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}{chinese ? speechEnabled ? '朗读：开' : '朗读：关' : speechEnabled ? 'Read aloud on' : 'Read aloud off'}</button>
       {chatView && <Button variant="outline" size="sm" disabled={locked || !snapshot} onClick={() => { void control(() => api.saveSettings({ ...settings, avatarVisible: !avatarVisible })) }}>{avatarVisible ? <EyeOff className="mr-2 h-3.5 w-3.5" /> : <Eye className="mr-2 h-3.5 w-3.5" />}{chinese ? avatarVisible ? '隐藏形象' : '显示形象' : avatarVisible ? 'Hide avatar' : 'Show avatar'}</Button>}
@@ -622,7 +624,7 @@ export function Companion({ visible = true }: { visible?: boolean }) {
       </section>}
       <section className="companion-chat">
         <div className="companion-chat-header"><div className="companion-tabs" role="tablist" aria-label={copy.title} onKeyDown={event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]; const index = buttons.indexOf(document.activeElement as HTMLButtonElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length; event.preventDefault(); buttons[next]?.focus(); buttons[next]?.click() }}>{(['chat', 'agent'] as const).map(item => <button role="tab" aria-selected={!terminalOpen && mode === item} key={item} disabled={busy || voice.transcribing || historyBusy || !conversation} onClick={() => showView(item)}>{item === 'chat' ? <Bot size={14} /> : <Terminal size={14} />}{copy[item]}</button>)}<button role="tab" aria-selected={terminalOpen} disabled={busy || voice.transcribing || historyBusy || !conversation} onClick={() => showView('terminal')}><Terminal size={14} />{chinese ? '终端' : 'Terminal'}</button></div>
-          <div className="flex min-w-0 flex-wrap items-center gap-1"><select className="companion-select companion-model-select" aria-label={copy.model} title={workView && work.active ? (chinese ? '当前会话使用的模型' : 'Model for this session') : undefined} value={shownModel} disabled={terminalOpen || (workView ? !snapshot || !work.ready : locked || !snapshot)} onChange={event => chooseModel(event.target.value)}><option value="" disabled>{copy.model}</option>
+          <div className="companion-session-controls flex min-w-0 flex-wrap items-center gap-1"><select className="companion-select companion-model-select" aria-label={copy.model} title={workView && work.active ? (chinese ? '当前会话使用的模型' : 'Model for this session') : undefined} value={shownModel} disabled={terminalOpen || (workView ? !snapshot || !work.ready : locked || !snapshot)} onChange={event => chooseModel(event.target.value)}><option value="" disabled>{copy.model}</option>
             {shownModel && !models.includes(shownModel) && !freeCatalogue.models.some(item => item.id === shownModel) && <option value={shownModel}>{shownModel}</option>}
             <optgroup label={copy.proxyModels}>{models.map(model => <option key={model} value={model}>{model}</option>)}</optgroup>
             <optgroup label={copy.freeModels}>{freeCatalogue.models.map(model => <option key={model.id} value={model.id}>{model.name} · Free</option>)}</optgroup>
@@ -634,21 +636,28 @@ export function Companion({ visible = true }: { visible?: boolean }) {
             <button className="companion-icon-button" title={copy.newChat} aria-label={copy.newChat} disabled={locked} onClick={() => { void switchConversation(undefined, true) }}><Plus size={17} /></button></>}
             <Button variant="outline" size="sm" className="companion-folder-button" aria-label={copy.folderAccess} title={activeInfo ? activeInfo.paths.join('\n') : copy.folderAccessHint} disabled={!snapshot} onClick={openFolders}><FolderCog size={15} className="mr-1.5 shrink-0" /><span className="truncate">{workView ? folderSummary : String(snapshot?.workspaces.length || 0)}</span></Button>
           </div>
+          {(workView || terminalOpen) && <Button ref={focusMode.button} type="button" variant="outline" size="sm" className="companion-focus-toggle" aria-pressed={focusMode.active}
+            aria-label={chinese ? focusMode.active ? '退出专注模式' : '进入专注模式' : focusMode.active ? 'Exit focus mode' : 'Enter focus mode'}
+            title={chinese ? focusMode.active ? '退出全屏（Esc）' : '全屏显示当前工作区或终端' : focusMode.active ? 'Exit fullscreen (Esc)' : 'Show this workspace or terminal fullscreen'}
+            disabled={focusMode.pending} onClick={() => void focusMode.toggle()}>
+            {focusMode.active ? <Minimize2 size={15} aria-hidden="true" /> : <Maximize2 size={15} aria-hidden="true" />}
+            {chinese ? focusMode.active ? '退出专注' : '专注模式' : focusMode.active ? 'Exit focus' : 'Focus mode'}
+          </Button>}
         </div>
-        {!terminalOpen && !freeModelsLoading && (freeCatalogue.error || freeCatalogue.stale) && <div data-free-models-status role={freeCatalogue.error && !freeModelsLoading ? 'alert' : 'status'} className="flex items-center justify-between gap-3 border-b px-5 py-2 text-xs text-[var(--text-muted)]">
-          <span className="min-w-0 flex-1 break-words">{chinese ? 'OpenCode 免费模型：' : 'OpenCode free models: '}{freeModelsLoading ? (chinese ? '正在加载目录…' : 'Loading the model list…') : freeCatalogue.error ? <ErrorText error={freeCatalogue.error} /> : freeCatalogue.stale ? (chinese ? '目录已过期，请刷新后使用。' : 'The model list has expired. Refresh it before use.') : (chinese ? '当前没有可用的官方免费模型。' : 'No official free models are available in the current list.')}</span>
-          <Button size="sm" variant="outline" className="shrink-0" disabled={freeModelsLoading} aria-label={chinese ? '刷新免费模型' : 'Refresh free models'} onClick={() => { void loadFreeModels(true).catch(failure => showError(failure instanceof Error ? failure.message : String(failure))) }}>{chinese ? '刷新目录' : 'Refresh list'}</Button>
-        </div>}
-        {(workView || chatView) && shownModel.startsWith('opencode-free/') && ((chatView && !workspaceEnabled) || freeModelScope?.access === 'read') && <p data-free-model-limit role="status" className="px-5 py-2 text-xs text-warning">{chatView && !workspaceEnabled
-          ? chinese ? '官方免费服务可能拒绝未连接工作区的聊天。若请求被拒绝，可选择已授权的可写工作区或其他模型。' : 'The official free service may reject chat without a workspace. If rejected, select an authorized writable workspace or another model.'
-          : copy.freeReadOnly}</p>}
+        {focusMode.failed && !chatView && <p className="companion-error" role="alert">{chinese ? '无法切换全屏，请重试专注模式按钮。' : 'Could not change fullscreen. Try the focus mode button again.'}</p>}
+        <CompanionHints key={terminalOpen ? 'terminal' : workView ? 'work' : 'chat'} chinese={chinese} catalogue={terminalOpen ? undefined : freeCatalogue} loading={freeModelsLoading} folderDrop={!chatView}
+          onRefresh={() => { void loadFreeModels(true).catch(() => { /* loadFreeModels already exposes the failure in the folded catalogue status. */ }) }}
+          freeModelHint={(workView || chatView) && shownModel.startsWith('opencode-free/') && ((chatView && !workspaceEnabled) || freeModelScope?.access === 'read')
+            ? chatView && !workspaceEnabled
+              ? chinese ? '官方免费服务可能拒绝未连接工作区的聊天。若请求被拒绝，可选择已授权的可写工作区或其他模型。' : 'The official free service may reject chat without a workspace. If rejected, select an authorized writable workspace or another model.'
+              : copy.freeReadOnly
+            : undefined} />
         {workView && notice && <p className="companion-notice" role="status">{notice}</p>}
         {(workView || terminalOpen) && !browserId && !historyOpen && error && <div className="companion-error" role="alert"><AlertCircle size={15} className="mt-0.5 shrink-0" /><span className="flex-1"><ErrorText error={error} /></span><button aria-label={copy.cancel} onClick={() => setError('')}><X size={13} /></button></div>}
-        {!chatView && <p className="folder-drop-hint">{chinese ? '可从文件管理器拖入文件夹，设置用途、权限和分组。' : 'Drag folders from your file manager to choose access and groups.'}</p>}
         {snapshot && <WorkSessions work={work} snapshot={snapshot} copy={copy} chinese={chinese} models={[...models, ...freeCatalogue.models.map(item => item.id)]} visible={workView} screenReaderMode={!!snapshot.accessibilitySupportEnabled} prepare={prepareWorkTerminal}
           loadHistory={async id => (await companionHistory.get(id))?.messages.filter(message => (message.role === 'user' || message.role === 'assistant') && message.content.trim()).map(({ role, content }) => ({ role: role as 'user' | 'assistant', content }))}
           onFolders={openFolders} onAddFolder={() => { void control(() => api.addWorkspace()) }} onError={showError} />}
-        {(window.electronAPI?.terminal || terminalOpen) && terminalMounted && <div hidden={!terminalOpen}><Suspense fallback={null}><TerminalPanel createdTerminalId={createdTerminalId} chinese={chinese} visible={terminalOpen} workspaces={snapshot?.workspaces || []} model={selectedModel} prepareOpenCode={() => prepareWorkTerminal(selectedModel)} onOpenWork={() => { showView('agent'); if (snapshot?.workspaces[0]) openWorkSession({ workspaceId: snapshot.workspaces[0].id, groupId: '', accessScope: 'group', relativePath: '' }); else openFolders() }} screenReaderMode={!!snapshot?.accessibilitySupportEnabled} /></Suspense></div>}
+        {(window.electronAPI?.terminal || terminalOpen) && terminalMounted && <div className="companion-terminal-panel" hidden={!terminalOpen}><Suspense fallback={null}><TerminalPanel createdTerminalId={createdTerminalId} chinese={chinese} visible={terminalOpen} workspaces={snapshot?.workspaces || []} model={selectedModel} prepareOpenCode={() => prepareWorkTerminal(selectedModel)} onOpenWork={() => { showView('agent'); if (snapshot?.workspaces[0]) openWorkSession({ workspaceId: snapshot.workspaces[0].id, groupId: '', accessScope: 'group', relativePath: '' }); else openFolders() }} screenReaderMode={!!snapshot?.accessibilitySupportEnabled} /></Suspense></div>}
         {chatView && <><div className="border-b px-5 py-3"><ChatWorkspaceAccess chinese={chinese} selection={chatWorkspace} onChange={chooseChatWorkspace} disabled={locked || voice.speaking} snapshot={snapshot || undefined} onSnapshot={applySnapshot}
           collapsible summary={engineLabel(chatEngine)} trailing={<select className="companion-select" aria-label={copy.agentEngine} title={copy.agentEngine} value={chatEngine} disabled={locked || voice.speaking} onChange={event => chooseChatEngine(event.target.value as ChatEngine)}>
             <option value="chat">{engineLabel('chat')}</option><option value="opencode">OpenCode v2</option><option value="claude" disabled={!snapshot?.claudeCode?.available && chatEngine !== 'claude'}>Claude Code{snapshot?.claudeCode?.available ? '' : chinese ? '（未安装）' : ' (not installed)'}</option>
@@ -697,7 +706,7 @@ export function Companion({ visible = true }: { visible?: boolean }) {
     {dropped && snapshot && <FolderDropDialog paths={dropped.paths} target={dropped.target} snapshot={snapshot} chinese={chinese} onClose={() => setDropped(null)} onImported={next => { applySnapshot(next); setFoldersOpen(true) }} onTerminal={id => { setCreatedTerminalId(id); showView('terminal') }} />}
     <Dialog open={foldersOpen} onOpenChange={setFoldersOpen}><DialogContent className="companion-settings max-h-[88vh] max-w-3xl overflow-y-auto">
       <DialogHeader><DialogTitle className="flex items-center gap-2"><FolderCog size={18} />{copy.folderAccess}</DialogTitle><DialogDescription>{copy.folderAccessHint}</DialogDescription></DialogHeader>
-      <AuthorizedFolders onError={showError} embedded chinese={chinese} workspaces={snapshot?.workspaces || []} groups={snapshot?.groups || []} sessionCounts={sessionCounts} disabled={savingControl || !snapshot} onAdd={() => { void control(() => api.addWorkspace()) }} onGroups={() => { setFoldersOpen(false); setContinuous(false); voice.stop(); setGroupsOpen(true) }} onBrowse={id => { setFoldersOpen(false); void openFolder(id, '') }} onAccess={(id, writable) => { if (!window.confirm(chinese ? '更改权限会重连受影响的会话，继续？' : 'Changing permissions reconnects affected sessions. Continue?')) return; void control(() => api.updateWorkspace(id, writable)) }} onRemove={id => { if (!window.confirm(chinese ? '撤销授权会停止受影响的会话，继续？' : 'Removing access stops affected sessions. Continue?')) return; void control(() => api.updateWorkspace(id, null)) }} onWork={openWorkSession} />
+      <AuthorizedFolders onError={showError} embedded chinese={chinese} workspaces={snapshot?.workspaces || []} groups={snapshot?.groups || []} sessionCounts={sessionCounts} disabled={savingControl || !snapshot} onAdd={() => { void control(() => api.addWorkspace()) }} onGroups={() => { setFoldersOpen(false); setContinuous(false); voice.stop(); setGroupsOpen(true) }} onBrowse={id => { setFoldersOpen(false); void openFolder(id, '') }} onAccess={(id, writable) => { if (!window.confirm(chinese ? '更改权限会停止受影响终端及其正在执行的任务，先前任务不会自动继续。是否更改？' : 'Changing permissions stops affected terminals and their running tasks. Those tasks will not resume automatically. Continue?')) return; void control(() => api.updateWorkspace(id, writable)) }} onRemove={id => { if (!window.confirm(chinese ? '撤销授权会停止受影响的会话，继续？' : 'Removing access stops affected sessions. Continue?')) return; void control(() => api.updateWorkspace(id, null)) }} onWork={openWorkSession} />
     </DialogContent></Dialog>
     {settingsOpen && snapshot && <CompanionSettings settings={settings} home={snapshot.home} copy={copy} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />}
     {groupsOpen && snapshot && <WorkspaceGroupsPanel chinese={chinese} groups={snapshot.groups || []} workspaces={snapshot.workspaces} onClose={() => setGroupsOpen(false)} onSave={group => updateGroup(() => api.saveWorkspaceGroup(group))} onDelete={id => updateGroup(() => api.deleteWorkspaceGroup(id))} />}

@@ -1,6 +1,6 @@
 import type { WorkspaceGrant } from '../../shared/companion'
 import path from 'node:path'
-import { OPENCODE_INFERENCE_BASE_URL, type OpenCodeFreeModel } from './opencodeModels.ts'
+import { openCodeFreeModelBaseURL, type OpenCodeFreeModel } from './opencodeModels.ts'
 
 export interface ProxyConnection { proxyHost: string; proxyPort: number; enableApiKey: boolean; apiKeys: Array<{ key: string; enabled: boolean }> }
 export function proxyConnection(config: ProxyConnection) {
@@ -48,7 +48,7 @@ export function buildOpenCodeConfig(grants: WorkspaceGrant[], current: Workspace
         ...(freeModel.interleaved ? { interleaved: freeModel.interleaved } : {}),
         attachment: freeModel.vision, limit: { context: freeModel.contextLimit, output: freeModel.outputLimit },
         cost: { input: 0, output: 0 }, modalities: { input: freeModel.vision ? ['text', 'image'] : ['text'], output: ['text'] },
-        provider: { npm: freeModel.sdk, api: OPENCODE_INFERENCE_BASE_URL },
+        provider: { npm: freeModel.sdk, api: openCodeFreeModelBaseURL(freeModel) },
       } },
     } } : {}), dailyworkmate: {
       npm: '@ai-sdk/openai-compatible', name: 'DailyWorkMate',

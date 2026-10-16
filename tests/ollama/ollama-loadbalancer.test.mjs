@@ -51,3 +51,14 @@ test('healthy aliases route to their actual model and generic unconfigured APIs 
   setState({ providers: [{ id: 'generic', enabled: true, type: 'custom' }], models: {} })
   assert.equal(new LoadBalancer().selectAccount('arbitrary')?.actualModel, 'arbitrary')
 })
+
+test('remembered endpoints never bypass failed model tests or an offline node', () => {
+  for (const provider of [
+    { ...node, status: 'offline' },
+    { ...node, ollamaModels: { model: { endpoint: 'ollama_chat', testStatus: 'failed' } } },
+  ]) {
+    setState({ providers: [provider], models: { node: [{ displayName: 'model', actualModelId: 'model' }] }, mappings: { alias: { actualModel: 'model', preferredProviderId: 'node' } } })
+    assert.equal(new LoadBalancer().selectAccount('model'), null)
+    assert.equal(new LoadBalancer().selectAccount('alias', 'round-robin', 'node'), null)
+  }
+})

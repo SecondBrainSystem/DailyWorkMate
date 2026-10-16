@@ -5,6 +5,7 @@ import { DEFAULT_COMPANION_SETTINGS, validateSettings } from '../../src/shared/c
 import type { AppConfig } from '../../src/renderer/src/types/electron'
 import { pcmWave } from '../../src/renderer/src/lib/localSpeechAudio.ts'
 import { localSpeechSpeaker, LOCAL_SPEECH_VOICES } from '../../src/shared/localSpeech.ts'
+import { installInferenceMock } from '../renderer/inferenceMock.ts'
 
 test('offline voice defaults migrate legacy system speech and preserve explicit API settings', () => {
   assert.equal(DEFAULT_COMPANION_SETTINGS.ttsMode, 'local')
@@ -52,20 +53,20 @@ test('existing speech settings migrate and invalid reading controls are rejected
 
 test('spoken summaries cover every segment without changing the original reply', async () => {
   const requests: Array<{ messages: Array<{ content: string }> }> = []
-  const originalFetch = globalThis.fetch
-  globalThis.fetch = async (_url, init) => {
+  const restore = installInferenceMock(async (_url, init) => {
     requests.push(JSON.parse(String(init?.body)))
-    assert.equal((init?.headers as Record<string, string>)['X-DailyWorkMate-Model-Selection'], 'explicit')
+    assert.equal(new Headers(init.headers).get('x-dailyworkmate-model-selection'), 'explicit')
+    assert.equal(new Headers(init.headers).has('authorization'), false)
     const content = 'Key points ' + requests.length
     return new Response('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\ndata: [DONE]\n\n')
-  }
+  })
   try {
     const original = 'Part A. '.repeat(3500) + 'Final important conclusion.'
     const result = await summarizeForSpeech(original, 'qa', { proxyHost: '127.0.0.1', proxyPort: 12, enableApiKey: false } as AppConfig, new AbortController().signal)
     assert.equal(requests.slice(0, -1).map(request => request.messages[1].content).join(''), original)
     assert.match(requests[requests.length - 1].messages[1].content, /Key points 3/)
     assert.equal(result, 'Key points 4')
-  } finally { globalThis.fetch = originalFetch }
+  } finally { restore() }
 })
 
 
@@ -95,15 +96,14 @@ test('local engine migration preserves an explicitly selected voice and engine',
   assert.throws(() => validateSettings({ ...legacy, localEngine: 'unknown' } as never), /engine/i)
 })
 
-test('completed summaries are reused only for the same reply, model and authenticated proxy', async () => {
+test('completed summaries depend on reply and model, independently of public proxy settings', async () => {
   clearSpeechSummaryCache()
-  const originalFetch = globalThis.fetch
   let calls = 0
-  globalThis.fetch = async () => {
+  const restore = installInferenceMock(async () => {
     calls++
     const content = '结论已经确认，可以继续执行。仍需保留必要的检查步骤。'
     return new Response('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\ndata: [DONE]\n\n')
-  }
+  })
   const config = { proxyHost: '127.0.0.1', proxyPort: 12, enableApiKey: true, apiKeys: [{ key: 'synthetic-account-a', enabled: true }] } as AppConfig
   const source = 'Synthetic source including all caveats. '.repeat(20)
   try {
@@ -113,19 +113,19 @@ test('completed summaries are reused only for the same reply, model and authenti
     await summarizeForSpeech(source, 'different-model', config, new AbortController().signal)
     await summarizeForSpeech(source, 'cache-model', { ...config, apiKeys: [{ ...config.apiKeys[0], key: 'synthetic-account-b' }] }, new AbortController().signal)
     await summarizeForSpeech(source + 'Changed ending.', 'cache-model', config, new AbortController().signal)
-    assert.equal(calls, 4)
-  } finally { globalThis.fetch = originalFetch; clearSpeechSummaryCache() }
+    assert.equal(calls, 3)
+  } finally { restore(); clearSpeechSummaryCache() }
 })
 
 test('only a stable final-summary phrase is offered before completion, without replacing summary semantics', async () => {
   clearSpeechSummaryCache()
-  const originalFetch = globalThis.fetch, encoder = new TextEncoder()
+  const encoder = new TextEncoder()
   let stream!: ReadableStreamDefaultController<Uint8Array>, offered!: (value: string) => void
   const firstPhrase = new Promise<string>(resolve => { offered = resolve })
   const firstText = '首先确认目前的处理已经完成，接下来还需要核对'
   const rest = '剩余步骤与限制。'
   const event = (content: string) => encoder.encode('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\n')
-  globalThis.fetch = async () => new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; controller.enqueue(event(firstText)) } }))
+  const restore = installInferenceMock(async () => new Response(new ReadableStream<Uint8Array>({ start(controller) { stream = controller; controller.enqueue(event(firstText)) } })))
   try {
     let complete = false
     const task = summarizeForSpeech('Long assistant reply. '.repeat(30), 'stream-model', { proxyHost: '127.0.0.1', proxyPort: 12, enableApiKey: false } as AppConfig, new AbortController().signal, { onFirstChunk: offered }).then(text => { complete = true; return text })
@@ -134,23 +134,22 @@ test('only a stable final-summary phrase is offered before completion, without r
     assert.equal(prefix, playbackSpeechChunks(firstText + rest)[0])
     stream.enqueue(event(rest)); stream.enqueue(encoder.encode('data: [DONE]\n\n')); stream.close()
     assert.equal(await task, firstText + rest)
-  } finally { globalThis.fetch = originalFetch; clearSpeechSummaryCache() }
+  } finally { restore(); clearSpeechSummaryCache() }
 })
 
 test('cancelled summaries cannot be cached or replayed by a later reading', async () => {
   clearSpeechSummaryCache()
-  const originalFetch = globalThis.fetch
   let calls = 0
-  globalThis.fetch = async () => {
+  const restore = installInferenceMock(async () => {
     calls++
     const content = '首先确认当前任务已经完成，后续还需保留必要的检查步骤。'
     return new Response('data: ' + JSON.stringify({ choices: [{ delta: { content } }] }) + '\n\ndata: [DONE]\n\n')
-  }
+  })
   const config = { proxyHost: '127.0.0.1', proxyPort: 12, enableApiKey: false } as AppConfig
   const controller = new AbortController(), source = 'Abortable reply. '.repeat(30)
   try {
     await assert.rejects(summarizeForSpeech(source, 'abort-model', config, controller.signal, { onFirstChunk: () => controller.abort() }), error => error instanceof DOMException && error.name === 'AbortError')
     await summarizeForSpeech(source, 'abort-model', config, new AbortController().signal)
     assert.equal(calls, 2)
-  } finally { globalThis.fetch = originalFetch; clearSpeechSummaryCache() }
+  } finally { restore(); clearSpeechSummaryCache() }
 })

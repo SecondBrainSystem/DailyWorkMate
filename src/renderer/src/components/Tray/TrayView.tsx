@@ -6,6 +6,7 @@ import { useProvidersStore } from '@/stores/providersStore'
 import iconsPng from '@/assets/icons/icons.png'
 import { useTranslation } from 'react-i18next'
 import { toast } from '@/hooks/use-toast'
+import type { ProxyStatus } from '@shared/types'
 
 interface ProviderInfo {
   id: string
@@ -28,30 +29,20 @@ export function TrayView() {
   const [selectedProvider, setSelectedProvider] = useState<string | null>(null)
 
   useEffect(() => {
-    const loadProxyStatus = async () => {
-      const status = await window.electronAPI?.proxy?.getStatus?.()
+    let disposed = false
+    const accept = (status: ProxyStatus) => {
+      if (disposed) return
       setProxyRunning(status.isRunning)
-      
-      const config = await window.electronAPI?.config?.get?.()
-      if (config) {
-        setPort(config.proxyPort || 11434)
-        setHost(config.proxyHost || '127.0.0.1')
-      }
+      setPort(status.port)
+      setHost(status.host || '127.0.0.1')
     }
-    
+    const loadProxyStatus = () => { void window.electronAPI.proxy.getStatus().then(accept).catch(error => console.error('[Tray] Proxy status:', error)) }
     loadProxyStatus()
-
-    const unsubscribeProxy = window.electronAPI?.proxy?.onStatusChanged?.((status) => {
-      setProxyRunning(status.isRunning)
-      if (status.port) setPort(status.port)
-    })
-
-    const unsubscribeConfig = window.electronAPI?.config?.onConfigChanged?.((config) => {
-      setPort(config.proxyPort || 11434)
-      setHost(config.proxyHost || '127.0.0.1')
-    })
+    const unsubscribeProxy = window.electronAPI?.proxy?.onStatusChanged?.(accept)
+    const unsubscribeConfig = window.electronAPI?.config?.onConfigChanged?.(loadProxyStatus)
 
     return () => {
+      disposed = true
       unsubscribeProxy?.()
       unsubscribeConfig?.()
     }
@@ -78,17 +69,12 @@ export function TrayView() {
   const loadData = async () => {
     setIsLoading(true)
     try {
-      const [providersData, accountsData, config] = await Promise.all([
+      const [providersData, accountsData] = await Promise.all([
         window.electronAPI?.providers?.getAll?.() || [],
         window.electronAPI?.accounts?.getAll?.() || [],
-        window.electronAPI?.config?.get?.(),
       ])
       setProviders(providersData)
       setAccounts(accountsData)
-      if (config) {
-        setPort(config.proxyPort || 11434)
-        setHost(config.proxyHost || '127.0.0.1')
-      }
     } catch (error) {
       console.error('Failed to load data:', error)
     } finally {

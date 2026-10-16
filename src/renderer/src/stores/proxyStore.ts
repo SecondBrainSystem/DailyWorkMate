@@ -34,12 +34,12 @@ interface ProxyState {
   fetchProxyStatistics: () => Promise<void>
   fetchAppConfig: () => Promise<void>
   saveAppConfig: (config: Partial<AppConfig>) => Promise<boolean>
-  startProxy: (port?: number) => Promise<boolean>
-  stopProxy: () => Promise<boolean>
+  startProxy: (port?: number, host?: string) => Promise<boolean>
+  stopProxy: (port?: number, host?: string) => Promise<boolean>
 }
 
 const DEFAULT_PROXY_CONFIG: ProxyConfig = {
-  port: 32123,
+  port: 11434,
   host: '127.0.0.1',
   timeout: 60000,
   retryCount: 3,
@@ -184,11 +184,11 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
     }
   },
 
-  startProxy: async (port) => {
+  startProxy: async (port, host) => {
     if (!window.electronAPI?.proxy?.start) return false
     try {
       set({ isLoading: true, error: null })
-      const success = await window.electronAPI.proxy.start(port)
+      const success = await window.electronAPI.proxy.start(port, host)
       if (success) {
         await get().fetchProxyStatus()
       }
@@ -201,11 +201,11 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
     }
   },
 
-  stopProxy: async () => {
+  stopProxy: async (port, host) => {
     if (!window.electronAPI?.proxy?.stop) return false
     try {
       set({ isLoading: true, error: null })
-      const success = await window.electronAPI.proxy.stop()
+      const success = await window.electronAPI.proxy.stop(port, host)
       if (success) {
         await get().fetchProxyStatus()
       }

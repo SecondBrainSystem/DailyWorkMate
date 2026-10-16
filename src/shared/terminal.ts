@@ -38,7 +38,8 @@ export function terminalId(value: unknown): string {
 }
 export function validateTerminalPreferences(value: TerminalPreferences): TerminalPreferences {
   if (!value || typeof value.restoreOnStartup !== 'boolean' || typeof value.keepRunningOnExit !== 'boolean') throw new Error('Invalid terminal preferences')
-  return { restoreOnStartup: value.restoreOnStartup, keepRunningOnExit: value.keepRunningOnExit }
+  // Accept the legacy field when reading saved tabs, but never retain ordinary processes on exit.
+  return { restoreOnStartup: value.restoreOnStartup, keepRunningOnExit: false }
 }
 export function validateTerminalCreate(value: TerminalCreateInput): TerminalCreateInput {
   if (!value || !['powershell', 'cmd', 'wsl', 'opencode'].includes(value.kind)) throw new Error('Invalid terminal type')

@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { stopChildProcess } from './processTree'
 import { existsSync } from 'node:fs'
 import { mkdir, writeFile } from 'node:fs/promises'
 import { createHash, randomBytes } from 'node:crypto'
@@ -7,6 +8,7 @@ import { createServer } from 'node:net'
 import axios from 'axios'
 import { boundedText } from '../../shared/companion.ts'
 import type { AgentInput, AgentSnapshot, TerminalInput, WorkspaceGrant, WorkspaceGroup } from '../../shared/companion'
+import type { ModelConnection } from '../../shared/modelConnection'
 import { proxyConnection, type ProxyConnection } from './opencodeConfig.ts'
 import { buildOpenCodeV2Config } from './opencodeV2Config'
 import { OpenCodeV2Client, type OpenCodeV2EventSubscription, type OpenCodeV2LiveEvent } from './opencodeV2'
@@ -23,6 +25,7 @@ type ScopeInput = Pick<AgentInput, 'workspaceId' | 'groupId' | 'accessScope' | '
 /** One guarded `opencode serve` process. Every folder scope and model gets its own. */
 interface Server {
   key: string
+  modelID: string
   /** The grants this server enforces; when the saved ones differ, its clients are stale. */
   access: string
   input: ScopeInput
@@ -57,6 +60,7 @@ export function runtimeExecutable(home: string): string {
 export class OpenCodeService {
   // Servers share one profile (session database), so any session can reopen in a matching scope.
   private servers = new Map<string, Server>()
+  private failedChildren = new Set<ChildProcess>()
   private attachmentServers = new Map<number, Server>()
   private agentServer: Server | null = null
   private current = empty()
@@ -74,7 +78,8 @@ export class OpenCodeService {
   private remoteSessionId = ''
   private nextAttachment = 0
   private terminalQueue: Promise<unknown> = Promise.resolve()
-  constructor(private readonly storage: CompanionStorage, private readonly getProxyConfig: () => ProxyConnection, private readonly bundledExecutable?: string) {}
+  constructor(private readonly storage: CompanionStorage, private readonly getProxyConfig: () => ProxyConnection, private readonly bundledExecutable?: string,
+    private readonly resolveConnection?: (model: string) => Promise<ModelConnection>) {}
   private executable() { return managedRuntimeExecutable(this.storage.home) || (this.bundledExecutable && existsSync(this.bundledExecutable) ? this.bundledExecutable : runtimeExecutable(this.storage.home)) }
   available() { return existsSync(this.executable()) }
   isBusy() { return this.starting || this.stopping || this.current.running || this.attachmentServers.size > 0 }
@@ -97,9 +102,16 @@ export class OpenCodeService {
   }
   private async launch(input: ScopeInput, grants: WorkspaceGrant[], selected: WorkspaceGrant, model: string, attempt: number, freeModel?: OpenCodeFreeModel, allowShell = true, autoApproveCommands = false): Promise<Server> {
     this.assertActive(attempt)
-    const { baseURL, apiKey } = freeModel ? { baseURL: '', apiKey: '' } : proxyConnection(this.getProxyConfig())
+    const connection: ModelConnection | undefined = freeModel ? undefined : this.resolveConnection
+      ? await this.resolveConnection(model)
+      : { ...proxyConnection(this.getProxyConfig()), model, protocol: 'openai', direct: false }
+    this.assertActive(attempt)
+    const { baseURL = '', apiKey = '' } = connection || {}
+    const headerValues = Object.entries(connection?.headers || {}).sort(([left], [right]) => left.localeCompare(right))
+    const headerEnvironment = Object.fromEntries(headerValues.map(([, value], index) => ['DAILYWORKMATE_MODEL_HEADER_' + index, value]))
+    const configConnection = connection ? { ...connection, headers: Object.fromEntries(headerValues.map(([name], index) => [name, '{env:DAILYWORKMATE_MODEL_HEADER_' + index + '}'])) } : undefined
     const data = path.join(this.storage.home, 'data', 'opencode-v2')
-    const identity = JSON.stringify({ config: buildOpenCodeV2Config(grants, selected, model, baseURL, undefined, freeModel, path.join(data, 'servers'), allowShell, autoApproveCommands), apiKey, autoApproveCommands, directory: selected.path, scope: { workspaceId: input.workspaceId, groupId: input.groupId, accessScope: input.accessScope, relativePath: input.relativePath } })
+    const identity = JSON.stringify({ config: buildOpenCodeV2Config(grants, selected, model, baseURL, undefined, freeModel, path.join(data, 'servers'), allowShell, autoApproveCommands, configConnection), apiKey, headers: headerValues, autoApproveCommands, directory: selected.path, scope: { workspaceId: input.workspaceId, groupId: input.groupId, accessScope: input.accessScope, relativePath: input.relativePath } })
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16)
     const existing = this.servers.get(key)
     if (existing?.validated && existing.child && existing.address && !existing.retired) return existing
@@ -110,7 +122,7 @@ export class OpenCodeService {
     if (!this.available()) throw new Error('OpenCode is not installed. Run npm run companion:setup in the project folder.')
     const directory = path.join(data, 'servers', key)
     const guard = path.join(directory, 'guard')
-    const config = buildOpenCodeV2Config(grants, selected, model, baseURL, undefined, freeModel, guard, allowShell, autoApproveCommands)
+    const config = buildOpenCodeV2Config(grants, selected, model, baseURL, undefined, freeModel, guard, allowShell, autoApproveCommands, configConnection)
     await Promise.all([...['config', 'cache', 'data', 'state', 'home', 'tmp'].map(name => path.join(data, name)), directory].map(folder => mkdir(folder, { recursive: true })))
     await installWorkspaceGuardV2(guard, grants, selected.path, allowShell)
     // The exported config contains an environment reference, never the actual proxy key.
@@ -127,7 +139,7 @@ export class OpenCodeService {
     this.assertActive(attempt)
     const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) =>
       ['PATH', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'USERPROFILE', 'HOME'].includes(key.toUpperCase())))
-    const server: Server = { key, access: accessKey(grants, selected, allowShell, autoApproveCommands), input: { workspaceId: input.workspaceId, groupId: input.groupId, accessScope: input.accessScope, relativePath: input.relativePath }, autoApproveCommands,
+    const server: Server = { key, modelID: freeModel?.apiModel || connection?.model || model, access: accessKey(grants, selected, allowShell, autoApproveCommands), input: { workspaceId: input.workspaceId, groupId: input.groupId, accessScope: input.accessScope, relativePath: input.relativePath }, autoApproveCommands,
       child: null, address: '', password: randomBytes(32).toString('hex'), client: null, validated: false, attachments: new Set(), holds: 0, retired: false, exited: Promise.resolve(true) }
     const child = spawn(this.executable(), ['serve', '--hostname', '127.0.0.1', '--port', String(port)], {
       cwd: selected.path, windowsHide: true, shell: false, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'],
@@ -143,6 +155,7 @@ export class OpenCodeService {
         OPENCODE_DISABLE_AUTOUPDATE: 'true',
         OPENCODE_DISABLE_MODELS_FETCH: 'true', OPENCODE_PASSWORD: server.password, OPENCODE_SERVER_PASSWORD: server.password,
         DAILYWORKMATE_PROXY_KEY: apiKey,
+        ...headerEnvironment,
       },
     })
     server.child = child
@@ -166,7 +179,7 @@ export class OpenCodeService {
       child.stderr?.on('data', receive)
       child.once('error', error => finish(new Error('Unable to start OpenCode: ' + error.message)))
       child.once('exit', (code, signal) => {
-        const details = [server.password, apiKey].filter(Boolean).reduce((text, secret) => text.split(secret).join('[redacted]'), output)
+        const details = [server.password, apiKey, ...headerValues.map(([, value]) => value)].filter(Boolean).reduce((text, secret) => text.split(secret).join('[redacted]'), output)
           .replace(/\u001b\[[0-9;]*m/g, '').trim().slice(-1800)
         finish(new Error('OpenCode exited during startup (' + (code ?? signal) + ')' + (details ? ': ' + details : '')))
         if (server.child === child) {
@@ -232,7 +245,7 @@ export class OpenCodeService {
       this.agentServer = server
       const generation = this.generation
       const client = server.client!
-      const model = { providerID: freeModel ? 'opencode' : 'dailyworkmate', modelID: freeModel?.apiModel || input.model }
+      const model = { providerID: freeModel ? 'opencode' : 'dailyworkmate', modelID: server.modelID }
       const publicId = input.sessionId === undefined ? this.current.sessionId : boundedText(input.sessionId, 'OpenCode session', 140)
       let sessionId = input.newSession ? '' : workspaceRemoteSession(publicId, group, sessionScope, legacySessionScope, previousSessionScope)
       if (sessionId) {
@@ -334,12 +347,19 @@ export class OpenCodeService {
     return result
   }
 
-  /** Release one native client; its server stops when nothing else uses it. */
+  /** A display client can rejoin only while its original guarded process remains alive. */
+  terminalAttachmentAlive(attachment: number): boolean {
+    const server = this.attachmentServers.get(attachment)
+    return !!server && !server.retired && server.validated && !!server.client && !!server.address
+      && !!server.child && !server.child.killed && server.child.exitCode == null && server.child.signalCode == null
+  }
+
+  /** Release one Work tab; its server stops when nothing else uses it. */
   async releaseTerminal(attachment: number) {
     const server = this.attachmentServers.get(attachment)
     if (!server || !server.attachments.delete(attachment)) return
     this.attachmentServers.delete(attachment)
-    if (this.idle(server)) { this.shutdownServer(server); await server.exited }
+    if (this.idle(server)) { this.shutdownServer(server); if (!await server.exited) throw new Error('The previous OpenCode process did not stop') }
   }
 
   /**
@@ -387,7 +407,7 @@ export class OpenCodeService {
       try {
         this.assertActive(attempt)
         const client = server.client!
-        const model = { providerID: freeModel ? 'opencode' : 'dailyworkmate', modelID: freeModel?.apiModel || input.model }
+        const model = { providerID: freeModel ? 'opencode' : 'dailyworkmate', modelID: server.modelID }
         const publicId = boundedText(input.sessionId || '', 'OpenCode session', 140)
         let sessionId = input.newSession ? '' : workspaceRemoteSession(publicId, group, sessionScope, legacySessionScope, previousSessionScope)
         if (sessionId) {
@@ -526,9 +546,13 @@ export class OpenCodeService {
   /** Stop every server and resolve once their processes have exited. */
   dispose() {
     this.attempt++
-    for (const server of [...this.servers.values()]) this.shutdownServer(server)
+    const retries = [...this.failedChildren].map(child => stopChildProcess(child, true).then(() => { this.failedChildren.delete(child); return true }))
+    const servers = [...this.servers.values()]
+    for (const server of servers) this.shutdownServer(server)
     this.resetAgent()
-    return Promise.all(closingIn(this.storage.home)).then(() => {})
+    return Promise.all([...retries, ...servers.map(server => server.exited), ...closingIn(this.storage.home)]).then(results => {
+      if (results.includes(false)) throw new Error('An OpenCode process did not stop; retry quitting after it exits')
+    })
   }
   private resetAgent() {
     this.generation++
@@ -561,24 +585,15 @@ export class OpenCodeService {
     const child = server.child
     server.child = null
     if (!child || child.killed) return
-    const closed = new Promise<boolean>(resolve => {
-      if (child.exitCode !== null && child.exitCode !== undefined) { resolve(true); return }
-      const timer = setTimeout(() => resolve(false), 12000)
-      timer.unref()
-      child.once('exit', () => { clearTimeout(timer); resolve(true) })
-      child.once('error', () => { clearTimeout(timer); resolve(true) })
+    const closed = stopChildProcess(child, true).then(() => true, error => {
+      console.error('[Companion] Process cleanup failed:', error)
+      this.failedChildren.add(child)
+      return false
     })
     server.exited = closed
     const home = this.storage.home
     const pending = closingProcesses.get(home) || new Set<Promise<boolean>>()
     closingProcesses.set(home, pending.add(closed))
     void closed.then(() => { pending.delete(closed); if (!pending.size && closingProcesses.get(home) === pending) closingProcesses.delete(home) })
-    if (process.platform === 'win32' && child.pid) {
-      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, shell: false, stdio: 'ignore' })
-      killer.on('error', error => { console.error('[Companion] Process cleanup failed:', error.message); child.kill() })
-    } else if (child.pid) {
-      try { process.kill(-child.pid, 'SIGTERM') }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') console.error('[Companion] Process group cleanup failed:', (error as Error).message) }
-    } else child.kill()
   }
 }

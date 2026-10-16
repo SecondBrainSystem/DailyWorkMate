@@ -1,4 +1,5 @@
-import { spawn, execFile, type ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
+import { stopChildProcess } from './processTree.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
@@ -6,8 +7,9 @@ import os from 'node:os'
 import path from 'node:path'
 import { boundedText, type AgentInput, type AgentSnapshot, type AgentTool, type ClaudeCodeStatus, type TerminalInput, type TerminalSnapshot, type WorkspaceGrant, type WorkspaceGroup } from '../../shared/companion.ts'
 import { proxyConnection, type ProxyConnection } from './opencodeConfig.ts'
+import type { ModelConnection } from '../../shared/modelConnection'
 import { workspaceAccess } from './workspaceGroups.ts'
-import type { TerminalProcess, TerminalSpawn } from './terminalProcess.ts'
+import { closeTerminalProcess, type TerminalProcess, type TerminalSpawn } from './terminalProcess.ts'
 
 /** How to start Claude Code: a native executable, or npm's script run by this app's own Node runtime. */
 export interface ClaudeCodeLaunch { file: string; prefix: string[]; display: string; env?: Record<string, string> }
@@ -41,18 +43,24 @@ export function findClaudeCode(env: NodeJS.ProcessEnv = process.env, platform: N
 
 const MODEL_VARIABLES = ['ANTHROPIC_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_SMALL_FAST_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL']
 /**
- * Point Claude Code at the local proxy, like `ANTHROPIC_BASE_URL=http://localhost:<port>` scripts do.
+ * Connect Claude Code to a native Messages endpoint or the internal compatibility service.
  * Every model role uses the chosen model, and an app-owned config folder keeps the user's own
  * Claude Code login, settings, hooks and history untouched.
  */
-export function claudeCodeEnvironment(base: NodeJS.ProcessEnv, proxy: ProxyConnection, model: string, configDir: string, launch?: ClaudeCodeLaunch): Record<string, string> {
-  const { baseURL, apiKey } = proxyConnection(proxy)
+export function claudeCodeEnvironment(base: NodeJS.ProcessEnv, proxy: ProxyConnection | ModelConnection, model: string, configDir: string, launch?: ClaudeCodeLaunch): Record<string, string> {
+  const connection: ModelConnection = 'baseURL' in proxy ? proxy : { ...proxyConnection(proxy), model, protocol: 'anthropic', direct: false }
+  if (connection.protocol !== 'anthropic') throw new Error('Claude Code requires an Anthropic-compatible model connection')
+  const { baseURL, apiKey } = connection
+  const headers = Object.entries(connection.headers || {})
+  if (headers.some(([name, value]) => !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) || /[\r\n\0]/.test(value))) throw new Error('Invalid Claude Code model headers')
   const inherited = Object.fromEntries(Object.entries(base).filter(([key, value]) => value !== undefined
     && !/^(ANTHROPIC_|CLAUDE_CODE_|CLAUDECODE$|CLAUDE_CONFIG_DIR$|ELECTRON_RUN_AS_NODE$)/i.test(key))) as Record<string, string>
   return {
     ...inherited, ...launch?.env,
-    ANTHROPIC_BASE_URL: baseURL.replace(/\/v1$/, ''), ANTHROPIC_AUTH_TOKEN: apiKey,
-    ...Object.fromEntries(MODEL_VARIABLES.map(name => [name, model])),
+    ANTHROPIC_BASE_URL: baseURL.replace(/\/v1\/?$/, ''),
+    ...(connection.direct ? { ANTHROPIC_API_KEY: apiKey } : { ANTHROPIC_AUTH_TOKEN: apiKey }),
+    ...(headers.length ? { ANTHROPIC_CUSTOM_HEADERS: headers.map(([name, value]) => name + ': ' + value).join('\n') } : {}),
+    ...Object.fromEntries(MODEL_VARIABLES.map(name => [name, connection.model])),
     CLAUDE_CONFIG_DIR: configDir,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1',
   }
@@ -148,11 +156,7 @@ function workspaceInstructions(scope: ClaudeCodeScope, plainChat: boolean, group
     + (scope.writable ? '' : '\nEditing tools are disabled for this scope.') + (scope.commands ? '' : '\nShell commands are disabled for this scope.')
     + '\nInspect files with tools before answering questions about them. Only claim actions confirmed by tool output. Reply in the user\'s language.'
 }
-function killTree(child: ChildProcess) {
-  if (child.exitCode !== null || child.signalCode !== null || !child.pid) return
-  if (process.platform === 'win32') execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], { windowsHide: true }, () => {})
-  else child.kill('SIGTERM')
-}
+const killTree = stopChildProcess
 
 const empty = (): AgentSnapshot => ({ sessionId: '', running: false, text: '', error: '', tools: [], permissions: [] })
 const describeInput = (input: Record<string, unknown> | undefined) => {
@@ -213,8 +217,10 @@ export class ClaudeCodeAgent {
   private readonly storage: Storage
   private readonly getProxyConfig: () => ProxyConnection
   private readonly locate: () => ClaudeCodeLaunch | null
-  constructor(storage: Storage, getProxyConfig: () => ProxyConnection, locate: () => ClaudeCodeLaunch | null = () => findClaudeCode()) {
-    this.storage = storage; this.getProxyConfig = getProxyConfig; this.locate = locate
+  private readonly resolveConnection?: (model: string) => Promise<ModelConnection>
+  constructor(storage: Storage, getProxyConfig: () => ProxyConnection, locate: () => ClaudeCodeLaunch | null = () => findClaudeCode(),
+    resolveConnection?: (model: string) => Promise<ModelConnection>) {
+    this.storage = storage; this.getProxyConfig = getProxyConfig; this.locate = locate; this.resolveConnection = resolveConnection
   }
   get configDir() { return path.join(this.storage.home, 'data', 'claude-code', 'config') }
   status(): ClaudeCodeStatus { const launch = this.locate(); return { available: !!launch, path: launch?.display || '' } }
@@ -245,9 +251,11 @@ export class ClaudeCodeAgent {
         + boundedText(JSON.stringify(history), 'conversation history', 12 * 1024 * 1024) + '\n</previous-conversation>\n\n' + prompt
     }
     await prepareClaudeConfig(this.configDir)
+    const connection = this.resolveConnection ? await this.resolveConnection(model) : this.getProxyConfig()
+    const selectedModel = 'model' in connection ? connection.model : model
     if (attempt !== this.attempt) throw new Error('Agent task cancelled')
-    const args = claudeCodeArgs({ model, scope, sessionId, resume, print: true, systemPrompt: [persona, workspaceInstructions(scope, plainChat, group?.name)].filter(Boolean).join('\n\n') })
-    const child = spawn(launch.file, [...launch.prefix, ...args], { cwd: scope.directory, env: claudeCodeEnvironment(process.env, this.getProxyConfig(), model, this.configDir, launch), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    const args = claudeCodeArgs({ model: selectedModel, scope, sessionId, resume, print: true, systemPrompt: [persona, workspaceInstructions(scope, plainChat, group?.name)].filter(Boolean).join('\n\n') })
+    const child = spawn(launch.file, [...launch.prefix, ...args], { cwd: scope.directory, env: claudeCodeEnvironment(process.env, connection, model, this.configDir, launch), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     this.child = child
     const state = new ClaudeStreamState()
     const publicId = sessionPrefix(sessionScope) + sessionId
@@ -284,12 +292,12 @@ export class ClaudeCodeAgent {
   async stop() {
     this.attempt++
     const child = this.child
-    this.child = null
-    if (child) killTree(child)
+    if (child) await killTree(child)
+    if (this.child === child) this.child = null
     this.current = { ...this.current, running: false, phase: undefined, permissions: [] }
   }
   async reply(_id: string, _allow: boolean) { throw new Error('Claude Code chat does not ask for per-command approval') }
-  dispose() { void this.stop() }
+  dispose() { return this.stop() }
 }
 export const CLAUDE_MISSING = '未找到 Claude Code。请先安装（PowerShell：irm https://claude.ai/install.ps1 | iex，或 npm i -g @anthropic-ai/claude-code），然后重新打开助手。 / Claude Code was not found. Install it, then reopen the assistant.'
 
@@ -303,8 +311,10 @@ export class ClaudeCodeTerminalService {
   private readonly getProxyConfig: () => ProxyConnection
   private readonly loadPty: () => TerminalSpawn
   private readonly locate: () => ClaudeCodeLaunch | null
-  constructor(storage: Storage, getProxyConfig: () => ProxyConnection, loadPty: () => TerminalSpawn, locate: () => ClaudeCodeLaunch | null = () => findClaudeCode()) {
-    this.storage = storage; this.getProxyConfig = getProxyConfig; this.loadPty = loadPty; this.locate = locate
+  private readonly resolveConnection?: (model: string) => Promise<ModelConnection>
+  constructor(storage: Storage, getProxyConfig: () => ProxyConnection, loadPty: () => TerminalSpawn, locate: () => ClaudeCodeLaunch | null = () => findClaudeCode(),
+    resolveConnection?: (model: string) => Promise<ModelConnection>) {
+    this.storage = storage; this.getProxyConfig = getProxyConfig; this.loadPty = loadPty; this.locate = locate; this.resolveConnection = resolveConnection
   }
   get configDir() { return path.join(this.storage.home, 'data', 'claude-code', 'config') }
   has(id: string) { return this.entries.has(id) }
@@ -322,7 +332,7 @@ export class ClaudeCodeTerminalService {
     if (!input.workspaceId) throw new Error('Select an authorized folder for Claude Code')
     const launch = this.locate()
     if (!launch) throw new Error(CLAUDE_MISSING)
-    const entry: Entry = { pty: null, current: { id, sessionId: '', running: false, data: '', cursor: 0, error: '', reset: false }, output: '', cursor: 0, input, access: '' }
+    const entry: Entry = { pty: null, current: { id, sessionId: '', running: false, starting: true, data: '', cursor: 0, error: '', reset: false }, output: '', cursor: 0, input, access: '' }
     this.entries.set(id, entry)
     try {
       const { scope, sessionScope, group } = await resolveScope(this.storage, input)
@@ -331,13 +341,15 @@ export class ClaudeCodeTerminalService {
       const sessionId = saved || randomUUID()
       const resume = !!saved && await transcriptExists(this.configDir, saved)
       await prepareClaudeConfig(this.configDir, [scope.directory, ...scope.grants.map(grant => grant.path)])
+      const connection = this.resolveConnection ? await this.resolveConnection(model) : this.getProxyConfig()
+      const selectedModel = 'model' in connection ? connection.model : model
       const spawnPty = this.loadPty()
       if (this.entries.get(id) !== entry) throw new Error('Terminal startup cancelled')
-      const args = claudeCodeArgs({ model, scope, sessionId, resume, print: false, systemPrompt: workspaceInstructions(scope, false, group?.name) })
+      const args = claudeCodeArgs({ model: selectedModel, scope, sessionId, resume, print: false, systemPrompt: workspaceInstructions(scope, false, group?.name) })
       const terminal = spawnPty(launch.file, [...launch.prefix, ...args], { name: 'xterm-256color', cols: input.cols, rows: input.rows, cwd: scope.directory, useConptyDll: process.platform === 'win32',
-        env: { ...claudeCodeEnvironment(process.env, this.getProxyConfig(), model, this.configDir, launch), TERM: 'xterm-256color', COLORTERM: 'truecolor' } })
+        env: { ...claudeCodeEnvironment(process.env, connection, model, this.configDir, launch), TERM: 'xterm-256color', COLORTERM: 'truecolor' } })
       entry.pty = terminal
-      entry.current = { ...entry.current, sessionId: sessionPrefix(sessionScope) + sessionId, running: true }
+      entry.current = { ...entry.current, sessionId: sessionPrefix(sessionScope) + sessionId, running: true, starting: false }
       terminal.onData(chunk => {
         if (this.entries.get(id) !== entry) return
         entry.output = (entry.output + chunk).slice(-OUTPUT_LIMIT)
@@ -347,7 +359,7 @@ export class ClaudeCodeTerminalService {
         if (entry.pty !== terminal) return
         entry.pty = null
         if (process.platform === 'win32') { try { terminal.kill() } catch { /* already released */ } }
-        entry.current = { ...entry.current, running: false, error: exitCode ? 'Claude Code exited (code ' + exitCode + ')' : '' }
+        entry.current = { ...entry.current, running: false, starting: false, error: exitCode ? 'Claude Code exited (code ' + exitCode + ')' : '' }
       })
       return this.poll(id, 0)
     } catch (error) {
@@ -370,7 +382,9 @@ export class ClaudeCodeTerminalService {
   write(id: string, data: string) {
     const entry = this.entry(id)
     if (typeof data !== 'string' || data.length > 65536) throw new Error('Invalid terminal input')
-    if (!entry.current.running || !entry.pty) throw new Error('Terminal has exited; reconnect to continue')
+    if (!entry.current.running || !entry.pty) throw new Error(entry.current.starting
+      ? 'Claude Code 终端仍在启动，请稍候。 / Claude Code terminal is still starting; wait before typing.'
+      : 'Claude Code 已退出，无法接回原进程。重新启动会创建新进程，先前任务不会自动继续。 / Claude Code has exited. Starting again creates a new process; the previous task will not resume automatically.')
     entry.pty.write(data)
   }
   resize(id: string, cols: number, rows: number) {
@@ -386,7 +400,7 @@ export class ClaudeCodeTerminalService {
       if (now === entry.access) continue
       const terminal = entry.pty
       entry.pty = null
-      entry.current = { ...entry.current, running: false, error: '', accessChanged: true }
+      entry.current = { ...entry.current, running: false, starting: false, error: '', accessChanged: true }
       try { terminal.kill() } catch (error) { console.error('[Claude Code] End terminal after permission change:', error instanceof Error ? error.message : String(error)) }
     }
   }
@@ -398,7 +412,7 @@ export class ClaudeCodeTerminalService {
       this.entries.delete(key)
       const terminal = entry.pty
       entry.pty = null
-      try { terminal?.kill() } catch (error) { console.error('[Claude Code] Close terminal:', error instanceof Error ? error.message : String(error)) }
+      await closeTerminalProcess(terminal)
     }
   }
 }

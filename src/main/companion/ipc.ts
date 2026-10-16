@@ -1,17 +1,20 @@
 import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron'
 import path from 'node:path'
+import { readdir } from 'node:fs/promises'
 import { IpcChannels } from '../ipc/channels'
 import { CompanionStorage } from './storage'
 import { OpenCodeService, runtimeExecutable } from './opencode'
 import { OpenCodeTerminalService } from './terminal'
 import { ClaudeCodeAgent, ClaudeCodeTerminalService } from './claudeCode'
-import { terminalSpawner } from './terminalProcess'
+import { closeAllTerminalProcesses, terminalSpawner } from './terminalProcess'
+import { shouldCloseWorkTerminalsForNavigation } from './terminalLifecycle'
 import { TerminalClient } from '../terminal/client'
 import { managedRuntimeExecutable } from './runtimeUpdates'
 import { OpenCodeRuntimeUpdates } from './runtimeUpdates'
 import { configureOpenCodeFreeModelCache, getOpenCodeFreeModels } from './opencodeModels'
 import { SpeechService } from './speech'
 import { storeManager } from '../store/store'
+import { resolveModelConnection } from '../inference/modelConnection'
 import { listWorkspaceFiles, readWorkspaceFile, resolveWorkspacePath } from './workspaces'
 import { openLocalDirectory } from './folders'
 import type { CompanionAPI, CompanionSettings, CompanionMessage, AgentInput } from '../../shared/companion'
@@ -21,28 +24,48 @@ import { terminalId, validateTerminalCreate, type TerminalState } from '../../sh
 let terminalManager: TerminalClient | undefined
 let resetCompanionData: (() => Promise<void>) | undefined
 export async function clearCompanionData() { await resetCompanionData?.() }
-export function keepTerminalProxyAlive() { return terminalManager?.backgroundProxyRequired() || false }
+let closeCompanion: (() => Promise<void>) | undefined
+export async function shutdownCompanion() { await closeCompanion?.() }
+let companionHome: string | undefined
+export async function companionPsmuxDirectories() {
+  if (!companionHome) return []
+  const directories = [path.join(companionHome, 'data', 'opencode-v2', 'home', '.psmux')]
+  const profiles = path.join(companionHome, 'data', 'terminal', 'opencode')
+  try {
+    for (const directory of await readdir(profiles, { withFileTypes: true })) {
+      if (directory.isDirectory() && /^[a-f0-9-]{32,36}$/.test(directory.name)) directories.push(path.join(profiles, directory.name, 'data', 'opencode-v2', 'home', '.psmux'))
+    }
+  } catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error }
+  return directories
+}
 
-export function registerCompanionHandlers(window: BrowserWindow, ensureProxy: () => Promise<boolean> = async () => false) {
+export function registerCompanionHandlers(window: BrowserWindow) {
   const storage = new CompanionStorage()
+  companionHome = storage.home
   const bundledExecutable = app.isPackaged ? path.join(process.resourcesPath, 'companion-runtime', 'opencode.exe') : runtimeExecutable(storage.home)
-  const agent = new OpenCodeService(storage, () => storeManager.getConfig(), bundledExecutable)
-  const claudeAgent = new ClaudeCodeAgent(storage, () => storeManager.getConfig())
+  const agent = new OpenCodeService(storage, () => storeManager.getConfig(), bundledExecutable, model => resolveModelConnection(model, 'opencode'))
+  const claudeAgent = new ClaudeCodeAgent(storage, () => storeManager.getConfig(), undefined, model => resolveModelConnection(model, 'claude'))
   // Chat turns go to the engine that started them until it finishes.
   let activeEngine: AgentEngine = 'opencode'
   terminalManager = new TerminalClient({ home: path.join(storage.home, 'data', 'terminal'),
     entry: path.join(app.getAppPath(), 'out', 'main', 'terminalHost.js'),
     helper: app.isPackaged ? path.join(process.resourcesPath, 'companion-terminal', 'companion-pty-host.cjs') : path.join(app.getAppPath(), 'scripts', 'companion-pty-host.cjs'),
     ptyModule: app.isPackaged ? path.join(process.resourcesPath, 'companion-terminal', 'node-pty') : path.join(app.getAppPath(), 'node_modules', 'node-pty'),
-    context: async () => {
-      const saved = await storage.get(), config = storeManager.getConfig()
+    context: async models => {
+      const saved = await storage.get()
+      const connections = await Promise.all(models.filter(model => !model.startsWith('opencode-free/')).map(async model => {
+        try { return { model, connection: await resolveModelConnection(model, 'opencode') } }
+        catch (error) {
+          const message = error instanceof Error ? error.message : 'Unable to connect to the selected model'
+          console.error('[Terminal] Model connection:', message)
+          return { model, error: message }
+        }
+      }))
       return { workspaces: saved.workspaces, groups: saved.groups, persona: saved.settings.persona, executable: managedRuntimeExecutable(storage.home) || bundledExecutable,
-        proxy: { proxyHost: config.proxyHost, proxyPort: config.proxyPort, enableApiKey: config.enableApiKey, apiKeys: config.apiKeys.filter(key => key.enabled).slice(0, 1).map(key => ({ key: key.key, enabled: true })) } }
+        modelConnections: Object.fromEntries(connections.flatMap(result => result.connection ? [[result.model, result.connection]] : [])),
+        modelConnectionErrors: Object.fromEntries(connections.flatMap(result => result.error ? [[result.model, result.error]] : [])) }
     } })
   const manager = terminalManager
-  window.on('close', event => {
-    if (manager.backgroundProxyRequired()) { event.preventDefault(); window.hide() }
-  })
   const baseTerminalOperations = manager.api(async () => {
     const selected = await dialog.showOpenDialog(window, { properties: ['openDirectory'] })
     return selected.canceled ? null : selected.filePaths[0] || null
@@ -51,7 +74,6 @@ export function registerCompanionHandlers(window: BrowserWindow, ensureProxy: ()
     const checked = validateTerminalCreate(input)
     if (checked.kind === 'opencode') {
       if (installing) throw new Error('OpenCode is updating; try again shortly')
-      if (!checked.opencode!.model.startsWith('opencode-free/') && !(await ensureProxy())) throw new Error('Unable to start the model proxy. Check proxy settings and port availability.')
     }
     return baseTerminalOperations.create(checked)
   } }
@@ -59,23 +81,23 @@ export function registerCompanionHandlers(window: BrowserWindow, ensureProxy: ()
     ipcMain.removeHandler(channel)
     ipcMain.handle(channel, async (event, ...args: unknown[]) => {
       if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Untrusted terminal request')
+      if (app.isQuitting) throw new Error('软件正在退出。 / The application is quitting.')
       try { return await (terminalOperations[operation as keyof typeof terminalOperations] as (...input: unknown[]) => unknown)(...args) }
       catch (error) { const message = error instanceof Error ? error.message : 'Terminal operation failed'; console.error('[Terminal] ' + operation + ': ' + message); throw new Error(message) }
     })
   }
-  void manager.neededAtStartup().then(needed => needed ? manager.synchronize() : undefined).then(async state => {
-    if (!state) return
-    if (state.sessions.some(session => session.kind === 'opencode' && session.status === 'running' && !session.opencode?.model.startsWith('opencode-free/')) && !(await ensureProxy())) throw new Error('Unable to start the model proxy for restored OpenCode sessions')
-  }).catch(error => console.error('[Terminal] Startup:', error.message))
+  void manager.neededAtStartup().then(needed => needed && !app.isQuitting ? manager.synchronize() : undefined).catch(error => console.error('[Terminal] Startup:', error.message))
   const ptySpawner = () => terminalSpawner(app.isPackaged ? path.join(process.resourcesPath, 'companion-terminal', 'companion-pty-host.cjs') : path.join(app.getAppPath(), 'scripts', 'companion-pty-host.cjs'),
     app.isPackaged ? path.join(process.resourcesPath, 'companion-terminal', 'node-pty') : 'node-pty')
   const terminal = new OpenCodeTerminalService(agent, storage.home, ptySpawner)
-  const claudeTerminal = new ClaudeCodeTerminalService(storage, () => storeManager.getConfig(), ptySpawner)
+  const claudeTerminal = new ClaudeCodeTerminalService(storage, () => storeManager.getConfig(), ptySpawner, undefined, model => resolveModelConnection(model, 'claude'))
   const terminalFor = (id: string) => claudeTerminal.has(id) ? claudeTerminal : terminal
   const refreshAccess = async () => { await terminal.refreshAccess(); await claudeTerminal.refreshAccess() }
   resetCompanionData = async () => { await terminal.close(); await claudeTerminal.close(); await claudeAgent.stop(); const state = await manager.synchronize(); for (const session of state.sessions) await manager.command('close', { id: session.id }); await manager.command('preferences', { preferences: { ...state.preferences, restoreOnStartup: false, keepRunningOnExit: false } }); await manager.detach(); await storage.reset() }
   window.webContents.on('render-process-gone', () => { void terminal.close(); void claudeTerminal.close() })
-  window.webContents.on('did-start-navigation', (_event, _url, _isInPlace, isMainFrame) => { if (isMainFrame) { void terminal.close(); void claudeTerminal.close() } })
+  window.webContents.on('did-start-navigation', (_event, _url, isInPlace, isMainFrame) => {
+    if (shouldCloseWorkTerminalsForNavigation(isInPlace, isMainFrame)) { void terminal.close(); void claudeTerminal.close() }
+  })
   const updates = new OpenCodeRuntimeUpdates({ home: storage.home, bundledExecutable, isBusy: () => agent.isBusy() || manager.openCodeBusy(), beforeActivate: () => agent.dispose() })
   configureOpenCodeFreeModelCache(path.join(storage.home, 'data', 'opencode-models.json'))
   let installing = false
@@ -92,14 +114,25 @@ export function registerCompanionHandlers(window: BrowserWindow, ensureProxy: ()
   }
   const operations: CompanionAPI = {
     openTerminal: async input => {
-      if (input && typeof input === 'object' && agentEngine(input.engine) === 'claude') {
-        if (!(await ensureProxy())) throw new Error('Unable to start the model proxy. Check proxy settings and port availability.')
+      if (!input || typeof input !== 'object') throw new Error('Invalid terminal request')
+      boundedText(input.model, 'model', 300, true)
+      if (agentEngine(input.engine) === 'claude') {
         return claudeTerminal.open(input)
       }
       if (installing) throw new Error('OpenCode is updating; try again shortly')
       return terminal.open(input)
     },
     pollTerminal: async (id, cursor) => terminalFor(id).poll(id, cursor),
+    reconnectTerminal: async (id, cols, rows) => {
+      if (claudeTerminal.has(id)) {
+        const current = claudeTerminal.poll(id, 0)
+        if (current.starting) return current
+        if (!current.running) throw new Error('Claude Code 已退出，无法接回原进程。请重新启动终端；先前任务不会自动继续。 / Claude Code has exited. Start the terminal again; the previous task cannot resume automatically.')
+        claudeTerminal.resize(id, cols, rows)
+        return claudeTerminal.poll(id, current.cursor)
+      }
+      return terminal.reconnect(id, cols, rows)
+    },
     writeTerminal: async (id, data) => terminalFor(id).write(id, data),
     resizeTerminal: async (id, cols, rows) => terminalFor(id).resize(id, cols, rows),
     closeTerminal: async id => { await claudeTerminal.close(id); await terminal.close(id) },
@@ -164,7 +197,6 @@ export function registerCompanionHandlers(window: BrowserWindow, ensureProxy: ()
       const engine = agentEngine(input.engine)
       // One chat task at a time across engines; OpenCode's attached Work tabs do not count.
       if (engine === 'claude' ? (await agent.poll()).running : claudeAgent.isBusy()) throw new Error('An agent task is already running or stopping')
-      if (!input.model.startsWith('opencode-free/') && !(await ensureProxy())) throw new Error('Unable to start the model proxy. Check proxy settings and port availability.')
       const started = engine === 'claude' ? await claudeAgent.start(input) : await agent.start(input)
       activeEngine = engine
       return started
@@ -178,6 +210,7 @@ export function registerCompanionHandlers(window: BrowserWindow, ensureProxy: ()
     ipcMain.removeHandler(channel)
     ipcMain.handle(channel, async (event, ...args: unknown[]) => {
       if (event.sender !== window.webContents || event.senderFrame !== window.webContents.mainFrame) throw new Error('Untrusted companion request')
+      if (app.isQuitting) throw new Error('软件正在退出。 / The application is quitting.')
       try {
         return await (operations[operation as keyof CompanionAPI] as (...input: unknown[]) => unknown)(...args)
       } catch (error) {
@@ -187,13 +220,15 @@ export function registerCompanionHandlers(window: BrowserWindow, ensureProxy: ()
       }
     })
   }
-  const cleanup = () => { stopUpdates(); void terminal.close(); void claudeTerminal.close(); claudeAgent.dispose(); speech.dispose() }
+  let cleaning: Promise<void> | undefined
+  const cleanup = () => cleaning ||= (async () => {
+    stopUpdates(); speech.dispose()
+    const results = await Promise.allSettled([terminal.close(), claudeTerminal.close(), claudeAgent.stop(), manager.detach(), closeAllTerminalProcesses()])
+    const failures = results.filter(result => result.status === 'rejected')
+    if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'Unable to stop all companion processes')
+  })().catch(error => { cleaning = undefined; throw error })
+  closeCompanion = cleanup
   window.on('closed', () => {
-    cleanup()
-    void manager.detach().catch(error => console.error('[Terminal] Window closed:', error.message))
-  })
-  app.on('will-quit', () => {
-    cleanup()
-    void manager.detach().catch(error => console.error('[Terminal] Quit:', error.message))
+    void cleanup().catch(error => console.error('[Companion] Window closed:', error))
   })
 }

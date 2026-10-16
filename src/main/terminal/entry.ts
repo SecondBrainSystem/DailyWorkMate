@@ -57,7 +57,7 @@ async function run() {
       const value = JSON.parse(raw)
       let result: unknown
       switch (value.action) {
-        case 'ping': result = { protocol: 1 }; break
+        case 'ping': result = { protocol: 1, modelConnections: true }; break
         case 'sync': result = await host.sync(value.context as TerminalContext); break
         case 'state': result = host.state(); break
         case 'create': result = await host.create(value.input as TerminalCreateInput); break

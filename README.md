@@ -6,6 +6,14 @@
 
 DailyWorkMate is a desktop companion for everyday work. Talk through a plan, let an AI agent work with folders you authorize, and keep your terminal sessions close at hand. Connect your AI providers or Ollama models and choose the model and working mode for each task.
 
+## Highlights
+
+- **Free models, self-hosted or hosted:** add a local or LAN Ollama node to run open models with no API fees, or use OpenCode's free models directly (the free catalog and quotas are provided by OpenCode and may change).
+- **Pick up where you left off:** terminal tabs, shell types and working directories are saved automatically and restored the next time you start the app — no need to reopen terminals and `cd` back after a reboot.
+- **Workspace history:** authorized folders, folder groups and recent Work sessions are kept, so you can reopen a session and continue.
+- **AI that works in your folders:** run OpenCode or Claude Code against folders you authorize, with model, engine and access scope always visible.
+- **One window:** chat and planning, workspace agents and a real terminal in a single desktop app, plus a local OpenAI-compatible proxy for other clients.
+
 ## Assistant
 
 ![Assistant with a sample daily plan](docs/screenshots/assistant.png)
@@ -29,6 +37,7 @@ Drag one or more local folders from your file manager into Work (or use **Add fo
 | OpenCode | Use a native OpenCode v2 session inside the app; install the optional runtime with the setup script. |
 | Claude Code | Use a locally installed Claude Code CLI through the configured model proxy. |
 | Task visibility | Follow responses, tools, errors and permission requests; stop tasks or change models. |
+| Focus mode | Select **Focus mode** in the upper right to make Work fullscreen while keeping session tabs. Select **Exit focus** or press Esc to return. |
 
 Shell commands run with your operating-system account's permissions. Folder rules constrain agent tools; they are not an OS sandbox. Read-only and subfolder scopes disable commands where the engine cannot enforce a narrower boundary.
 
@@ -39,16 +48,17 @@ Shell commands run with your operating-system account's permissions. Folder rule
 The **Terminal** tab is a real PTY terminal with xterm.js. On Windows it supports **PowerShell, CMD and installed WSL distributions**. Choosing OpenCode opens a folder-bound Work session.
 
 - Keep multiple terminal tabs open and switch views without restarting their processes.
+- Select **Focus mode** in the upper right for a fullscreen terminal. **Exit focus** or Esc restores the layout while the same processes and sessions continue running. Switch between Work and Terminal in fullscreen; returning to Chat exits focus mode.
 - Drop a folder to choose **Open a terminal here** or **Add to authorized workspaces**.
 - Click the folder icon or path in the footer to open the current directory; it follows `cd` changes. Use normal shell history, copy output, and resize the terminal.
-- Restore unclosed tabs at startup. If their processes have exited, restoration starts new shells in the saved directories.
-- Optionally keep terminals running after the app closes and reattach later. Live process continuity lasts while the background host is alive, and does not survive a reboot.
+- Restore unclosed tabs and directories at startup, with a clean screen for each new shell.
+- Quitting waits for ordinary terminals and work processes to stop. If psmux sessions are detected, choose to close them, retain them, or cancel quitting. Minimizing to the tray keeps the app open.
 
 Screenshots show the real application with fictional demonstration data. The terminal capture uses a real local PowerShell process. No personal accounts or conversations are included.
 
 ## Models and integrations
 
-DailyWorkMate includes provider/account management, official API-key presets, Ollama nodes, model mappings, request logs and a local OpenAI-compatible proxy. The separate AI Chat page supports task prompts and translation target languages. OpenCode's free-model catalog is provided dynamically; availability and quotas may change.
+DailyWorkMate includes provider/account management, official API-key presets, Ollama nodes, model mappings, request logs and a local OpenAI-compatible proxy. The separate AI Chat page supports task prompts and translation target languages. OpenCode's free-model catalog is provided dynamically; availability and quotas may change. Catalog errors do not indicate exhausted quota. Catalog status, free-model guidance and folder-drop help live under **Tips & help**, collapsed by default; expand it for details and catalog refresh.
 
 Configure a provider or Ollama node first, then select a model in the assistant. Image, reasoning and tool support depend on the selected provider/model. Speech endpoints are separate from chat endpoints.
 

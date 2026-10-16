@@ -1,6 +1,6 @@
 import test, { before, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readdir, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
@@ -23,11 +23,12 @@ before(async () => {
       export function configure(change) { state = { ...state, ...change }; }
       export function deferred() { let resolve, reject; const promise = new Promise((yes,no) => { resolve=yes; reject=no; }); return {promise,resolve,reject}; }`,
     child: `import { EventEmitter } from 'node:events'; import { state, configure } from 'qa:state';
+      export function execFile() { throw new Error('Unexpected real process cleanup in lifecycle fixture'); }
       export function spawn(command, args, options) {
         const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
         child.killed = false; child.kill = () => { configure({kills:state.kills+1}); child.killed = true; child.emit('exit', 0); };
         if (command === 'taskkill') return child;
-        configure({spawns:state.spawns+1,cwd:options.cwd});
+        configure({spawns:state.spawns+1,cwd:options.cwd,env:options.env});
         queueMicrotask(() => child.stdout.emit('data', Buffer.from('http://127.0.0.1:41234')));
         return child;
       }`,
@@ -52,10 +53,10 @@ before(async () => {
         prompt(id,input,signal) { const pending={...deferred(),id,input,signal}; configure({prompts:[...state.prompts,pending]}); return pending.promise; }
         async abort(id) { configure({interruptions:[...state.interruptions,id]}); if(state.interrupt) await state.interrupt.promise; }
       }`,
-    config: `import { configure } from 'qa:state'; export function buildOpenCodeV2Config(grants,selected,model,_base,worktree,_free,_guard,allowShell=true,autoApproveCommands=false) {
+    config: `import { configure } from 'qa:state'; export function buildOpenCodeV2Config(grants,selected,model,_base,worktree,_free,_guard,allowShell=true,autoApproveCommands=false,connection) {
       const shellEffect=selected.writable && allowShell ? autoApproveCommands ? 'allow' : 'ask' : 'deny';
       const configuration={allowShell,autoApproveCommands,shellEffect}; configure({grants,configuration});
-      return {directory:selected.path,model,worktree,grants,shellPermission:shellEffect}; }`,
+      return {directory:selected.path,model:connection?.model||model,baseURL:connection?.baseURL,protocol:connection?.protocol,headers:connection?.headers,worktree,grants,shellPermission:shellEffect}; }`,
     guard: `export async function installWorkspaceGuardV2() {}`,
     runtime: `export const managedRuntimeExecutable = () => undefined; export async function rollbackManagedRuntime() { throw new Error('Unexpected rollback'); }`,
     models: `export const isOpenCodeFreeModel = () => false; export async function resolveOpenCodeFreeModel() { throw new Error('Unexpected free-model lookup'); }`,
@@ -87,6 +88,41 @@ beforeEach(async () => {
   input = {workspaceId:'qa',model:'qa-model',prompt:'List this folder',newSession:true}
 })
 afterEach(() => service?.dispose())
+
+test('native Work resolves the real endpoint and model without reading external proxy settings', async () => {
+  const home = path.dirname(saved.workspaces[0].path)
+  const connection = { baseURL:'https://models.example.test/v1', apiKey:'synthetic-upstream-key', model:'actual-model', protocol:'openai', direct:true, headers:{'X-Project':'synthetic-project-secret'} }
+  const resolved = []
+  service = new fixtureModule.OpenCodeService({home,get:async()=>saved},
+    () => { throw new Error('External proxy must not be used') }, path.join(home,'opencode.exe'),
+    async model => { resolved.push(model); return connection })
+  const terminal = await service.prepareTerminal(input)
+  assert.equal(terminal.remoteSessionId, 'session_1')
+  assert.deepEqual(resolved, ['qa-model'])
+  assert.deepEqual(fixtureModule.state.terminalModel.model, {providerID:'dailyworkmate',modelID:'actual-model'})
+  assert.equal(fixtureModule.state.env.DAILYWORKMATE_PROXY_KEY, connection.apiKey)
+  assert.equal(fixtureModule.state.env.DAILYWORKMATE_MODEL_HEADER_0, 'synthetic-project-secret')
+  const configuration = await readFile(fixtureModule.state.env.OPENCODE_CONFIG, 'utf8')
+  assert.match(configuration, /https:\/\/models.example.test\/v1/)
+  assert.match(configuration, /DAILYWORKMATE_MODEL_HEADER_0/)
+  assert.doesNotMatch(configuration, /synthetic-upstream-key|synthetic-project-secret|11434/)
+})
+
+test('native Work server identity changes with resolved endpoint, credentials and actual model', async () => {
+  const home = path.dirname(saved.workspaces[0].path)
+  let connection = { baseURL:'https://models.example.test/v1', apiKey:'first-key', model:'first-model', protocol:'openai', direct:true }
+  service = new fixtureModule.OpenCodeService({home,get:async()=>saved},
+    () => { throw new Error('External proxy must not be used') }, path.join(home,'opencode.exe'), async () => connection)
+  await service.prepareTerminal(input)
+  await service.prepareTerminal(input)
+  assert.equal(fixtureModule.state.spawns, 1)
+  for (const change of [{baseURL:'https://other.example.test/v1'}, {apiKey:'second-key'}, {model:'second-model'}]) {
+    connection = {...connection,...change}
+    await service.prepareTerminal(input)
+  }
+  assert.equal(fixtureModule.state.spawns, 4)
+  assert.equal(fixtureModule.state.kills, 0, 'existing tasks retain their own model connection')
+})
 
 test('ordinary chat runs V2 in an isolated readonly directory without inheriting saved workspaces', async () => {
   saved = { ...saved, workspaces:saved.workspaces.map(grant => ({ ...grant, writable:true })),
@@ -383,12 +419,18 @@ test('Work tabs in different folders run side by side, and tabs in one folder sh
   const sibling = await service.prepareTerminal(terminalInput())
   assert.equal(fixtureModule.state.spawns, 2, 'another tab in the same folder joins the existing server')
   assert.notEqual(sibling.remoteSessionId, first.remoteSessionId)
+  assert.equal(service.terminalAttachmentAlive(first.attachment), true)
+  assert.equal(service.terminalAttachmentAlive(sibling.attachment), true)
+  assert.equal(service.terminalAttachmentAlive(other.attachment), true)
   await service.releaseTerminal(first.attachment)
+  assert.equal(service.terminalAttachmentAlive(first.attachment), false)
+  assert.equal(service.terminalAttachmentAlive(sibling.attachment), true)
   assert.equal(fixtureModule.state.kills, 0, 'a server stays while one of its tabs is open')
   await service.releaseTerminal(sibling.attachment)
   assert.equal(fixtureModule.state.kills, 1)
   assert.equal(service.isBusy(), true, 'the other folder keeps running')
   await service.releaseTerminal(other.attachment)
+  assert.equal(service.terminalAttachmentAlive(other.attachment), false)
   assert.equal(fixtureModule.state.kills, 2)
   assert.equal(service.isBusy(), false)
 })
@@ -399,6 +441,8 @@ test('a permission change ends only the affected tabs, which resume their sessio
   const other = await service.prepareTerminal(terminalInput({ workspaceId:'second' }))
   saved = { ...saved, workspaces:saved.workspaces.map(grant => grant.id === 'qa' ? { ...grant, writable:true } : grant) }
   assert.deepEqual([...await service.staleAttachments()], [first.attachment])
+  assert.equal(service.terminalAttachmentAlive(first.attachment), false, 'a retired guard cannot accept a reconnect')
+  assert.equal(service.terminalAttachmentAlive(other.attachment), true)
   await service.releaseTerminal(first.attachment)
   assert.equal(fixtureModule.state.kills, 1, 'the untouched folder keeps its server')
   assert.deepEqual([...await service.staleAttachments()], [], 'nothing else is outdated')

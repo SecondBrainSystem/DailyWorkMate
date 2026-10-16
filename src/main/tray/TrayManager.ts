@@ -12,7 +12,6 @@ import path from 'path'
 import { TrayWindow } from './TrayWindow'
 import { ConfigManager } from '../store/config'
 import { proxyServer } from '../proxy/server'
-import { proxyStatusManager } from '../proxy/status'
 
 const isWindows = process.platform === 'win32'
 const isLinux = process.platform === 'linux'
@@ -202,7 +201,6 @@ export class TrayManager {
           const config = ConfigManager.get()
           void (proxyServer.isRunning() ? proxyServer.stop() : proxyServer.start(config.proxyPort, config.proxyHost)).then(success => {
             this.updateProxyStatus(proxyServer.isRunning())
-            for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('proxy:statusChanged', { isRunning: proxyServer.isRunning(), port: proxyServer.getPort(), host: proxyStatusManager.getHost(), uptime: proxyStatusManager.getRunningStatus().uptime, connections: 0 })
             if (!success) console.error('[Tray] Proxy operation failed')
           }).catch(error => console.error('[Tray] Proxy operation failed:', error))
         },

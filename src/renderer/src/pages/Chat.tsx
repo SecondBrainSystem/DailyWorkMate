@@ -43,6 +43,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import type { AppConfig, SystemPrompt } from '@/types/electron'
+import { internalInferenceFetch } from '@/lib/internalInferenceClient'
 import { cn } from '@/lib/utils'
 import { CHAT_BUILTIN_PROMPTS } from '@/lib/chatPrompts'
 import { TRANSLATION_TARGETS, lastTranslationTarget, rememberTranslationTarget, withTranslationTarget, type TranslationTarget } from '@/lib/translation'
@@ -60,9 +61,7 @@ import { type ChatAttachment, type ChatMessage, type PersistedChatState, loadPer
 import { chatHistoryStorage, createConversation, updateHistorySummaries, type ChatConversation, type ChatHistorySummary } from '@/lib/chatHistory'
 import {
   type ChatApiMessage,
-  createProxyHeaders,
   readChatCompletionStream,
-  resolveLocalProxyBaseUrl,
 } from '@/lib/chatClient'
 
 interface ModelListResponse {
@@ -156,7 +155,6 @@ export function Chat() {
   const [editingPrompt, setEditingPrompt] = useState<SystemPrompt | null>(null)
   const [isSavingPrompt, setIsSavingPrompt] = useState(false)
   const [promptEditorError, setPromptEditorError] = useState('')
-  const [proxyRunning, setProxyRunning] = useState(false)
   const [config, setConfig] = useState<AppConfig | null>(null)
   const [isLoadingModels, setIsLoadingModels] = useState(true)
   const [isSending, setIsSending] = useState(false)
@@ -193,7 +191,7 @@ export function Chat() {
   const modelAvailable = models.some(item => item.id === model)
   const canVerifyModel = modelAvailable || Boolean(model && conversationModelRef.current === model)
   // Checked in the background as soon as a listed model is selected, so sending does not wait for it.
-  const preverify = useModelPreverification(model, modelAvailable && !isLoadingModels && proxyRunning)
+  const preverify = useModelPreverification(model, modelAvailable && !isLoadingModels)
   const modelPrechecked = preverify.model === model && preverify.status === 'ready'
   snapshotRef.current = {
     messages, model, promptId, ...features,
@@ -266,9 +264,6 @@ export function Chat() {
     setError('')
     setModelsError('')
     try {
-      const status = await window.electronAPI.proxy.getStatus()
-      setProxyRunning(status.isRunning)
-
       const [nextConfig, storedPrompts] = await Promise.all([
         window.electronAPI.config.get(),
         window.electronAPI.prompts.getAll(),
@@ -278,17 +273,7 @@ export function Chat() {
       const nextPrompts = storedPrompts.length > 0 ? storedPrompts : CHAT_BUILTIN_PROMPTS
       setPrompts(nextPrompts)
 
-      if (!status.isRunning) {
-        const providers = (await window.electronAPI.providers.getAll()).filter(provider => provider.enabled)
-        const accounts = await window.electronAPI.accounts.getAll()
-        const lists = await Promise.all(providers.filter(provider => accounts.some(account => account.providerId === provider.id && account.status === 'active')).map(async provider => (await window.electronAPI.providers.getEffectiveModels(provider.id)).map(entry => ({ id: entry.displayName, owner: provider.name }))))
-        const catalogue = [...new Map(lists.flat().filter(entry => !entry.id.includes('*')).map(entry => [entry.id, entry])).values()]
-        setModels(catalogue); setModel(current => current || catalogue[0]?.id || '')
-        return
-      }
-      const response = await fetch(`${resolveLocalProxyBaseUrl(nextConfig)}/v1/models`, {
-        headers: createProxyHeaders(nextConfig),
-      })
+      const response = await internalInferenceFetch('/v1/models')
       if (!response.ok) throw new Error(`${t('chat.errors.loadModels')} (HTTP ${response.status})`)
       const payload = await response.json() as ModelListResponse
       const nextModels = (payload.data || []).map(item => ({ id: item.id, owner: item.owned_by || '' }))
@@ -303,7 +288,6 @@ export function Chat() {
 
   useEffect(() => {
     void loadWorkspace()
-    return window.electronAPI.proxy.onStatusChanged(status => setProxyRunning(status.isRunning))
   }, [loadWorkspace])
 
   useEffect(() => {
@@ -393,13 +377,11 @@ export function Chat() {
       const activeConfig = await window.electronAPI.config.get()
       if (abortControllerRef.current !== controller) return
       setConfig(activeConfig)
-      if (!(await window.electronAPI.proxy.getStatus()).isRunning && !(await window.electronAPI.proxy.start())) throw new Error(t('chat.errors.startProxy'))
-      setProxyRunning(true)
       // Only surface the verifying state when the background check has not already passed.
       if (!modelPrechecked) setVerifyingModel(true)
       timeout = window.setTimeout(() => { timedOut = true; controller.abort() }, (activeConfig.requestTimeout || 120000) * 2 + 10000)
-      const verification = await fetch(`${resolveLocalProxyBaseUrl(activeConfig)}/v1/models/verify`, {
-        method: 'POST', headers: createProxyHeaders(activeConfig),
+      const verification = await internalInferenceFetch('/v1/models/verify', {
+        method: 'POST',
         body: JSON.stringify({ model, recover: false }), signal: controller.signal,
       })
       const verified = await verification.json() as {
@@ -446,9 +428,9 @@ export function Chat() {
         ...(requestSystemPrompt ? [{ role: 'system' as const, content: requestSystemPrompt }] : []),
         ...toChatApiMessages(history, sendImages, features.vision === 'auto'),
       ]
-      const response = await fetch(`${resolveLocalProxyBaseUrl(activeConfig)}/v1/chat/completions`, {
+      const response = await internalInferenceFetch('/v1/chat/completions', {
         method: 'POST',
-        headers: { ...createProxyHeaders(activeConfig), 'X-DailyWorkMate-Model-Selection': 'explicit' },
+        headers: { 'X-DailyWorkMate-Model-Selection': 'explicit' },
         body: JSON.stringify({
           model: activeModel, messages: apiMessages, stream: true,
           ...(features.vision === 'auto' ? {} : { enable_vision: features.vision === 'enabled' }),

@@ -14,6 +14,7 @@ import { Settings, Scale, Settings2, MessageSquare } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ModelFeatureConfig } from '@/components/proxy/ModelFeatureConfig'
+import { ProxyListeners } from '@/components/proxy/ProxyListeners'
 
 const TABS = ['basic', 'loadbalance', 'session', 'advanced'] as const
 type ProxyTab = typeof TABS[number]
@@ -34,6 +35,21 @@ export function ProxySettings() {
 
     void fetchAppConfig().finally(() => setConfigReady(true))
     void fetchProxyStatus()
+  }, [])
+
+  useEffect(() => {
+    const unsubscribeStatus = window.electronAPI?.proxy?.onStatusChanged(status => {
+      useProxyStore.getState().setProxyStatus(status)
+    })
+    const unsubscribeConfig = window.electronAPI?.config?.onConfigChanged(config => {
+      const store = useProxyStore.getState()
+      store.setAppConfig(config)
+      store.setProxyConfig({ port: config.proxyPort, host: config.proxyHost || '127.0.0.1' })
+    })
+    return () => {
+      unsubscribeStatus?.()
+      unsubscribeConfig?.()
+    }
   }, [])
 
   const tabs = [
@@ -64,6 +80,7 @@ export function ProxySettings() {
           </div>
         ) : <>
         <TabsContent value="basic" className="mt-6 space-y-6">
+          <ProxyListeners />
           <ProxyConfigForm />
           <ModelFeatureConfig />
         </TabsContent>

@@ -1,3 +1,5 @@
+import { isOllamaModelUsable } from '../../shared/ollamaAvailability'
+
 /**
  * Proxy Service Module - Load Balancer
  * Implements Round Robin and Fill First strategies
@@ -153,7 +155,7 @@ export class LoadBalancer {
       return effectiveModels.some(candidate =>
         (candidate.displayName.toLowerCase() === requested || candidate.displayName.toLowerCase() === actual
           || candidate.actualModelId.toLowerCase() === actual)
-        && Boolean(provider.ollamaModels?.[candidate.actualModelId]?.endpoint))
+        && isOllamaModelUsable(provider, provider.ollamaModels?.[candidate.actualModelId]))
     }
 
     const normalizedModel = model.toLowerCase()

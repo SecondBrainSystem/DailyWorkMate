@@ -80,7 +80,7 @@ export function WorkSessions({ work, snapshot, copy, chinese, visible, screenRea
   }, [work.open, snapshot])
   const openNew = () => { if (full) onError(copy.workSessionLimit); else setCreating(true) }
   const closeSession = (id: string) => {
-    if (['starting', 'running'].includes(phases[id] || '') && !window.confirm(chinese ? '关闭会话会结束正在执行的任务，继续？' : 'Closing this session ends its running task. Continue?')) return
+    if (['starting', 'running', 'recovering', 'disconnected'].includes(phases[id] || '') && !window.confirm(chinese ? '关闭会话会结束正在执行的任务，继续？' : 'Closing this session ends its running task. Continue?')) return
     work.close(id)
   }
   const reopen = (id: string) => { if (!work.reopen(id)) onError(copy.workSessionLimit); else setRecentOpen(false) }
@@ -99,7 +99,7 @@ export function WorkSessions({ work, snapshot, copy, chinese, visible, screenRea
   const panel = (session: WorkSession) => {
     const info = describeWorkScope(snapshot, session)
     if (!snapshot) return <div className="work-panel" role="status"><LoaderCircle size={22} className="animate-spin" /></div>
-    if (session.engine === 'claude' ? !snapshot.claudeCode?.available : !snapshot.runtimeAvailable) return <div className="work-panel"><TerminalIcon size={28} /><p>{session.engine === 'claude' ? copy.claudeMissing : copy.runtimeMissing}</p></div>
+    if (!phases[session.id] && (session.engine === 'claude' ? !snapshot.claudeCode?.available : !snapshot.runtimeAvailable)) return <div className="work-panel"><TerminalIcon size={28} /><p>{session.engine === 'claude' ? copy.claudeMissing : copy.runtimeMissing}</p></div>
     if (session.engine === 'claude' && session.model.startsWith('opencode-free/')) return <div className="work-panel"><TerminalIcon size={28} /><p>{copy.claudeModelsOnly}</p></div>
     if (info.missing) return <div className="work-panel"><FolderCog size={28} /><p>{copy.folderMissing}</p><div className="work-panel-actions">
       <Button size="sm" variant="outline" onClick={onFolders}><FolderCog size={14} className="mr-2" />{copy.folderAccess}</Button>

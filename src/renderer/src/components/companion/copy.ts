@@ -10,7 +10,7 @@ export const companionCopy = {
     greeting: '今天，我们从哪里开始？',
     placeholder: '想说什么？Enter 发送，Shift + Enter 换行', agentPlaceholder: '告诉我希望在工作区中完成什么…',
     send: '发送', stop: '停止', record: '开始说话', finishRecord: '结束录音', continuous: '连续语音', autoSpeak: '自动朗读',
-    newChat: '新对话', refresh: '刷新模型', model: '选择模型', connect: '连接转发服务', noModels: '请先在供应商页面添加账号或配置本地模型。',
+    newChat: '新对话', refresh: '刷新模型', model: '选择模型', connect: '加载模型', noModels: '请先在供应商页面添加账号或配置本地模型。',
     folders: '授权文件夹', addFolder: '添加文件夹', noFolders: '添加一个文件夹，让助手可以读取文件或处理工作。',
     readOnly: '只读', writable: '可编辑', remove: '撤销', browse: '浏览文件', parent: '上一级', attach: '加入对话',
     noFiles: '此目录没有可显示的文件。最多显示 500 项。', fileNote: '支持 512 KiB 以内的 UTF-8 文本。文件内容将在发送后交给所选模型。',
@@ -44,7 +44,7 @@ export const companionCopy = {
     newSessionHere: '新建会话', newGroupSession: '用整个分组新建会话', usedAt: '上次使用', reconnect: '重新连接', sessionEnded: '会话已结束',
     terminalOptions: '终端选项', on: '开', off: '关',
     agentEngine: '执行引擎', claudeMissing: '未找到 Claude Code。安装后重新打开助手：PowerShell 运行 irm https://claude.ai/install.ps1 | iex', claudeModelsOnly: 'Claude Code 只能使用已配置模型，请在上方换一个模型。',
-    waiting: '等待模型回复…', loading: '正在准备助手…', connectionReady: '已连接转发服务', error: '操作未完成',
+    waiting: '等待模型回复…', loading: '正在准备助手…', connectionReady: '模型目录已加载', error: '操作未完成',
   },
   en: {
     title: 'Assistant', subtitle: 'A little conversation. A little progress.', chat: 'Chat', agent: 'Work', settings: 'Character & voice',
@@ -57,7 +57,7 @@ export const companionCopy = {
     greeting: 'Where shall we start today?',
     placeholder: 'Say something… Enter to send, Shift + Enter for a new line', agentPlaceholder: 'What would you like me to do in this workspace?',
     send: 'Send', stop: 'Stop', record: 'Start speaking', finishRecord: 'Finish recording', continuous: 'Voice conversation', autoSpeak: 'Read replies aloud',
-    newChat: 'New chat', refresh: 'Refresh models', model: 'Choose a model', connect: 'Connect proxy', noModels: 'Add an account or configure a local model on the Providers page first.',
+    newChat: 'New chat', refresh: 'Refresh models', model: 'Choose a model', connect: 'Load models', noModels: 'Add an account or configure a local model on the Providers page first.',
     folders: 'Authorized folders', addFolder: 'Add folder', noFolders: 'Add a folder so your assistant can read files or work on a task.',
     readOnly: 'Read only', writable: 'Can edit', remove: 'Revoke', browse: 'Browse files', parent: 'Parent folder', attach: 'Add to chat',
     noFiles: 'No files to display. Up to 500 entries are shown.', fileNote: 'UTF-8 text up to 512 KiB. Attached contents are sent to the selected model when you send your message.',
@@ -91,7 +91,7 @@ export const companionCopy = {
     newSessionHere: 'New session', newGroupSession: 'New session with whole group', usedAt: 'Last used', reconnect: 'Reconnect', sessionEnded: 'Session ended',
     terminalOptions: 'Terminal options', on: 'On', off: 'Off',
     agentEngine: 'Agent', claudeMissing: 'Claude Code was not found. Install it, then reopen the assistant: in PowerShell run irm https://claude.ai/install.ps1 | iex', claudeModelsOnly: 'Claude Code uses configured models only. Choose another model above.',
-    waiting: 'Waiting for a reply…', loading: 'Getting your assistant ready…', connectionReady: 'Connected to proxy', error: 'Could not complete the action',
+    waiting: 'Waiting for a reply…', loading: 'Getting your assistant ready…', connectionReady: 'Model catalog loaded', error: 'Could not complete the action',
   },
 }
 export type CompanionCopy = typeof companionCopy.en

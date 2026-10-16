@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { createProxyHeaders, resolveLocalProxyBaseUrl } from '@/lib/chatClient'
+import { internalInferenceFetch } from './internalInferenceClient.ts'
 
 /**
  * Checks routing eligibility without running inference. Actual response tests
@@ -20,7 +20,7 @@ const FAILED_TTL = 2 * 60_000 // matches the proxy's failure cache
 const cache = new Map<string, { ok: boolean; skipped?: boolean; error?: string; expiresAt: number }>()
 const inFlight = new Map<string, Promise<{ ok: boolean; skipped?: boolean; error?: string }>>()
 
-/** Models that are not served through the local proxy and cannot be verified there. */
+/** Native OpenCode models are verified by their runtime rather than our provider router. */
 export function isVerifiableModel(model: string): boolean {
   return Boolean(model) && !model.startsWith('opencode-free/')
 }
@@ -52,9 +52,8 @@ export function preverifyModel(model: string): Promise<{ ok: boolean; skipped?: 
   const request = (async () => {
     try {
       const config = await window.electronAPI.config.get()
-      const response = await fetch(`${resolveLocalProxyBaseUrl(config)}/v1/models/verify`, {
+      const response = await internalInferenceFetch('/v1/models/verify', {
         method: 'POST',
-        headers: createProxyHeaders(config),
         body: JSON.stringify({ model, recover: false }),
         signal: AbortSignal.timeout((config.requestTimeout || 120000) * 2 + 10000),
       })
@@ -64,7 +63,7 @@ export function preverifyModel(model: string): Promise<{ ok: boolean; skipped?: 
       cache.set(model, { ...result, expiresAt: Date.now() + (ok ? READY_TTL : FAILED_TTL) })
       return result
     } catch (error) {
-      // Network errors (proxy not running yet) are not cached, so the next selection retries.
+      // Transient bridge or provider errors are not cached, so the next selection retries.
       return { ok: false, error: error instanceof Error ? error.message : String(error) }
     } finally {
       inFlight.delete(model)

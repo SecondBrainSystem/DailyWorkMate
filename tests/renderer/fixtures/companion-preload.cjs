@@ -31,7 +31,49 @@ const freeCatalogue = {
   models: [{ id: 'opencode-free/qa-free', apiModel: 'qa-free', name: 'QA Free Native', contextLimit: 128000, outputLimit: 16000, toolCall: true }],
   updatedAt: 1791377132482, stale: false,
 }
+// QA-only adapter: the private deterministic HTTP fixture supplies the inference IPC contract.
+function createInferenceFixture(getPort, record = () => {}, catalogue) {
+  const listeners = new Set(), pending = new Map()
+  const emit = event => { for (const listener of [...listeners]) listener(event) }
+  return {
+    onData(listener) { listeners.add(listener); return () => listeners.delete(listener) },
+    async cancel(id) { pending.get(id)?.abort(); pending.delete(id) },
+    async request(input) {
+      record('inference:' + input.path, input.body)
+      if (input.path === '/v1/models' && catalogue) return { status: 200, headers: { 'content-type': 'application/json' }, body: { data: catalogue() } }
+      const controller = new AbortController()
+      pending.set(input.id, controller)
+      try {
+        const response = await fetch('http://127.0.0.1:' + await getPort() + input.path, {
+          method: input.method, headers: { 'Content-Type': 'application/json', ...input.headers },
+          ...(input.body === undefined ? {} : { body: JSON.stringify(input.body) }), signal: controller.signal,
+        })
+        const headers = Object.fromEntries(response.headers)
+        if (!response.ok || input.path !== '/v1/chat/completions') {
+          const raw = await response.text(); let body = raw
+          try { body = JSON.parse(raw) } catch {}
+          pending.delete(input.id)
+          return { status: response.status, headers, body }
+        }
+        void (async () => {
+          const reader = response.body.getReader(), decoder = new TextDecoder()
+          try {
+            for (;;) {
+              const { done, value } = await reader.read()
+              emit({ id: input.id, data: decoder.decode(value, { stream: !done }), ...(done ? { done: true } : {}) })
+              if (done) break
+            }
+          } catch (error) { if (!controller.signal.aborted) emit({ id: input.id, error: String(error) }) }
+          finally { pending.delete(input.id); reader.releaseLock() }
+        })()
+        return { status: response.status, headers, stream: true }
+      } catch (error) { pending.delete(input.id); throw error }
+    },
+  }
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
+  inference: createInferenceFixture(async () => port, record, () => proxyModels),
   getPathForFile: file => webUtils.getPathForFile(file),
   ...(process.argv.includes('--unified-terminal') ? { terminal: Object.fromEntries(['get','create','select','close','restart','poll','write','resize','savePreferences','pickDirectory'].map(name => [name, (...args) => ipcRenderer.invoke('qa:terminal:' + name, ...args)])) } : {}),
   app: { openExternal: async url => { record('openExternal', url); return true } },

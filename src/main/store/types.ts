@@ -239,6 +239,8 @@ export interface AppConfig {
   proxyPortDefaultMigrated?: boolean
   /** Proxy service bind address */
   proxyHost: string
+  /** Additional API endpoints, sharing models, credentials and routing with the primary. */
+  additionalProxyListeners?: import('../../shared/types').ProxyListenerConfig[]
   /** Load balance strategy */
   loadBalanceStrategy: LoadBalanceStrategy
   /** Model mapping configuration */
@@ -849,9 +851,10 @@ export function sanitizeDeepSeekModelOverrides(
 export const DEFAULT_CONFIG: AppConfig = {
   language: 'zh-CN',
   modelFeatureDefaults: DEFAULT_MODEL_FEATURES,
-  proxyPort: 32123,
+  proxyPort: 11434,
   proxyPortDefaultMigrated: true,
   proxyHost: '127.0.0.1',
+  additionalProxyListeners: [],
   loadBalanceStrategy: 'round-robin',
   modelMappings: createDefaultModelMappings(),
   ollamaRouting: {

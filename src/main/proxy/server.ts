@@ -8,16 +8,24 @@ import Koa, { type Context, type Next } from 'koa'
 import Router from '@koa/router'
 import bodyParser from 'koa-bodyparser'
 import { Server as HttpServer } from 'http'
-import type { Socket } from 'net'
+import { isIP, type Socket } from 'net'
 import routes from './routes'
 import managementRoutes from './routes/management'
 import { proxyStatusManager } from './status'
 import { storeManager } from '../store/store'
-import { sessionManager } from './sessionManager'
 import { closeHttpServer } from './serverLifecycle'
 import { isInternalProxyKey } from './internalAuth'
+import { describeProxyListenError } from './listenError'
 
 const SLOW_REQUEST_THRESHOLD_MS = 1500
+
+interface ActiveListener {
+  readonly server: HttpServer
+  readonly port: number
+  readonly host: string
+  readonly startedAt: number
+  readonly connections: ReadonlySet<Socket>
+}
 
 /**
  * Proxy Server Class
@@ -25,10 +33,11 @@ const SLOW_REQUEST_THRESHOLD_MS = 1500
 export class ProxyServer {
   private app: Koa
   private router: Router
-  private server: HttpServer | null = null
-  private connections = new Set<Socket>()
-  private stopPromise: Promise<boolean> | null = null
-  private port: number = 32123
+  private listeners: readonly ActiveListener[] = []
+  private lifecycleQueue: Promise<void> = Promise.resolve()
+  private sharedLifecycleActive = false
+  private lastError: string | undefined
+  private port: number = 11434
   private host: string = '127.0.0.1'
 
   constructor() {
@@ -46,9 +55,17 @@ export class ProxyServer {
   private statusListeners = new Set<(running: boolean) => void>()
   subscribeStatus(listener: (running: boolean) => void): () => void { this.statusListeners.add(listener); return () => { this.statusListeners.delete(listener) } }
   private broadcastStatus() {
-    const status = { ...proxyStatusManager.getRunningStatus(), isRunning: this.isRunning(), port: this.port, host: this.host, connections: proxyStatusManager.getStatistics().activeConnections }
-    for (const listener of this.statusListeners) listener(this.isRunning())
-    for (const window of BrowserWindow.getAllWindows()) if (!window.isDestroyed()) window.webContents.send('proxy:statusChanged', status)
+    const status = this.getStatus()
+    for (const listener of this.statusListeners) {
+      try { listener(status.isRunning) } catch (error) {
+        storeManager.addLog('error', `Proxy status subscriber failed: ${String(error)}`)
+      }
+    }
+    for (const window of BrowserWindow.getAllWindows()) {
+      try { if (!window.isDestroyed()) window.webContents.send('proxy:statusChanged', status) } catch (error) {
+        storeManager.addLog('error', `Proxy status notification failed: ${String(error)}`)
+      }
+    }
   }
   private setupMiddleware(): void {
     this.app.use(async (ctx, next) => {
@@ -310,121 +327,179 @@ export class ProxyServer {
     })
   }
 
-  /**
-   * Start server
-   */
-  async start(port?: number, host?: string): Promise<boolean> {
-    if (this.server) {
-      return false
-    }
+  // Serialize lifecycle changes so overlapping UI/workspace requests cannot bind
+  // twice, stop a replacement listener, or tear down shared sessions mid-start.
+  private enqueueLifecycle(operation: () => Promise<boolean>): Promise<boolean> {
+    const result = this.lifecycleQueue.then(async () => {
+      this.lastError = undefined
+      try { return await operation() } catch (error) {
+        return this.fail(`Proxy operation failed: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    })
+    this.lifecycleQueue = result.then(() => undefined, () => undefined)
+    return result
+  }
 
-    this.port = port || proxyStatusManager.getPort()
-    this.host = host || proxyStatusManager.getHost()
+  private fail(message: string): false {
+    this.lastError = message
+    storeManager.addLog('error', message)
+    return false
+  }
+
+  private validateEndpoint(port: number, host: string): { port: number; host: string } | undefined {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      this.fail('Proxy port must be an integer between 1 and 65535')
+      return undefined
+    }
+    if (typeof host !== 'string') {
+      this.fail('Proxy host must be an IP address or hostname')
+      return undefined
+    }
+    const normalizedHost = host.trim().toLowerCase().replace(/^\[([^\]]+)\]$/, '$1')
+    const validHostname = normalizedHost.length <= 253 && normalizedHost.split('.').every(label =>
+      /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))
+    if (!isIP(normalizedHost) && !validHostname) {
+      this.fail('Proxy host must be an IP address or hostname without a URL scheme or port')
+      return undefined
+    }
+    return { port, host: normalizedHost }
+  }
+
+  private setPrimary(port: number, host: string): void {
+    this.port = port
+    this.host = host
+    proxyStatusManager.updateConfig({ port, host })
+  }
+
+  private removeListener(server: HttpServer): void {
+    const removed = this.listeners.find(listener => listener.server === server)
+    if (!removed) return
+    this.listeners = this.listeners.filter(listener => listener.server !== server)
+    if (removed.port === this.port && removed.host === this.host && this.listeners.length) {
+      const next = this.listeners[0]
+      this.setPrimary(next.port, next.host)
+    }
+    if (!this.listeners.length && this.sharedLifecycleActive) {
+      this.sharedLifecycleActive = false
+      proxyStatusManager.stop()
+    }
+    this.broadcastStatus()
+  }
+
+  /** Start an additional endpoint, or succeed if that endpoint is already running. */
+  start(port?: number, host?: string): Promise<boolean> {
+    return this.enqueueLifecycle(() => this.startListener(port, host))
+  }
+
+  private async startListener(port?: number, host?: string): Promise<boolean> {
     const config = storeManager.getConfig()
-    if (!['127.0.0.1', 'localhost', '::1'].includes(this.host) && (!config.enableApiKey || !config.apiKeys.some(key => key.enabled))) {
-      storeManager.addLog('error', 'Enable API key authentication before exposing the proxy to the network')
-      return false
+    const requestedPort = port === undefined ? config.proxyPort : port
+    const requestedHost = host === undefined ? config.proxyHost : host
+    const endpoint = this.validateEndpoint(requestedPort === undefined ? this.port : requestedPort, requestedHost === undefined ? this.host : requestedHost)
+    if (!endpoint) return false
+    if (this.listeners.some(listener => listener.port === endpoint.port && listener.host === endpoint.host && listener.server.listening)) return true
+    if (!['127.0.0.1', 'localhost', '::1'].includes(endpoint.host) &&
+        (!config.enableApiKey || !config.apiKeys?.some(key => key.enabled && key.key?.trim()))) {
+      return this.fail('Enable API key authentication and add an enabled key before exposing the proxy to the network')
     }
-    if (!Number.isInteger(this.port) || this.port < 1 || this.port > 65535) return false
-    
-    return new Promise((resolve) => {
-      try {
-        const server = this.app.listen(this.port, this.host, () => {
-          sessionManager.initialize()
-          const config = storeManager.getConfig()
-          proxyStatusManager.updateConfig({ timeout: config.requestTimeout, retryCount: config.retryCount })
-          proxyStatusManager.start()
-          proxyStatusManager.setPort(this.port)
-          proxyStatusManager.setHost(this.host)
+
+    return new Promise(resolve => {
+      const server = new HttpServer(this.app.callback())
+      server.on('connection', connection => {
+        this.listeners = this.listeners.map(listener => listener.server === server
+          ? { ...listener, connections: new Set([...listener.connections, connection]) } : listener)
+        connection.once('close', () => {
+          this.listeners = this.listeners.map(listener => listener.server === server
+            ? { ...listener, connections: new Set([...listener.connections].filter(socket => socket !== connection)) } : listener)
+        })
+      })
+      server.on('close', () => this.removeListener(server))
+      const handleListenError = async (error: unknown): Promise<void> => {
+        const message = await describeProxyListenError(error, endpoint, {
+          language: config.language,
+          onDiagnosticFailure: failure => storeManager.addLog('warn', `Unable to inspect Windows excluded TCP ports: ${String(failure)}`),
+        })
+        resolve(this.fail(message))
+      }
+      server.on('error', (error: NodeJS.ErrnoException) => { void handleListenError(error) })
+      server.once('listening', () => {
+        try {
+          if (!this.sharedLifecycleActive) {
+            proxyStatusManager.updateConfig({ timeout: config.requestTimeout, retryCount: config.retryCount })
+            proxyStatusManager.start()
+            this.sharedLifecycleActive = true
+          }
+          if (!this.listeners.length) this.setPrimary(endpoint.port, endpoint.host)
+          this.listeners = [...this.listeners, { ...endpoint, server, startedAt: Date.now(), connections: new Set<Socket>() }]
           this.broadcastStatus()
-
-          storeManager.addLog('info', `Proxy server started successfully, listening on ${this.host}:${this.port}`)
-
+          storeManager.addLog('info', `Proxy server started successfully, listening on ${endpoint.host}:${endpoint.port}`)
           resolve(true)
-        })
-        this.server = server
-
-        server.on('connection', connection => {
-          this.connections.add(connection)
-          connection.once('close', () => this.connections.delete(connection))
-        })
-
-        server.on('error', (err: NodeJS.ErrnoException) => {
-          if (err.code === 'EADDRINUSE') {
-            storeManager.addLog('error', `Port ${this.port} is already in use`)
-          } else {
-            storeManager.addLog('error', `Server error: ${err.message}`)
-          }
-          if (this.server === server) {
-            this.server = null
-          }
-          resolve(false)
-        })
-
-        server.on('close', () => {
-          if (this.server === server) {
-            this.server = null
-          }
-        })
-      } catch (error) {
-        storeManager.addLog('error', `Failed to start server: ${error instanceof Error ? error.message : 'Unknown error'}`)
-        resolve(false)
+        } catch (error) {
+          server.close()
+          resolve(this.fail(`Failed to initialize proxy listener: ${error instanceof Error ? error.message : String(error)}`))
+        }
+      })
+      try { server.listen(endpoint.port, endpoint.host) } catch (error) {
+        void handleListenError(error)
       }
     })
   }
 
-  /**
-   * Stop server
-   */
-  async stop(): Promise<boolean> {
-    if (this.stopPromise) {
-      return this.stopPromise
-    }
-
-    if (!this.server) {
-      return false
-    }
-
-    const server = this.server
-    sessionManager.destroy()
-
-    this.stopPromise = (async () => {
-      try {
-        await closeHttpServer(server, this.connections)
-        if (this.server === server) {
-          this.server = null
-        }
-        this.connections.clear()
-        proxyStatusManager.stop()
-    this.broadcastStatus()
-
-        storeManager.addLog('info', 'Proxy server stopped')
-        return true
-      } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unknown error'
-        storeManager.addLog('error', `Failed to stop server: ${message}`)
-        return false
-      } finally {
-        this.stopPromise = null
-      }
-    })()
-
-    return this.stopPromise
+  /** Stop one endpoint; omitting the port preserves the legacy stop-all action. */
+  stop(port?: number, host?: string): Promise<boolean> {
+    return this.enqueueLifecycle(async () => {
+      const endpoint = port === undefined ? undefined : this.validateEndpoint(port, host === undefined ? this.host : host)
+      if (port !== undefined && !endpoint) return false
+      const targets = this.listeners.filter(listener => !endpoint || (listener.port === endpoint.port && listener.host === endpoint.host))
+      if (!targets.length) return true
+      const results = await Promise.all(targets.map(listener => this.stopListener(listener)))
+      return results.every(Boolean)
+    })
   }
 
-  /**
-   * Restart server
-   */
-  async restart(port?: number, host?: string): Promise<boolean> {
-    await this.stop()
-    return this.start(port, host)
+  private async stopListener(listener: ActiveListener): Promise<boolean> {
+    try {
+      await closeHttpServer(listener.server, listener.connections)
+      this.removeListener(listener.server)
+      storeManager.addLog('info', `Proxy server stopped on ${listener.host}:${listener.port}`)
+      return true
+    } catch (error) {
+      return this.fail(`Failed to stop ${listener.host}:${listener.port}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /** Restart or move the primary endpoint without interrupting other listeners. */
+  restart(port?: number, host?: string): Promise<boolean> {
+    return this.enqueueLifecycle(async () => {
+      const primary = this.listeners.find(listener => listener.port === this.port && listener.host === this.host)
+      if (!primary) return this.startListener(port, host)
+      const endpoint = this.validateEndpoint(port === undefined ? primary.port : port, host === undefined ? primary.host : host)
+      if (!endpoint) return false
+      const requiresRelease = endpoint.port === primary.port
+      // Bind the replacement first where possible so a bad address cannot take
+      // an otherwise healthy primary endpoint offline.
+      if (!requiresRelease && !await this.startListener(endpoint.port, endpoint.host)) return false
+      if (!await this.stopListener(primary)) return false
+      if (requiresRelease && !await this.startListener(endpoint.port, endpoint.host)) {
+        const failure = this.lastError || 'Failed to restart the primary proxy listener'
+        if (await this.startListener(primary.port, primary.host)) {
+          this.setPrimary(primary.port, primary.host)
+          this.broadcastStatus()
+          return this.fail(failure)
+        }
+        return this.fail(`${failure}; the original endpoint could not be restored: ${this.lastError}`)
+      }
+      this.setPrimary(endpoint.port, endpoint.host)
+      this.broadcastStatus()
+      return true
+    })
   }
 
   /**
    * Check if server is running
    */
   isRunning(): boolean {
-    return this.server !== null && proxyStatusManager.getRunningStatus().isRunning
+    return this.listeners.some(listener => listener.server.listening)
   }
 
   /**
@@ -432,6 +507,14 @@ export class ProxyServer {
    */
   getPort(): number {
     return this.port
+  }
+
+  getHost(): string {
+    return this.host
+  }
+
+  getLastError(): string | undefined {
+    return this.lastError
   }
 
   /**
@@ -445,7 +528,20 @@ export class ProxyServer {
    * Get running status
    */
   getStatus() {
-    return proxyStatusManager.getRunningStatus()
+    return {
+      ...proxyStatusManager.getRunningStatus(),
+      isRunning: this.isRunning(),
+      port: this.port,
+      host: this.host,
+      connections: proxyStatusManager.getStatistics().activeConnections,
+      listeners: this.listeners.filter(listener => listener.server.listening).map(listener => ({
+        port: listener.port,
+        host: listener.host,
+        isRunning: true,
+        uptime: Date.now() - listener.startedAt,
+        connections: listener.connections.size,
+      })),
+    }
   }
 
   /**

@@ -7,7 +7,6 @@ import Router from '@koa/router'
 import type { Context } from 'koa'
 import { managementAuthMiddleware } from '../../middleware/managementAuth'
 import { proxyServer } from '../../server'
-import { proxyStatusManager } from '../../status'
 import type {
   ManagementApiResponse,
   ProxyStatusResponse,
@@ -45,28 +44,11 @@ function createSuccessResponse<T>(data: T): ManagementApiResponse<T> {
 }
 
 function getProxyStatusData(): ProxyStatusResponse {
-  const status = proxyStatusManager.getRunningStatus()
-  const statistics = proxyStatusManager.getStatistics()
-  const port = proxyStatusManager.getPort()
-  const host = proxyStatusManager.getHost()
-
-  return {
-    isRunning: status.isRunning,
-    port,
-    host,
-    uptime: status.uptime,
-    connections: statistics.activeConnections,
-  }
+  return proxyServer.getStatus()
 }
 
 router.post('/start', async (ctx: Context) => {
   try {
-    if (proxyServer.isRunning()) {
-      ctx.status = 400
-      ctx.body = createErrorResponse('already_running', 'Proxy service is already running')
-      return
-    }
-
     const request = (ctx.request.body as ProxyStartRequest) || {}
     const port = request.port
     const host = request.host
@@ -75,18 +57,14 @@ router.post('/start', async (ctx: Context) => {
 
     if (!success) {
       ctx.status = 500
-      ctx.body = createErrorResponse('start_failed', 'Failed to start proxy service')
+      ctx.body = createErrorResponse('start_failed', proxyServer.getLastError() || 'Failed to start proxy service')
       return
     }
 
     const statusData = getProxyStatusData()
 
     ctx.set('Content-Type', 'application/json')
-    ctx.body = createSuccessResponse({
-      isRunning: statusData.isRunning,
-      port: statusData.port,
-      host: statusData.host,
-    })
+    ctx.body = createSuccessResponse(statusData)
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Failed to start proxy service'
     ctx.status = 500
@@ -102,7 +80,15 @@ router.post('/stop', async (ctx: Context) => {
       return
     }
 
-    ctx.res.once('finish', () => { void proxyServer.stop().catch(error => console.error('[Management] Stop failed:', error)) })
+    const request = (ctx.request.body as ProxyStartRequest) || {}
+    if ((request.port !== undefined && (!Number.isInteger(request.port) || request.port < 1 || request.port > 65535)) || (request.host !== undefined && typeof request.host !== 'string')) {
+      ctx.status = 400
+      ctx.body = createErrorResponse('invalid_endpoint', 'Invalid proxy address or port')
+      return
+    }
+    ctx.res.once('finish', () => { void proxyServer.stop(request.port, request.host).then(success => {
+      if (!success) console.error('[Management] Stop failed:', proxyServer.getLastError())
+    }).catch(error => console.error('[Management] Stop failed:', error)) })
     const success = true
 
     if (!success) {
@@ -113,7 +99,8 @@ router.post('/stop', async (ctx: Context) => {
 
     ctx.set('Content-Type', 'application/json')
     ctx.body = createSuccessResponse({
-      isRunning: false,
+      stopping: true,
+      ...(request.port === undefined ? {} : { port: request.port, host: request.host }),
     })
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Failed to stop proxy service'

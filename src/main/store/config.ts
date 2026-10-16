@@ -15,6 +15,7 @@ import {
   DEFAULT_CONFIG,
 } from './types'
 import { normalizeToolCallingConfig } from '../../shared/toolCalling'
+import { parseProxyListeners } from '../../shared/proxyListeners'
 
 /**
  * Config Manager class
@@ -37,7 +38,7 @@ export class ConfigManager {
     const validation = this.validate(updates)
     if (!validation.valid) throw new Error(validation.errors.join('; '))
     
-    const updated = storeManager.updateConfig(updates)
+    const updated = storeManager.updateConfig({ ...updates, ...(updates.additionalProxyListeners === undefined ? {} : { additionalProxyListeners: parseProxyListeners(updates.additionalProxyListeners) }) })
     proxyStatusManager.updateConfig({ timeout: updated.requestTimeout, retryCount: updated.retryCount })
     if (updates.autoStart !== undefined) applyAutoStart(updated.autoStart)
     
@@ -326,6 +327,10 @@ export class ConfigManager {
       if (config[field] !== undefined && typeof config[field] !== 'boolean') errors.push(field + ' must be a boolean')
     }
     if (config.proxyHost !== undefined && (typeof config.proxyHost !== 'string' || !/^[a-zA-Z0-9.:[\]-]+$/.test(config.proxyHost))) errors.push('Invalid proxy host')
+    if (config.additionalProxyListeners !== undefined) {
+      try { parseProxyListeners(config.additionalProxyListeners) }
+      catch (error) { errors.push(error instanceof Error ? error.message : 'Invalid additional proxy services') }
+    }
     if (config.theme !== undefined && !['light','dark','system'].includes(config.theme)) errors.push('Invalid theme')
     if (config.language !== undefined && !['zh-CN','en-US'].includes(config.language)) errors.push('Invalid language')
     if (config.loadBalanceStrategy !== undefined && !['round-robin','fill-first','failover'].includes(config.loadBalanceStrategy)) errors.push('Invalid load balance strategy')

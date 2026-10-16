@@ -30,6 +30,7 @@ import { OllamaLogMonitor } from '@/components/ollama/OllamaLogMonitor'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 import type { AppConfig, OllamaAuthInput, OllamaAuthType, OllamaNodeSummary } from '@/types/electron'
+import { isOllamaModelUsable } from '../../../shared/ollamaAvailability'
 
 type AuthDraft = OllamaAuthInput
 
@@ -58,7 +59,8 @@ export function OllamaNodes() {
   const [importing, setImporting] = useState(false)
   const [scanProgress, setScanProgress] = useState('')
   const [modelProgress, setModelProgress] = useState<{ providerId: string; model: string; completed: number; total: number }[]>([])
-  const [testingModel, setTestingModel] = useState<{ providerId: string; model: string } | null>(null)
+  const [activeTests, setActiveTests] = useState<Record<string, string>>({})
+  const [stopping, setStopping] = useState<Set<string>>(new Set())
   const scanCancelled = useRef(false)
   const [manualUrl, setManualUrl] = useState('')
   const [pendingDelete, setPendingDelete] = useState<OllamaNodeSummary | null>(null)
@@ -99,18 +101,28 @@ export function OllamaNodes() {
   useEffect(() => {
     void load()
     const timer = setInterval(() => { if (!document.hidden && !busyRef.current.size && !importingRef.current) void window.electronAPI.ollama.list().then(setNodes).catch(error => setLoadError(String(error))) }, 5000)
-    return () => { loadVersion.current++; clearInterval(timer) }
+    return () => { loadVersion.current++; scanCancelled.current = true; clearInterval(timer) }
   }, [load])
 
   useEffect(() => {
     let active = true
+    let polling = false
     const refresh = async () => {
-      if (document.hidden) return
+      if (document.hidden || polling) return
+      polling = true
       try {
         const progress = await window.electronAPI.ollama.getScanProgress()
-        if (active) setModelProgress(progress)
+        if (active) {
+          setModelProgress(progress)
+          if (progress.length) {
+            const latest = await window.electronAPI.ollama.list()
+            if (active) setNodes(latest)
+          }
+        }
       } catch (error) {
         if (active) setLoadError(String(error))
+      } finally {
+        polling = false
       }
     }
     void refresh()
@@ -118,12 +130,14 @@ export function OllamaNodes() {
     return () => { active = false; clearInterval(timer) }
   }, [])
 
-  const cancelScans = async () => {
-    scanCancelled.current = true
+  const cancelScans = async (providerId?: string) => {
+    if (!providerId || scanProgress) scanCancelled.current = true
+    const ids = providerId ? [providerId] : [...new Set([...Object.keys(activeTests), ...modelProgress.map(progress => progress.providerId)])]
+    setStopping(current => new Set([...current, ...ids]))
     try {
-      await Promise.all([...new Set([...busyRef.current, ...modelProgress.map(progress => progress.providerId)])].map(id => window.electronAPI.ollama.cancelScan(id)))
-      setScanProgress('')
+      await Promise.all(ids.map(id => window.electronAPI.ollama.cancelScan(id)))
     } catch (error) { setLoadError(String(error)) }
+    finally { setStopping(current => new Set([...current].filter(id => !ids.includes(id)))) }
   }
 
   const scanNodes = async (nextNodes: OllamaNodeSummary[]) => {
@@ -133,7 +147,7 @@ export function OllamaNodes() {
         if (scanCancelled.current) break
         const node = nextNodes[index]
         setScanProgress(`${index + 1}/${nextNodes.length} · ${node.name}`)
-        await runBusy(node.id, async () => updateNode(await window.electronAPI.ollama.scan(node.id)))
+        await runTest(node.id, '', async () => updateNode(await window.electronAPI.ollama.scan(node.id)))
       }
     } finally { setScanProgress('') }
   }
@@ -157,15 +171,15 @@ export function OllamaNodes() {
   const availableModels = useMemo(() => Array.from(new Set(nodes
     .filter(node => node.enabled)
     .flatMap(node => Object.values(node.ollamaModels || {})
-      .filter(model => Boolean(model.endpoint) && !node.disabledModels.includes(model.name))
+      .filter(model => isOllamaModelUsable(node, model) && !node.disabledModels.includes(model.name))
       .map(model => model.name))))
     .sort((left, right) => left.localeCompare(right)), [nodes])
 
   const fixedNodeOptions = useMemo(() => nodes.filter(node => {
-    if (!node.enabled) return false
+    if (!node.enabled || node.status === 'offline') return false
     if (!routing.model) return true
     const model = node.ollamaModels?.[routing.model]
-    return Boolean(model?.endpoint) && !node.disabledModels.includes(routing.model)
+    return isOllamaModelUsable(node, model) && !node.disabledModels.includes(routing.model)
   }), [nodes, routing.model])
 
   const onlineCount = nodes.filter(node => node.enabled && node.status === 'online').length
@@ -178,7 +192,7 @@ export function OllamaNodes() {
     try {
       await operation()
     } catch (error) {
-      if (scanCancelled.current && /scan cancelled/i.test(String(error))) return
+      if (/scan cancelled/i.test(String(error))) return
       toast({
         title: t('common.error'),
         description: error instanceof Error ? error.message : String(error),
@@ -193,6 +207,18 @@ export function OllamaNodes() {
       })
     }
   }
+
+  const runTest = (id: string, model: string, operation: () => Promise<void>) => runBusy(id, async () => {
+    setActiveTests(current => ({ ...current, [id]: model }))
+    try { await operation() }
+    finally {
+      setActiveTests(current => Object.fromEntries(Object.entries(current).filter(([key]) => key !== id)))
+      setModelProgress(current => current.filter(progress => progress.providerId !== id))
+      // A cancelled refresh still has useful completed results and untested rows.
+      try { setNodes(await window.electronAPI.ollama.list()) }
+      catch (error) { setLoadError(String(error)) }
+    }
+  })
 
   const importUrls = async (text: string) => {
     if (importingRef.current) return false
@@ -271,7 +297,7 @@ export function OllamaNodes() {
     }
     const compatibleNodes = nodes.filter(node => {
       const metadata = node.ollamaModels?.[model]
-      return node.enabled && Boolean(metadata?.endpoint) && !node.disabledModels.includes(model)
+      return node.enabled && isOllamaModelUsable(node, metadata) && !node.disabledModels.includes(model)
     })
     const providerId = compatibleNodes.some(node => node.id === routing.providerId)
       ? routing.providerId
@@ -282,7 +308,7 @@ export function OllamaNodes() {
   const selectRoutingModel = async (model: string) => {
     const compatibleNodes = nodes.filter(node => {
       const metadata = node.ollamaModels?.[model]
-      return node.enabled && Boolean(metadata?.endpoint) && !node.disabledModels.includes(model)
+      return node.enabled && isOllamaModelUsable(node, metadata) && !node.disabledModels.includes(model)
     })
     const providerId = compatibleNodes.some(node => node.id === routing.providerId)
       ? routing.providerId
@@ -316,11 +342,11 @@ export function OllamaNodes() {
         icon={Network}
         title={t('ollama.title')}
         description={t('ollama.description')}
-        actions={<Button variant="outline" disabled={importing || busy.size > 0 || loading || !nodes.length} onClick={() => void scanNodes(nodes)}><RefreshCw className="mr-2 h-4 w-4" />{t('ollama.scanAll')}</Button>}
+        actions={<Button variant="outline" disabled={importing || busy.size > 0 || modelProgress.length > 0 || loading || !nodes.length} onClick={() => void scanNodes(nodes)}><RefreshCw className="mr-2 h-4 w-4" />{t('ollama.scanAll')}</Button>}
       />
-      {(scanProgress || modelProgress.length > 0) && <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
-        <p role="status">{t('ollama.scanning')} · {scanProgress}{modelProgress.map(progress => ` · ${progress.completed}/${progress.total} ${progress.model}`).join('')}</p>
-        <Button size="sm" variant="outline" onClick={() => void cancelScans()}>{t('common.cancel')}</Button>
+      {(scanProgress || modelProgress.length > 0 || Object.keys(activeTests).length > 0) && <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+        <p role="status" className="min-w-0 break-all">{t('ollama.scanning')} · {scanProgress}{modelProgress.map(progress => ` · ${progress.completed}/${progress.total} ${progress.model}`).join('')}</p>
+        <Button size="sm" variant="outline" disabled={stopping.size > 0} onClick={() => void cancelScans()}>{t('ollama.stopAllTests')}</Button>
       </div>}
 
       {loadError ? <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm">
@@ -437,7 +463,9 @@ export function OllamaNodes() {
         </Card>
       ) : nodes.map(node => {
         const isExpanded = expanded.has(node.id)
-        const isBusy = busy.has(node.id) || importing || savingRouting
+        const progress = modelProgress.find(item => item.providerId === node.id)
+        const isTestingNode = node.id in activeTests || Boolean(progress)
+        const isBusy = busy.has(node.id) || isTestingNode || importing || savingRouting
         const draft = authDrafts[node.id] || { type: node.authTypeLabel }
         return (
           <Card key={node.id} className="min-w-0 overflow-hidden" data-node-id={node.id} aria-busy={isBusy}>
@@ -461,7 +489,8 @@ export function OllamaNodes() {
                     checked={node.enabled}
                     onCheckedChange={enabled => void runBusy(node.id, async () => updateNode(await window.electronAPI.ollama.update(node.id, { enabled })))}
                   />
-                  <Button aria-label={t('ollama.rescan')} title={t('ollama.rescan')} variant="outline" size="icon" disabled={isBusy} onClick={() => void runBusy(node.id, async () => updateNode(await window.electronAPI.ollama.scan(node.id)))}>
+                  {isTestingNode ? <Button size="sm" variant="outline" disabled={stopping.has(node.id)} onClick={() => void cancelScans(node.id)}>{t('ollama.stopTests')}</Button> : null}
+                  <Button aria-label={t('ollama.rescan')} title={t('ollama.rescan')} variant="outline" size="icon" disabled={isBusy} onClick={() => void runTest(node.id, '', async () => updateNode(await window.electronAPI.ollama.scan(node.id)))}>
                     <RefreshCw className={`h-4 w-4 ${isBusy ? 'animate-spin' : ''}`} />
                   </Button>
                   <Button aria-label={t('ollama.delete')} title={t('ollama.delete')} variant="destructive" size="icon" disabled={isBusy} onClick={() => setPendingDelete(node)}>
@@ -470,6 +499,8 @@ export function OllamaNodes() {
                 </div>
               </div>
               {node.lastScanError ? <p className="break-words text-sm text-danger">{node.lastScanError}</p> : null}
+              {node.status === 'offline' && node.modelCount > 0 ? <p className="text-sm text-muted-foreground">{t('ollama.cachedModelsHint')}</p> : null}
+              {isTestingNode ? <p role="status" className="break-all text-sm text-muted-foreground">{progress?.total ? t('ollama.testProgress', { completed: progress.completed, total: progress.total, model: progress.model }) : t('ollama.scanning')}</p> : null}
               {node.imitationWarning ? <div role="alert" data-imitation-warning className="flex flex-wrap items-center gap-3 rounded-lg border border-danger/40 bg-danger/5 p-3 text-sm">
                 <p className="min-w-0 flex-1 break-words"><strong className="text-danger">{t('ollama.imitation.title')}</strong> {t('ollama.imitation.body')}<span className="mt-1 block text-xs text-muted-foreground">{node.imitationWarning}</span></p>
                 {node.enabled ? <Button size="sm" variant="destructive" disabled={isBusy} onClick={() => void runBusy(node.id, async () => updateNode(await window.electronAPI.ollama.update(node.id, { enabled: false })))}>{t('ollama.imitation.disable')}</Button> : null}
@@ -507,7 +538,7 @@ export function OllamaNodes() {
                     ) : null}
                   </div>
                   {node.authTypeLabel !== 'none' && draft.type === node.authTypeLabel ? <p className="text-xs text-muted-foreground">{t('ollama.authPreserved')}</p> : null}
-                  <Button variant="outline" className="h-auto min-h-10 max-w-full whitespace-normal text-center" disabled={isBusy} onClick={() => void runBusy(node.id, async () => {
+                  <Button variant="outline" className="h-auto min-h-10 max-w-full whitespace-normal text-center" disabled={isBusy} onClick={() => void runTest(node.id, '', async () => {
                     const auth = Object.fromEntries(Object.entries(draft).filter(([key, value]) => key === 'type' || value !== '')) as AuthDraft
                     updateNode(await window.electronAPI.ollama.updateAuth(node.id, auth))
                     setAuthDrafts(current => ({ ...current, [node.id]: { type: auth.type } }))
@@ -523,15 +554,16 @@ export function OllamaNodes() {
                   {Object.values(node.ollamaModels || {}).map(model => {
                     const pinnedHere = pinnedModels.get(model.name) === node.id
                     const pinnedElsewhere = pinnedModels.has(model.name) && !pinnedHere
-                    const modelEnabled = Boolean(model.endpoint) && !node.disabledModels.includes(model.name)
-                    const isTesting = testingModel?.providerId === node.id && testingModel.model === model.name
-                    const testStatus = isTesting ? 'checking' : model.testStatus || 'untested'
+                    const usable = isOllamaModelUsable(node, model)
+                    const modelEnabled = usable && !node.disabledModels.includes(model.name)
+                    const isTesting = activeTests[node.id] === model.name || progress?.model === model.name
+                    const testStatus = isTesting ? 'checking' : node.status === 'offline' ? 'offline' : model.testStatus || 'untested'
                     return (
                       <div key={model.name} data-model-name={model.name} className="flex flex-wrap items-center gap-2 rounded-lg border border-border/70 p-3 transition-colors hover:bg-muted/30">
                         <Switch
                           aria-label={t('ollama.enableModel', { name: model.name })}
                           checked={modelEnabled}
-                          disabled={isBusy || !model.endpoint}
+                          disabled={isBusy || !usable}
                           onCheckedChange={enabled => void runBusy(node.id, async () => {
                             updateNode(await window.electronAPI.ollama.setModelEnabled(node.id, model.name, enabled))
                           })}
@@ -542,23 +574,21 @@ export function OllamaNodes() {
                           {t(`ollama.modelTest.${testStatus}`)}
                         </Badge>
                         {model.latency !== undefined ? <Badge variant="secondary" className="tabular-nums">{model.latency} ms</Badge> : null}
+                        {model.testedAt ? <span className="text-xs text-muted-foreground">{t('ollama.lastTest', { time: new Date(model.testedAt).toLocaleString() })}</span> : null}
                         <Badge variant="outline" className={visionClass(model.vision)}>
                           <Eye className="mr-1 h-3 w-3" />
                           {t(`ollama.vision.${model.vision}`)}
                         </Badge>
-                        <Button size="sm" variant="outline" aria-label={t('ollama.testModelNamed', { name: model.name })} disabled={isBusy} onClick={() => void runBusy(node.id, async () => {
-                          setTestingModel({ providerId: node.id, model: model.name })
-                          try {
-                            const metadata = await window.electronAPI.ollama.testModel(node.id, model.name)
-                            setNodes(current => current.map(item => item.id === node.id ? {
-                              ...item, ollamaModels: { ...(item.ollamaModels || {}), [model.name]: metadata },
-                            } : item))
-                          } finally { setTestingModel(null) }
+                        <Button size="sm" variant="outline" aria-label={t('ollama.testModelNamed', { name: model.name })} disabled={isBusy} onClick={() => void runTest(node.id, model.name, async () => {
+                          const metadata = await window.electronAPI.ollama.testModel(node.id, model.name)
+                          setNodes(current => current.map(item => item.id === node.id ? {
+                            ...item, ollamaModels: { ...(item.ollamaModels || {}), [model.name]: metadata },
+                          } : item))
                         })}>
                           {isTesting ? <RefreshCw className="mr-1 h-3 w-3 animate-spin" /> : <Activity className="mr-1 h-3 w-3" />}
                           {t(isTesting ? 'ollama.modelTest.checking' : 'ollama.testModel')}
                         </Button>
-                        <Button size="sm" variant="outline" disabled={isBusy} onClick={() => void runBusy(node.id, async () => {
+                        <Button size="sm" variant="outline" disabled={isBusy} onClick={() => void runTest(node.id, model.name, async () => {
                           const metadata = await window.electronAPI.ollama.testVision(node.id, model.name)
                           setNodes(current => current.map(item => item.id === node.id ? {
                             ...item,

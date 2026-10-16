@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import os from 'node:os'
 import path from 'node:path'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { ClaudeStreamState, claudeCodeArgs, claudeCodeEnvironment, claudeProjectKey, claudeSessionId, findClaudeCode, prepareClaudeConfig } from '../../src/main/companion/claudeCode.ts'
+import { ClaudeCodeTerminalService, ClaudeStreamState, claudeCodeArgs, claudeCodeEnvironment, claudeProjectKey, claudeSessionId, findClaudeCode, prepareClaudeConfig } from '../../src/main/companion/claudeCode.ts'
 
 const proxy = { proxyHost: '0.0.0.0', proxyPort: 11434, enableApiKey: true, apiKeys: [{ key: 'local-key', enabled: true }] }
 const folder = (id: string, writable: boolean) => ({ id, name: id, path: path.resolve('/work', id), writable })
@@ -32,6 +32,18 @@ test('Claude Code talks only to the local proxy with the chosen model and an iso
   assert.equal(env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, '1')
   assert.equal(env.PATH, 'x')
   assert.throws(() => claudeCodeEnvironment({}, { ...proxy, apiKeys: [] }, 'm', 'c'), /Enable an API key/)
+})
+
+test('Claude Code uses native Messages credentials and mapped model without inheriting another account', () => {
+  const connection = { baseURL: 'https://models.example.test/api/v1', apiKey: 'upstream-key', model: 'actual-claude', protocol: 'anthropic' as const, direct: true, headers: { 'X-Project': 'team' } }
+  const env = claudeCodeEnvironment({ ANTHROPIC_AUTH_TOKEN: 'old-proxy-key', ANTHROPIC_CUSTOM_HEADERS: 'X-Old: secret' }, connection, 'display-alias', 'C:/test/config')
+  assert.equal(env.ANTHROPIC_BASE_URL, 'https://models.example.test/api')
+  assert.equal(env.ANTHROPIC_API_KEY, 'upstream-key')
+  assert.equal(env.ANTHROPIC_AUTH_TOKEN, undefined)
+  assert.equal(env.ANTHROPIC_MODEL, 'actual-claude')
+  assert.equal(env.ANTHROPIC_CUSTOM_HEADERS, 'X-Project: team')
+  assert.throws(() => claudeCodeEnvironment({}, { ...connection, protocol: 'openai' }, 'alias', 'config'), /Anthropic-compatible/)
+  assert.throws(() => claudeCodeEnvironment({}, { ...connection, headers: { 'X-Project': 'team\r\nInjected: yes' } }, 'alias', 'config'), /Invalid Claude Code model headers/)
 })
 
 test('folder permissions become hard Claude Code tool limits', () => {
@@ -104,4 +116,79 @@ test('stream-json output becomes chat text, tool activity and errors', () => {
   failed.accept({ type: 'result', subtype: 'error_during_execution', is_error: true, result: 'API Error: 401' })
   assert.deepEqual(failed.result, { error: true, text: 'API Error: 401' })
   assert.equal(failed.snapshot().text, '')
+})
+
+test('Claude terminal reports pending startup and clears it only after the original process starts', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'claude-terminal-startup-'))
+  let release!: () => void
+  const wait = new Promise<void>(resolve => { release = resolve })
+  let spawns = 0
+  const service = new ClaudeCodeTerminalService({ home: dir, get: async () => {
+    await wait
+    return { workspaces: [{ id: 'qa', name: 'qa', path: dir, writable: false }] }
+  } }, () => proxy, () => () => {
+    spawns++
+    return { write() {}, resize() {}, kill() {}, onData: () => ({ dispose() {} }), onExit: () => ({ dispose() {} }) }
+  }, () => ({ file: 'claude.exe', prefix: [], display: 'Claude fixture' }))
+  const id = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+  try {
+    const pending = service.open({ terminalId: id, workspaceId: 'qa', model: 'qa-model', cols: 100, rows: 30 })
+    const waiting = service.poll(id, 0)
+    assert.equal(waiting.starting, true)
+    assert.equal(waiting.running, false)
+    assert.equal(waiting.sessionId, '')
+    assert.equal(spawns, 0)
+    assert.throws(() => service.write(id, 'x'), /still starting/)
+    release()
+    const opened = await pending
+    assert.equal(opened.starting, false)
+    assert.equal(opened.running, true)
+    assert.equal(spawns, 1)
+  } finally {
+    release()
+    await service.close()
+    assert.equal(path.dirname(dir), path.resolve(os.tmpdir()))
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('failed Claude startup removes its pending snapshot so it cannot be mistaken for a live task', async () => {
+  let fail!: (reason: Error) => void
+  const waiting = new Promise<never>((_resolve, reject) => { fail = reject })
+  const service = new ClaudeCodeTerminalService({ home: process.cwd(), get: () => waiting }, () => proxy,
+    () => () => { throw new Error('The PTY must not launch') },
+    () => ({ file: 'claude.exe', prefix: [], display: 'Claude fixture' }))
+  const id = 'aaaaaaaa-bbbb-cccc-dddd-ffffffffffff'
+  const pending = service.open({ terminalId: id, workspaceId: 'qa', model: 'qa-model', cols: 100, rows: 30 })
+  assert.equal(service.poll(id, 0).starting, true)
+  fail(new Error('Cannot load workspace permissions'))
+  await assert.rejects(pending, /Cannot load workspace permissions/)
+  assert.throws(() => service.poll(id, 0), /Terminal is no longer active/)
+})
+
+test('Claude Work launches the resolved upstream model without requiring the API forwarding listener', async () => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'claude-direct-model-'))
+  const connection = { baseURL: 'https://messages.example.test/v1', apiKey: 'synthetic-native-key', model: 'actual-model', protocol: 'anthropic' as const, direct: true }
+  let launched: { args: string[]; env: Record<string, string> } | undefined
+  const service = new ClaudeCodeTerminalService({ home: dir, get: async () => ({ workspaces: [{ id: 'qa', name: 'qa', path: dir, writable: false }] }) },
+    () => { throw new Error('External proxy must not be read') },
+    () => (_file, args, options) => {
+      launched = { args, env: options.env }
+      return { write() {}, resize() {}, kill() {}, onData: () => ({ dispose() {} }), onExit: () => ({ dispose() {} }) }
+    }, () => ({ file: 'claude.exe', prefix: [], display: 'Claude fixture' }), async model => {
+      assert.equal(model, 'display-model')
+      return connection
+    })
+  try {
+    const result = await service.open({ workspaceId: 'qa', model: 'display-model', cols: 100, rows: 30 })
+    assert.equal(result.running, true)
+    assert.ok(launched)
+    assert.equal(launched.args[launched.args.indexOf('--model') + 1], 'actual-model')
+    assert.equal(launched.env.ANTHROPIC_BASE_URL, 'https://messages.example.test')
+    assert.equal(launched.env.ANTHROPIC_API_KEY, 'synthetic-native-key')
+  } finally {
+    await service.close()
+    assert.equal(path.dirname(dir), path.resolve(os.tmpdir()))
+    await rm(dir, { recursive: true, force: true })
+  }
 })

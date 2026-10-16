@@ -3,6 +3,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { ChevronDown, FolderOpen, LoaderCircle, Plus, RotateCw, Settings2, Terminal as TerminalIcon, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { observeTerminalLayout } from '@/lib/terminalLayout'
 import { forwardImeSpaces } from '@/lib/terminalInput'
 import { folderLabel } from '@/lib/folderLabel'
 import type { TerminalCreateInput, TerminalSession, TerminalState, ShellKind } from '@shared/terminal'
@@ -23,7 +24,8 @@ function TerminalView({ session, visible, chinese, screenReaderMode, fresh, onAt
   useEffect(() => {
     if (!host.current) return
     const api = window.electronAPI.terminal
-    const terminal = new Terminal({ cursorBlink: true, fontFamily: 'Consolas, "Cascadia Mono", Menlo, monospace', fontSize: 14, lineHeight: 1.15,
+    const terminal = new Terminal({ cursorBlink: true, cursorStyle: 'bar', cursorInactiveStyle: 'bar', cursorWidth: 1,
+      fontFamily: 'Consolas, "Cascadia Mono", Menlo, monospace', fontSize: 14, lineHeight: 1.15,
       scrollback: 5000, screenReaderMode, theme: { background: '#16181d', foreground: '#e4e4e7', cursor: '#e4e4e7', selectionBackground: '#675174' } })
     const fit = new FitAddon(); terminal.loadAddon(fit); terminal.open(host.current)
     const spaces = forwardImeSpaces(terminal)
@@ -34,10 +36,12 @@ function TerminalView({ session, visible, chinese, screenReaderMode, fresh, onAt
     const report = (reason: unknown) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)) }
     resize.current = () => {
       if (cancelled || !host.current?.clientWidth || !host.current.clientHeight) return
-      fit.fit()
+      const size = fit.proposeDimensions()
+      if (!size || !Number.isFinite(size.cols) || !Number.isFinite(size.rows) || size.cols < 2 || size.rows < 2) return
+      terminal.resize(Math.min(size.cols, 500), Math.min(size.rows, 250))
       if (running) void api.resize(session.id, terminal.cols, terminal.rows).catch(report)
     }
-    const observer = new ResizeObserver(() => resize.current()); observer.observe(host.current)
+    const stopLayout = observeTerminalLayout(host.current, () => resize.current())
     const data = terminal.onData(value => {
       // Replaying saved output must not send old terminal-probe answers into today's shell prompt.
       if (!running || cancelled || replaying) return
@@ -56,7 +60,7 @@ function TerminalView({ session, visible, chinese, screenReaderMode, fresh, onAt
       } catch (reason) { report(reason); if (!cancelled) timer = setTimeout(() => void poll(), 1500) }
     }
     resize.current(); terminal.focus(); void poll()
-    return () => { cancelled = true; clearTimeout(timer); observer.disconnect(); spaces.dispose(); data.dispose(); terminal.dispose() }
+    return () => { cancelled = true; clearTimeout(timer); stopLayout(); spaces.dispose(); data.dispose(); terminal.dispose() }
   }, [session.id, session.createdAt, screenReaderMode])
   useEffect(() => { if (visible) requestAnimationFrame(() => resize.current()) }, [visible])
   return <div className="unified-terminal-view" role="tabpanel" id={'terminal-panel-' + session.id} aria-labelledby={'terminal-tab-' + session.id}>
@@ -140,15 +144,16 @@ export function TerminalPanel({ chinese, visible, workspaces, model, prepareOpen
     <div className="unified-terminal-options">
       <button type="button" className="unified-terminal-options-toggle" aria-expanded={optionsOpen} aria-controls="terminal-options" onClick={() => setOptionsOpen(value => { try { localStorage.setItem(OPTIONS_KEY, String(!value)) } catch { /* per-viewer convenience only */ } return !value })}>
         <Settings2 size={14} /><span>{chinese ? '终端选项' : 'Terminal options'}</span>
-        <small>{chinese ? '启动时恢复' : 'Restore on startup'}: {(state?.preferences.restoreOnStartup ?? true) ? chinese ? '开' : 'On' : chinese ? '关' : 'Off'} · {chinese ? '退出后保持运行' : 'Keep running after exit'}: {(state?.preferences.keepRunningOnExit ?? false) ? chinese ? '开' : 'On' : chinese ? '关' : 'Off'}</small>
+        <small>{chinese ? '启动时恢复' : 'Restore on startup'}: {(state?.preferences.restoreOnStartup ?? true) ? chinese ? '开' : 'On' : chinese ? '关' : 'Off'}</small>
         <ChevronDown size={14} className={'ml-auto transition-transform' + (optionsOpen ? ' rotate-180' : '')} />
       </button>
       {optionsOpen && <div className="unified-terminal-preferences" id="terminal-options">
-        <label><input type="checkbox" role="switch" aria-label={chinese ? '启动时恢复未关闭终端' : 'Restore open terminals on startup'} checked={state?.preferences.restoreOnStartup ?? true} disabled={!state || busy} onChange={event => { void perform(() => api.savePreferences({ ...state!.preferences, restoreOnStartup: event.target.checked })) }} /><span>{chinese ? '启动时恢复未关闭终端' : 'Restore open terminals on startup'}<small>{chinese ? '保留标签、目录和最近输出' : 'Keep tabs, directories and recent output'}</small></span></label>
-        <label><input type="checkbox" role="switch" aria-label={chinese ? '退出软件后保持终端运行' : 'Keep terminals running after exit'} checked={state?.preferences.keepRunningOnExit ?? false} disabled={!state || busy} onChange={event => { void perform(() => api.savePreferences({ ...state!.preferences, keepRunningOnExit: event.target.checked })) }} /><span>{chinese ? '退出软件后保持终端运行' : 'Keep terminals running after exit'}<small>{chinese ? '在后台继续任务，重新打开后接回' : 'Continue tasks in the background and reconnect'}</small></span></label>
+        <label><input type="checkbox" role="switch" aria-label={chinese ? '启动时恢复未关闭终端' : 'Restore open terminals on startup'} checked={state?.preferences.restoreOnStartup ?? true} disabled={!state || busy} onChange={event => { void perform(() => api.savePreferences({ ...state!.preferences, restoreOnStartup: event.target.checked })) }} /><span>{chinese ? '启动时恢复未关闭终端' : 'Restore open terminals on startup'}<small>{chinese ? '恢复标签和目录，新进程从干净屏幕开始' : 'Restore tabs and directories; new processes start with a clean screen'}</small></span></label>
+        <p>{chinese ? '退出软件会停止普通终端和工作任务；检测到 psmux 会话时会询问是否关闭。' : 'Quitting stops terminals and work tasks. If psmux sessions are detected, you will be asked whether to close them.'}</p>
       </div>}
     </div>
     <div className="unified-terminal-tabs">
+      {active && <button type="button" className="companion-icon-button terminal-current-folder" aria-label={chinese ? '打开当前终端文件夹' : 'Open current terminal folder'} title={active.directory} onClick={() => { void window.electronAPI.companion.openTerminalDirectory(active.id).catch(report) }}><FolderOpen size={16} /></button>}
       <div role="tablist" aria-label={chinese ? '终端标签' : 'Terminal tabs'}>{state?.sessions.map((session, index) => <div className={'unified-terminal-tab' + (session.id === active?.id ? ' is-active' : '')} key={session.id}>
         <button type="button" role="tab" id={'terminal-tab-' + session.id} aria-controls={'terminal-panel-' + session.id} aria-selected={session.id === active?.id} tabIndex={session.id === active?.id ? 0 : -1} disabled={busy} onClick={() => select(session.id)} onKeyDown={event => {
           if (!state || !['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return

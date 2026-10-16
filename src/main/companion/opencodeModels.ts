@@ -5,9 +5,11 @@ import { randomUUID } from 'node:crypto'
 export const OPENCODE_FREE_PROVIDER_ID = 'opencode-free'
 export const OPENCODE_FREE_MODEL_PREFIX = OPENCODE_FREE_PROVIDER_ID + '/'
 export const OPENCODE_INFERENCE_BASE_URL = 'https://opencode.ai/inference/v1'
+export const OPENCODE_OPENAI_BASE_URL = 'https://opencode.ai/inference/openai/v1'
+export const OPENCODE_ANTHROPIC_BASE_URL = 'https://opencode.ai/inference/anthropic/v1'
 // Older official catalogues used Zen; accept that exact base while migrating requests.
 export const OPENCODE_ZEN_BASE_URL = 'https://opencode.ai/zen/v1'
-const OFFICIAL_API_BASES = new Set([OPENCODE_INFERENCE_BASE_URL, OPENCODE_ZEN_BASE_URL])
+const LEGACY_API_BASES = new Set([OPENCODE_INFERENCE_BASE_URL, OPENCODE_ZEN_BASE_URL])
 // This is OpenCode's documented source-code default for anonymous free models,
 // not an account credential. Free-tier access may still require its native runtime.
 export const OPENCODE_PUBLIC_API_KEY = 'public'
@@ -62,8 +64,17 @@ function positiveInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0
 }
 
-function officialApiBase(value: unknown): boolean {
-  return typeof value === 'string' && OFFICIAL_API_BASES.has(value)
+function officialApiBase(value: unknown, sdk: unknown): boolean {
+  if (typeof value !== 'string') return false
+  if (LEGACY_API_BASES.has(value)) return true
+  return sdk === '@ai-sdk/anthropic' ? value === OPENCODE_ANTHROPIC_BASE_URL
+    : (sdk === '@ai-sdk/openai' || sdk === '@ai-sdk/openai-compatible') && value === OPENCODE_OPENAI_BASE_URL
+}
+
+/** Listing stays at /inference/v1/models; inference now uses protocol-specific routes.
+ * Derive trusted endpoints here so old metadata caches also migrate without storing URLs. */
+export function openCodeFreeModelBaseURL(model: OpenCodeFreeModel): string {
+  return model.protocol === 'messages' ? OPENCODE_ANTHROPIC_BASE_URL : OPENCODE_OPENAI_BASE_URL
 }
 
 function interleaved(value: unknown): boolean | { field: string } | undefined {
@@ -79,7 +90,7 @@ export function parseOpenCodeFreeModels(catalogue: unknown, liveModels: unknown)
   const provider = record(record(catalogue)?.opencode)
   const models = record(provider?.models)
   const live = record(liveModels)?.data
-  if (!provider || !models || !Array.isArray(live) || !officialApiBase(provider.api) || provider.npm !== '@ai-sdk/openai-compatible') {
+  if (!provider || !models || !Array.isArray(live) || !officialApiBase(provider.api, provider.npm) || provider.npm !== '@ai-sdk/openai-compatible') {
     throw new OpenCodeModelError('OpenCode 官方模型目录格式不正确，暂时无法确认免费模型。', 503)
   }
   const ids = new Set(live.map(item => record(item)?.id).filter((id): id is string => typeof id === 'string' && MODEL_ID.test(id)))
@@ -92,7 +103,7 @@ export function parseOpenCodeFreeModels(catalogue: unknown, liveModels: unknown)
     if (!model || !MODEL_ID.test(id) || model.id !== id || !ids.has(id) || !isZeroCost(model.cost)
       || ['deprecated', 'retired', 'disabled'].includes(String(model.status))
       || typeof sdk !== 'string' || !Object.hasOwn(PROTOCOLS, sdk)
-      || (override?.api !== undefined && !officialApiBase(override.api))
+      || (override?.api !== undefined && !officialApiBase(override.api, sdk))
       || !Array.isArray(modalities?.input) || !modalities.input.includes('text')
       || !Array.isArray(modalities?.output) || !modalities.output.includes('text')
       || !positiveInteger(limit?.context) || !positiveInteger(limit?.output)) return []

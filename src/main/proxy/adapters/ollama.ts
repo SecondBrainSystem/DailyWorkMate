@@ -1,4 +1,5 @@
 import axios, { type AxiosRequestConfig } from 'axios'
+import { isOllamaModelUsable } from '../../../shared/ollamaAvailability'
 import { convertUpstreamStream } from '../responseStream'
 import type { Account, Provider } from '../../store/types'
 import type { ChatCompletionRequest, ForwardResult } from '../types'
@@ -58,6 +59,7 @@ export class OllamaAdapter {
   ): Promise<ForwardResult> {
     const metadata = provider.ollamaModels?.[actualModel]
     const endpoint = metadata?.endpoint
+    if (!isOllamaModelUsable(provider, metadata)) return { success: false, status: 503, error: `Ollama model is unavailable: ${actualModel}. Refresh and test the node.` }
     if (!endpoint) return { success: false, status: 503, error: `No Ollama endpoint for model: ${actualModel}. Refresh the node's model list.` }
 
     let path = '/api/chat'

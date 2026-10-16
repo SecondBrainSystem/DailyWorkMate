@@ -8,6 +8,27 @@ let authInputs = []
 let modelTests = []
 let scans = []
 let failTest = false
+let holdTests = false
+let cancellations = []
+const operations = new Map()
+const testDelay = signal => new Promise((resolve, reject) => {
+  const abort = () => { clearTimeout(timer); reject(new Error('Ollama node scan cancelled')) }
+  const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve() }, holdTests ? 60000 : 250)
+  signal.addEventListener('abort', abort, { once: true })
+})
+const begin = (id, model, total) => {
+  const operation = { controller: new AbortController(), providerId:id, model, completed:0, total }
+  operations.set(id, operation)
+  return operation
+}
+const testOne = async (id, model, operation) => {
+  modelTests.push({id,model})
+  await testDelay(operation.controller.signal)
+  const node = nodes.find(node => node.id === id)
+  const metadata = {...node.ollamaModels[model],endpoint:'ollama_chat',testStatus:failTest ? 'failed' : 'passed',error:failTest ? 'QA selected model failed' : undefined,testedAt:Date.now()}
+  updated(id,{ollamaModels:{...node.ollamaModels,[model]:metadata}})
+  return metadata
+}
 let config = {
   proxyHost: '127.0.0.1', proxyPort: 11434, apiKeys: [], enableApiKey: false,
   theme: 'light', language: 'en-US', loadBalanceStrategy: 'round-robin',
@@ -22,7 +43,7 @@ let nodes = [{
   ollamaModels: Object.fromEntries(['qwen3:8b', 'disabled-model', longModel].map(name => [name, {name,endpoint:'ollama_chat',vision:name === 'disabled-model' ? 'unsupported' : 'unknown',error:name === 'disabled-model' ? 'Old bulk timeout' : undefined}])),
 }, {
   id: 'node-b', name: 'Unreachable remote node with a long descriptive name', apiEndpoint: 'https://example.invalid/team/research/ollama', enabled: false,
-  status: 'offline', authTypeLabel: 'none', modelCount: 0, disabledModels: [], ollamaModels: {},
+  status: 'offline', authTypeLabel: 'none', modelCount: 1, disabledModels: [], ollamaModels: {cached:{name:'cached',endpoint:'ollama_chat',vision:'unknown',testStatus:'passed',testedAt:1}},
   lastScanError: 'Connection refused. Check the node address and rescan after the server is available.',
 }]
 const updated = (id, updates) => { nodes = nodes.map(node => node.id === id ? {...node,...updates} : node); return nodes.find(node => node.id === id) }
@@ -41,15 +62,33 @@ contextBridge.exposeInMainWorld('electronAPI', {
       if(text.includes('failed')) throw new Error('QA import failed')
       return {imported:0,refreshed:1,invalid:/^https?:\/\//.test(text) ? [] : [text],nodes}
     },
-    scan: async id => {scans.push(id);await delay(80);return nodes.find(node=>node.id===id)},
-    getScanProgress: async () => [],
-    cancelScan: async () => {},
-    testModel: async (id, model) => {
-      modelTests.push({id,model});await delay(250)
+    scan: async id => {
+      scans.push(id)
       const node=nodes.find(node=>node.id===id)
-      const metadata={...node.ollamaModels[model],testStatus:failTest ? 'failed' : 'passed',error:failTest ? 'QA selected model failed' : undefined,testedAt:Date.now()}
-      updated(id,{ollamaModels:{...node.ollamaModels,[model]:metadata}})
-      return metadata
+      const names=Object.keys(node.ollamaModels)
+      const operation=begin(id, '', names.length)
+      try {
+        await delay(80)
+        operation.controller.signal.throwIfAborted()
+        if (node.status === 'offline') return node
+        updated(id,{ollamaModels:Object.fromEntries(names.map(name=>[name,{name,vision:'unknown',testStatus:'untested'}]))})
+        for (const [index, model] of names.entries()) {
+          operation.controller.signal.throwIfAborted()
+          operation.model=model; operation.completed=index
+          await testOne(id, model, operation)
+        }
+        return nodes.find(node=>node.id===id)
+      } catch (error) {
+        if(operation.controller.signal.aborted) throw new Error('Ollama node scan cancelled')
+        throw error
+      } finally { operations.delete(id) }
+    },
+    getScanProgress: async () => [...operations.values()].map(({providerId,model,completed,total})=>({providerId,model,completed,total})),
+    cancelScan: async id => { cancellations.push(id); operations.get(id)?.controller.abort() },
+    testModel: async (id, model) => {
+      const operation=begin(id, model, 1)
+      try { return await testOne(id, model, operation) }
+      finally { operations.delete(id) }
     },
     update: async (id, updates) => updated(id,updates),
     updateAuth: async (id, auth) => {authInputs.push(auth);return updated(id,{authTypeLabel:auth.type})},
@@ -58,7 +97,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return updated(id,{disabledModels:enabled ? node.disabledModels.filter(name=>name!==model) : [...node.disabledModels,model]})
     },
     pinModel: async (model, providerId) => {config={...config,modelMappings:{...config.modelMappings,[model]:{requestModel:model,actualModel:model,preferredProviderId:providerId}}}},
-    testVision: async (_id,model) => ({name:model,endpoint:'ollama_chat',vision:'supported'}),
+    testVision: async (id,model) => {
+      const operation=begin(id, model, 1)
+      try { await testDelay(operation.controller.signal); return {...nodes.find(node=>node.id===id).ollamaModels[model],vision:'supported'} }
+      finally { operations.delete(id) }
+    },
     delete: async id => {nodes=nodes.filter(node=>node.id!==id);return true},
   },
   logs: { get: async filter => {await delay(25);return [{id:'log',providerId:filter.providerId || 'node-a',level:'info',timestamp:Date.now(),message:'Model probe succeeded: qwen3:8b',latency:123}]} },
@@ -66,5 +109,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
 contextBridge.exposeInMainWorld('ollamaQA', {
   failSave: value => {failSave=value},
   failTest: value => {failTest=value},
-  state: () => ({config,saveCount,authInputs,modelTests,scans}),
+  holdTests: value => {holdTests=value},
+  state: () => ({config,saveCount,authInputs,modelTests,scans,cancellations,operations:operations.size}),
 })

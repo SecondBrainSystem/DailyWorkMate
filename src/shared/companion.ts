@@ -98,6 +98,7 @@ export interface AgentInput {
 export interface CompanionAPI {
   openTerminal: (input: TerminalInput) => Promise<TerminalSnapshot>
   pollTerminal: (id: string, cursor: number) => Promise<TerminalSnapshot>
+  reconnectTerminal: (id: string, cols: number, rows: number) => Promise<TerminalSnapshot>
   writeTerminal: (id: string, data: string) => Promise<void>
   resizeTerminal: (id: string, cols: number, rows: number) => Promise<void>
   closeTerminal: (id: string) => Promise<void>
@@ -136,8 +137,12 @@ export interface CompanionAPI {
 export interface TerminalInput extends Omit<AgentInput, 'prompt'> { cols: number; rows: number; terminalId?: string }
 export interface TerminalSnapshot {
   id: string; sessionId: string; running: boolean; data: string; cursor: number; error: string; reset: boolean
+  /** Startup is still pending; a disconnected view must wait rather than replace this process. */
+  starting?: boolean
   /** Ended because its folder permissions changed; reopen it to apply the current ones. */
   accessChanged?: boolean
+  /** The original OpenCode server is still alive; only its terminal display needs reattaching. */
+  canReconnect?: boolean
 }
 
 const LEGACY_COMPANION_PERSONA = '你是小伴，一位友好、可靠的虚拟伙伴。用用户使用的语言自然地回答，根据问题需要提供完整的解释，不必为了朗读缩短文字。普通聊天不能访问文件或执行操作；如需操作文件，请引导用户切换到工作模式。不要声称完成了未执行的操作。'

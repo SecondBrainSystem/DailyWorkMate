@@ -1,4 +1,5 @@
 export const IpcChannels = {
+  INFERENCE: { request: 'inference:request', cancel: 'inference:cancel', data: 'inference:data' },
   TERMINAL: {
     get: 'terminal:get', create: 'terminal:create', select: 'terminal:select', close: 'terminal:close', restart: 'terminal:restart',
     poll: 'terminal:poll', write: 'terminal:write', resize: 'terminal:resize', savePreferences: 'terminal:savePreferences', pickDirectory: 'terminal:pickDirectory',
@@ -7,6 +8,7 @@ export const IpcChannels = {
     inspectFolders: 'companion:inspectFolders', importWorkspaces: 'companion:importWorkspaces',
     openWorkspace: 'companion:openWorkspace', openTerminalDirectory: 'companion:openTerminalDirectory',
     openTerminal: 'companion:openTerminal', pollTerminal: 'companion:pollTerminal',
+    reconnectTerminal: 'companion:reconnectTerminal',
     writeTerminal: 'companion:writeTerminal', resizeTerminal: 'companion:resizeTerminal', closeTerminal: 'companion:closeTerminal',
     localSpeechStatus: 'companion:localSpeechStatus',
     warmupSpeech: 'companion:warmupSpeech',

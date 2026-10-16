@@ -5,13 +5,16 @@ import path from 'node:path'
 import {
   OpenCodeFreeModelCatalogue, OPENCODE_FREE_CATALOGUE_TTL, OPENCODE_INFERENCE_BASE_URL, OPENCODE_ZEN_BASE_URL,
   OPENCODE_MODEL_CATALOGUE_URL, parseOpenCodeFreeModels,
+  OPENCODE_OPENAI_BASE_URL, OPENCODE_ANTHROPIC_BASE_URL,
 } from '../../src/main/companion/opencodeModels.ts'
+import { buildOpenCodeConfig } from '../../src/main/companion/opencodeConfig.ts'
+import { buildOpenCodeV2Config } from '../../src/main/companion/opencodeV2Config.ts'
 
 const model = (id = 'public-model', overrides: Record<string, unknown> = {}) => ({
   id, name: id, cost: { input: 0, output: 0 }, limit: { context: 128_000, output: 16_000 },
   modalities: { input: ['text'], output: ['text'] }, tool_call: true, ...overrides,
 })
-const catalog = (models = [model()]) => ({ opencode: { api: OPENCODE_INFERENCE_BASE_URL, npm: '@ai-sdk/openai-compatible', models: Object.fromEntries(models.map(item => [item.id, item])) } })
+const catalog = (models = [model()]) => ({ opencode: { api: OPENCODE_OPENAI_BASE_URL, npm: '@ai-sdk/openai-compatible', models: Object.fromEntries(models.map(item => [item.id, item])) } })
 const live = (ids = ['public-model']) => ({ data: ids.map(id => ({ id })) })
 const response = (data: unknown, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } })
 
@@ -45,18 +48,40 @@ test('native catalog preserves SDK protocol and model tool/vision capabilities',
   assert.equal(parsed.find(item => item.apiModel === 'messages')?.protocol, 'messages')
 })
 
-test('official catalogue migration accepts inference and legacy Zen bases without allowing other routes', () => {
-  const candidates = [model('current', { provider: { api: OPENCODE_INFERENCE_BASE_URL } }),
+test('official catalogue migration accepts protocol-specific routes and legacy bases without allowing other routes', () => {
+  const candidates = [model('current', { provider: { api: OPENCODE_OPENAI_BASE_URL } }),
+    model('inference', { provider: { api: OPENCODE_INFERENCE_BASE_URL } }),
     model('legacy', { provider: { api: OPENCODE_ZEN_BASE_URL } }),
+    model('messages', { provider: { npm: '@ai-sdk/anthropic', api: OPENCODE_ANTHROPIC_BASE_URL } }),
+    model('wrong-protocol', { provider: { npm: '@ai-sdk/anthropic', api: OPENCODE_OPENAI_BASE_URL } }),
     model('untrusted', { provider: { api: 'https://opencode.ai.evil.example/inference/v1' } }),
     model('wrong-route', { provider: { api: 'https://opencode.ai/other/v1' } })]
   const listing = live(candidates.map(item => item.id))
-  for (const api of [OPENCODE_INFERENCE_BASE_URL, OPENCODE_ZEN_BASE_URL]) {
+  for (const api of [OPENCODE_OPENAI_BASE_URL, OPENCODE_INFERENCE_BASE_URL, OPENCODE_ZEN_BASE_URL]) {
     const catalogue = { opencode: { ...catalog(candidates).opencode, api } }
-    assert.deepEqual(parseOpenCodeFreeModels(catalogue, listing).map(item => item.apiModel), ['current', 'legacy'])
+    assert.deepEqual(parseOpenCodeFreeModels(catalogue, listing).map(item => item.apiModel), ['current', 'inference', 'legacy', 'messages'])
   }
-  for (const api of ['https://other.example/inference/v1', OPENCODE_INFERENCE_BASE_URL + '?redirect=other', 'http://opencode.ai/inference/v1']) {
+  for (const api of ['https://other.example/inference/v1', OPENCODE_INFERENCE_BASE_URL + '?redirect=other', 'http://opencode.ai/inference/v1',
+    OPENCODE_OPENAI_BASE_URL + '/other', OPENCODE_OPENAI_BASE_URL + '?redirect=other', 'https://opencode.ai.evil.example/inference/openai/v1', OPENCODE_ANTHROPIC_BASE_URL]) {
     assert.throws(() => parseOpenCodeFreeModels({ opencode: { ...catalog().opencode, api } }, live()), /格式/)
+  }
+})
+
+test('native V1 and V2 configs migrate even cached free models to the correct inference protocol', () => {
+  const grant = { id: 'qa', name: 'workspace', path: path.resolve('tmp/free-model-config'), writable: true }
+  const guard = path.resolve('tmp/free-model-guard')
+  const candidates = [model('chat'), model('responses', { provider: { npm: '@ai-sdk/openai' } }), model('messages', { provider: { npm: '@ai-sdk/anthropic' } })]
+  const legacy = { opencode: { ...catalog(candidates).opencode, api: OPENCODE_ZEN_BASE_URL } }
+  for (const free of parseOpenCodeFreeModels(legacy, live(candidates.map(item => item.id)))) {
+    const endpoint = free.protocol === 'messages' ? 'https://opencode.ai/inference/anthropic/v1' : 'https://opencode.ai/inference/openai/v1'
+    const v1 = buildOpenCodeConfig([grant], grant, free.id, 'http://unused.local/v1', undefined, free)
+    assert.equal(v1.provider.opencode?.models[free.apiModel].provider.api, endpoint)
+    const v2 = buildOpenCodeV2Config([grant], grant, free.id, 'http://unused.local/v1', undefined, free, guard)
+    assert.equal(v2.providers.opencode.settings.baseURL, endpoint)
+    assert.equal(v2.providers.opencode.settings.apiKey, 'public')
+    assert.equal(v2.providers.opencode.models[free.apiModel].package, free.protocol === 'messages' ? '@opencode/ai/providers/anthropic'
+      : free.protocol === 'responses' ? '@opencode/ai/providers/openai' : '@opencode/ai/providers/openai-compatible')
+    assert.deepEqual(v2.model, { providerID: 'opencode', model: free.apiModel })
   }
 })
 

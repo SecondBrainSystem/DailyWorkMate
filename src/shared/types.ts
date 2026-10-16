@@ -159,6 +159,7 @@ export interface AppConfig {
   modelFeatureDefaults: import('./modelFeatures').ModelFeatureDefaults
   proxyPort: number
   proxyHost: string
+  additionalProxyListeners?: ProxyListenerConfig[]
   loadBalanceStrategy: LoadBalanceStrategy
   modelMappings: Record<string, ModelMapping>
   ollamaRouting: OllamaRoutingConfig
@@ -201,12 +202,24 @@ export interface LogEntry {
   error?: string
 }
 
+export interface ProxyListenerConfig {
+  port: number
+  host: string
+}
+
+export interface ProxyListenerStatus extends ProxyListenerConfig {
+  isRunning: boolean
+  uptime: number
+  connections: number
+}
+
 export interface ProxyStatus {
   isRunning: boolean
   port: number
   host: string
   uptime: number
   connections: number
+  listeners?: ProxyListenerStatus[]
 }
 
 export interface ProxyStatistics {
@@ -391,6 +404,7 @@ export interface ProxyStatusResponse {
   host: string
   uptime: number
   connections: number
+  listeners?: ProxyListenerStatus[]
 }
 
 export interface HealthCheckResponse {
@@ -429,6 +443,7 @@ export interface StatisticsResponse {
 export interface ConfigUpdateRequest {
   proxyPort?: number
   proxyHost?: string
+  additionalProxyListeners?: ProxyListenerConfig[]
   loadBalanceStrategy?: LoadBalanceStrategy
   theme?: Theme
   autoStart?: boolean

@@ -40,6 +40,7 @@ before(async () => {
         export const storeManager = {
           addLog: () => {}, getModelOverrides: () => ({}), getConfig: () => state.config,
           updateConfig: updates => {state.config={...state.config,...updates}},
+          restoreModel: () => {}, removeModel: () => {},
           getEffectiveModels: () => [{displayName:'model',actualModelId:'model'}],
         };
       ` }))
@@ -53,7 +54,7 @@ before(async () => {
     if (raw) requestBodies.push({ path: req.url, body: JSON.parse(raw) })
     res.setHeader('Content-Type', 'application/json')
     if (mode === 'hold' && req.url === '/api/tags') { held = res; return }
-    if (mode === 'hold-probe' && req.url === '/api/chat') { held = res; return }
+    if (req.url === '/api/chat' && (mode === 'hold-probe' || (mode === 'hold-second' && JSON.parse(raw).model === 'other'))) { held = res; return }
     if (mode === 'unauthorized') { res.statusCode=401;res.end('{"error":"not authorized"}');return }
     if (req.url === '/api/tags') { res.end(JSON.stringify({models:mode === 'empty' ? [] : modelNames.map(name => ({name}))}));return }
     if (req.url === '/api/show') { res.end('{}');return }
@@ -61,7 +62,7 @@ before(async () => {
       res.end(JSON.stringify({message:{tool_calls:[]},choices:[{message:{tool_calls:[]}}]}));return
     }
     if (mode === 'reasoning' && req.url === '/v1/chat/completions') {res.end('{"choices":[{"message":{"reasoning_content":"checking"}}]}');return}
-    if (req.url === '/api/chat' && mode === 'normal') {res.end('{"message":{"content":"OK"},"done":true}');return}
+    if (req.url === '/api/chat' && (mode === 'normal' || mode === 'hold-second' || (mode === 'mixed' && JSON.parse(raw).model === 'model'))) {res.end('{"message":{"content":"OK"},"done":true}');return}
     if (mode === 'empty-tools' && req.url === '/v1/messages') {res.end('{"content":[]}');return}
     res.statusCode=404;res.end('{"error":"not found"}')
   })
@@ -161,14 +162,17 @@ test('manual test progress names only the clicked model and is cleared after com
   assert.deepEqual(module.OllamaNodeManager.getScanProgress(),[])
 })
 
-test('catalog refresh does not test any models or mark untested models failed', async () => {
-  module.reset(baseUrl); modelNames = ['model', 'other']
+test('refresh discovers then tests every model and records partial failures', async () => {
+  module.reset(baseUrl); modelNames = ['model', 'other']; mode = 'mixed'
   const summary = await module.OllamaNodeManager.scan('node')
-  assert.deepEqual(calls, ['/api/tags'])
+  assert.equal(calls[0], '/api/tags')
   assert.equal(summary.status, 'online')
   assert.deepEqual(summary.supportedModels, modelNames)
-  assert.ok(Object.values(summary.ollamaModels).every(model => model.testStatus === 'untested' && !model.error && !model.testedAt))
-  assert.ok(Object.values(summary.ollamaModels).every(model => model.endpoint === 'ollama_chat'))
+  assert.equal(summary.ollamaModels.model.testStatus, 'passed')
+  assert.equal(summary.ollamaModels.other.testStatus, 'failed')
+  assert.ok(summary.ollamaModels.other.error)
+  assert.ok(requestBodies.some(request => request.body.model === 'other' && request.path === '/api/chat'))
+  assert.throws(() => module.OllamaNodeManager.setModelEnabled('node', 'other', true), /unavailable/)
 })
 
 test('manual success and failure update only the clicked model and never isolate its account', async () => {
@@ -191,23 +195,19 @@ test('manual success and failure update only the clicked model and never isolate
   assert.equal(module.state.provider.status, 'online')
   assert.equal(module.state.account, account)
   await module.OllamaNodeManager.scan('node')
-  assert.equal(module.state.provider.ollamaModels.model.testStatus, 'failed', 'refresh preserves explicit evidence')
+  assert.equal(module.state.provider.ollamaModels.model.testStatus, 'failed', 'refresh retests failed models')
 })
 
-test('refresh clears legacy bulk errors but preserves explicit test results', async () => {
-  module.reset(baseUrl); modelNames = ['model', 'other']
+test('refresh replaces stale failure evidence with current inference results', async () => {
+  module.reset(baseUrl)
   module.state.provider = {...module.state.provider, ollamaModels: {
-    model: {name:'model',vision:'unknown',error:'old bulk timeout',testedAt:1},
-    other: {name:'other',endpoint:'openai_chat',vision:'supported',testStatus:'passed',testedAt:2},
+    model: {name:'model',endpoint:'ollama_chat',vision:'unknown',testStatus:'failed',error:'old timeout',testedAt:1},
   }}
   const summary = await module.OllamaNodeManager.scan('node')
-  assert.equal(summary.ollamaModels.model.testStatus, 'untested')
+  assert.equal(summary.ollamaModels.model.testStatus, 'passed')
   assert.equal(summary.ollamaModels.model.error, undefined)
-  assert.equal(summary.ollamaModels.model.testedAt, undefined)
-  assert.equal(summary.ollamaModels.other.testStatus, 'passed')
-  assert.equal(summary.ollamaModels.other.endpoint, 'openai_chat')
-  assert.equal(summary.ollamaModels.other.testedAt, 2)
-  assert.deepEqual(calls, ['/api/tags'])
+  assert.ok(summary.ollamaModels.model.testedAt > 1)
+  assert.doesNotThrow(() => module.OllamaNodeManager.setModelEnabled('node', 'model', true))
 })
 
 test('cancelling a manual model test preserves all stored results and allows retry', async () => {
@@ -226,4 +226,72 @@ test('cancelling a manual model test preserves all stored results and allows ret
   assert.deepEqual(module.OllamaNodeManager.getScanProgress(), [])
   mode = 'normal'
   assert.equal((await module.OllamaNodeManager.testModel('node', 'model')).testStatus, 'passed')
+})
+
+test('cancel refresh during inference closes the request, keeps completed rows and stops queued models', async () => {
+  module.reset(baseUrl); modelNames = ['model', 'other', 'queued']; mode = 'hold-second'
+  const scan = module.OllamaNodeManager.scan('node')
+  const rejected = assert.rejects(scan, /cancelled/)
+  await waitForHeld()
+  assert.deepEqual(module.OllamaNodeManager.getScanProgress(), [{providerId:'node',model:'other',completed:1,total:3}])
+  const closed = new Promise(resolve => held.once('close', resolve))
+  module.OllamaNodeManager.cancelScan('node')
+  await rejected
+  await Promise.race([closed, new Promise((_, reject) => setTimeout(() => reject(new Error('Socket not closed')), 500))])
+  assert.equal(module.state.provider.ollamaModels.model.testStatus, 'passed')
+  assert.equal(module.state.provider.ollamaModels.other.testStatus, 'untested')
+  assert.equal(module.state.provider.ollamaModels.queued.endpoint, undefined)
+  assert.ok(!requestBodies.some(request => request.body.model === 'queued'))
+  assert.deepEqual(module.OllamaNodeManager.getScanProgress(), [])
+  mode = 'normal'
+  assert.equal((await module.OllamaNodeManager.scan('node')).ollamaModels.queued.testStatus, 'passed')
+})
+
+test('failed discovery retains cached evidence but blocks enabling; a refreshed test can recover', async () => {
+  module.reset(baseUrl)
+  await module.OllamaNodeManager.scan('node')
+  mode = 'unauthorized'
+  const offline = await module.OllamaNodeManager.scan('node')
+  assert.equal(offline.status, 'offline')
+  assert.equal(offline.modelCount, 1)
+  assert.equal(offline.ollamaModels.model.testStatus, 'passed', 'historical evidence is retained')
+  assert.throws(() => module.OllamaNodeManager.setModelEnabled('node', 'model', true), /unavailable/)
+  mode = 'normal'
+  assert.equal((await module.OllamaNodeManager.scan('node')).status, 'online')
+  assert.doesNotThrow(() => module.OllamaNodeManager.setModelEnabled('node', 'model', true))
+})
+
+test('failed single model with a remembered endpoint cannot be enabled', async () => {
+  module.reset(baseUrl)
+  await module.OllamaNodeManager.scan('node')
+  mode = 'empty-tools'
+  assert.equal((await module.OllamaNodeManager.testModel('node', 'model')).testStatus, 'failed')
+  assert.equal(module.state.provider.ollamaModels.model.endpoint, 'ollama_chat')
+  assert.throws(() => module.OllamaNodeManager.setModelEnabled('node', 'model', true), /unavailable/)
+  assert.doesNotThrow(() => module.OllamaNodeManager.setModelEnabled('node', 'model', false))
+})
+
+test('Vision tests expose progress and cancel without overwriting model evidence', async () => {
+  module.reset(baseUrl)
+  await module.OllamaNodeManager.scan('node')
+  const provider = module.state.provider
+  mode = 'hold-probe'
+  const pending = module.OllamaNodeManager.testVision('node', 'model')
+  const rejected = assert.rejects(pending, /cancelled/)
+  await waitForHeld()
+  assert.equal(module.OllamaNodeManager.getScanProgress()[0].model, 'model')
+  module.OllamaNodeManager.cancelScan('node')
+  await rejected
+  assert.equal(module.state.provider, provider)
+  assert.deepEqual(module.OllamaNodeManager.getScanProgress(), [])
+})
+
+test('a timed out model probe does not spend a new timeout on every compatibility path', async () => {
+  mode = 'hold-probe'
+  const start = Date.now()
+  const result = await module.probeEndpoint(baseUrl, 'model', {}, undefined, 150)
+  assert.ok(result.error)
+  assert.equal(result.endpoint, undefined)
+  assert.deepEqual(calls, ['/api/chat'])
+  assert.ok(Date.now() - start < 1500)
 })
