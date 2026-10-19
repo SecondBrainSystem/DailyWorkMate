@@ -9,7 +9,7 @@ import { ApplicationLogs } from '@/components/logs/ApplicationLogs'
 import { Button } from '@/components/ui/button'
 
 export default function LogsPage() {
-  const { t, i18n } = useTranslation()
+  const { t } = useTranslation()
   const [searchParams] = useSearchParams()
   const tabFromUrl = searchParams.get('tab')
   
@@ -24,7 +24,7 @@ export default function LogsPage() {
   return (
     <div className="space-y-6">
       <PageHeader icon={FileText} title={t('logs.title')} description={t('logs.description')} />
-      <div className="flex gap-2"><Button variant={activeTab === 'request' ? 'default' : 'outline'} onClick={() => setActiveTab('request')}>{t('logs.requestLogs')}</Button><Button variant={activeTab === 'app' ? 'default' : 'outline'} onClick={() => setActiveTab('app')}>{i18n.language.startsWith('zh') ? '应用运行日志' : 'Application logs'}</Button></div>
+      <div className="flex gap-2"><Button variant={activeTab === 'request' ? 'default' : 'outline'} onClick={() => setActiveTab('request')}>{t('logs.requestLogs')}</Button><Button variant={activeTab === 'app' ? 'default' : 'outline'} onClick={() => setActiveTab('app')}>{t('logs.appLogs')}</Button></div>
 
       <Card>
         <CardHeading icon={FileText} title={activeTab === 'request' ? t('logs.requestLogs') : t('logs.appLogs')} description={activeTab === 'request' ? t('logs.requestLogsHint') : t('logs.appLogsHint')} />

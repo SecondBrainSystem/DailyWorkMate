@@ -1,4 +1,4 @@
-import test from 'node:test'
+import test, { before } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   canOfferToolRecovery,
@@ -10,6 +10,9 @@ import {
   type ToolRecoveryRetryContext,
 } from '../../src/renderer/src/lib/companionToolRecovery.ts'
 import { chatWorkspaceIdentity, workspaceSelectionFromState } from '../../src/renderer/src/lib/workspaceAgent.ts'
+import { i18nReady } from './i18nSetup.ts'
+
+before(() => i18nReady)
 
 const refusal = "I can't make that tool call. I can help with a weather lookup or a read-only database connectivity check."
 const observation: ToolRecoveryObservation = { text: refusal, error: '', aborted: false, running: false, toolCount: 0, permissionCount: 0 }

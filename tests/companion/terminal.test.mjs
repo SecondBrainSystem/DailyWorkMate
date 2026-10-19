@@ -100,6 +100,28 @@ test('closing during startup prevents a late PTY launch and stale cleanup cannot
   await service.close(next.id)
 })
 
+test('only a pending preparation is cancelled, so the agent never accumulates cancelled IDs', async () => {
+  let release
+  const wait = new Promise(resolve => { release = resolve })
+  const { state, service, runtime } = fixture(async terminalInput => { if (terminalInput.terminalId === pendingId) await wait; return runtime })
+  const cancelled = []
+  const pendingId = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+  service.agent.cancelPreparation = id => cancelled.push(id)
+  const pending = service.open({ ...input, terminalId: pendingId })
+  await service.close(pendingId)
+  release(); await assert.rejects(pending, /cancelled/)
+  assert.deepEqual(cancelled, [pendingId])
+  const running = await service.open(input)
+  state.exit({ exitCode: 0 })
+  await service.close(running.id)
+  const failed = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+  const broken = fixture(async () => { throw new Error('model unavailable') })
+  broken.service.agent.cancelPreparation = id => cancelled.push(id)
+  await assert.rejects(broken.service.open({ ...input, terminalId: failed }), /model unavailable/)
+  await broken.service.close(failed)
+  assert.deepEqual(cancelled, [pendingId], 'running, exited and failed tabs do not register cancellations')
+})
+
 test('a disconnected view can keep observing pending startup without replacing its task', async () => {
   let release
   const wait = new Promise(resolve => { release = resolve })

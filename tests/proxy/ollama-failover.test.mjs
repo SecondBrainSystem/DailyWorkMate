@@ -28,7 +28,7 @@ before(async () => {
             getEffectiveModels: id => state.providers.find(p => p.id === id).supportedModels.map(model => ({displayName:model,actualModelId:model})),
             getAccountsByProviderId: id => [{id,providerId:id,status:'active',credentials:{authType:'none'}}],
             getAccountById: () => undefined,
-            addLog: (...args) => state.logs.push(args), recordRequestInStats: (...args) => state.outcomes.push(args),
+            addLog: (...args) => state.logs.push(args), recordRequestInStats: (...args) => state.outcomes.push(args), recordAccountUsage: () => {}, updateProvider: () => null,
             recordTokenUsage: () => {},
           }`, resolveDir: process.cwd() }))
     } }],
@@ -40,6 +40,7 @@ before(async () => {
     const body = JSON.parse(Buffer.concat(chunks).toString())
     requests.push({ index, body })
     if (index === 0 && mode === 'hang') return
+    if (index === 0 && mode === 'down') { req.socket.destroy(); return }
     if (mode === 'all-fail' || index === 0 && (mode === 'fail' || mode === 'bad-input')) {
       res.writeHead(mode === 'bad-input' ? 400 : 503, {'Content-Type':'application/json'})
       res.end(JSON.stringify({error:mode === 'bad-input' ? 'context too large' : 'node overloaded'}))
@@ -113,7 +114,8 @@ test('all failed retries clear the original session preference before nodes reco
   assert.equal((await dispatch('recovered nodes resume balancing', false, undefined, headers)).selection.provider.id, '1')
 })
 
-test('long UTF-8 input survives node failover intact; subsequent requests skip the failed node', async () => {
+test('long UTF-8 input survives node failover intact; subsequent requests skip the unreachable node', async () => {
+  mode = 'down'
   for (const strategy of ['round-robin','fill-first','failover']) {
     requests = []
     module.loadBalancer.clearAccountFailure('0')
@@ -129,6 +131,33 @@ test('long UTF-8 input survives node failover intact; subsequent requests skip t
     assert.equal(requests.filter(r => r.index === 0).length, 1)
   }
   assert.equal(module.proxyStatusManager.getStatistics().activeConnections, 0)
+})
+
+test('an HTTP 5xx fails over but only counts toward quarantine; three in a row quarantine the node', async () => {
+  for (let failure = 1; failure <= 3; failure += 1) {
+    requests = []
+    const {result, selection} = await dispatch()
+    assert.equal(result.success, true)
+    assert.equal(selection.provider.id, '1')
+    // The node that answered 5xx is still preferred until it reaches the failure threshold.
+    assert.deepEqual(requests.map(r => r.index), [0, 1])
+  }
+  requests = []
+  assert.equal((await dispatch()).selection.provider.id, '1')
+  assert.deepEqual(requests.map(r => r.index), [1])
+})
+
+test('when every node is quarantined the least-failed node is still tried', async () => {
+  mode = 'down'
+  module.state.config = {...module.state.config, loadBalanceStrategy:'failover', retryCount:0}
+  module.loadBalancer.markAccountFailed('0', true)
+  module.loadBalancer.markAccountFailed('1', true)
+  module.loadBalancer.markAccountFailed('0')
+  requests = []
+  const {result, selection} = await dispatch()
+  assert.equal(result.success, true)
+  assert.equal(selection.provider.id, '1')
+  assert.deepEqual(requests.map(r => r.index), [1])
 })
 
 test('fixed providers, different models and disabled retries never switch nodes', async () => {

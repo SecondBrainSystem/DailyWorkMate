@@ -1,3 +1,4 @@
+import i18n from 'i18next'
 import type { AppConfig } from '@/types/electron'
 
 export interface ChatApiMessage {
@@ -106,7 +107,7 @@ export async function readChatCompletionStream(
         ...(toolCalls.length ? { toolCalls } : {}),
       })
     }
-    if (reason === 'length') throw new Error('模型已达到输出或上下文上限，当前回复尚未完整。请继续生成、分段处理，或选择更大上下文的模型。 / The model reached its output or context limit; this reply is incomplete. Continue, split the input, or choose a larger-context model.')
+    if (reason === 'length') throw new Error(i18n.t('chatClient.lengthLimit'))
   }
 
   const consumeLine = (line: string) => {

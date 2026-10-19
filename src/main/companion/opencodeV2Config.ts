@@ -29,6 +29,8 @@ export function buildOpenCodeV2Config(
     return [...new Set(roots.flatMap(root => root ? [root, root + '/*'] : ['.', '*']))]
   }
   const ordered = [...grants].sort((a, b) => a.path.length - b.path.length)
+  // A command can touch any folder, so it is approved automatically only when every folder is writable.
+  const shell = !current.writable || !allowShell ? 'deny' as const : autoApproveCommands && grants.every(grant => grant.writable) ? 'allow' as const : 'ask' as const
   const permissions: Rule[] = [
     { action: '*', resource: '*', effect: 'deny' },
     ...['glob', 'grep', 'todowrite', 'todoread', 'todo'].map(action => ({ action, resource: '*', effect: 'allow' as const })),
@@ -37,7 +39,7 @@ export function buildOpenCodeV2Config(
       { action: 'edit', resource, effect: grant.writable ? 'allow' as const : 'deny' as const },
     ])),
     ...ordered.flatMap(grant => patterns(grant, false).map(resource => ({ action: 'external_directory', resource, effect: 'allow' as const }))),
-    { action: 'shell', resource: '*', effect: current.writable && allowShell ? autoApproveCommands ? 'allow' : 'ask' : 'deny' },
+    { action: 'shell', resource: '*', effect: shell },
     ...secretPatterns.flatMap(resource => ['read', 'edit'].map(action => ({ action, resource, effect: 'deny' as const }))),
   ]
   const policyPermissions = permissions.map(rule => ({ action: 'permission', resource: rule.action + ':' + rule.resource, effect: rule.effect === 'deny' ? 'deny' : 'allow' }))

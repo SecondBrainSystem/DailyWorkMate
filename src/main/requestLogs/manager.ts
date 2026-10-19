@@ -41,6 +41,37 @@ export class RequestLogManager {
     if (filtered.length !== this.requestLogs.length) { this.requestLogs = filtered; this.schedulePersist() }
   }
   private readonly persistDelayMs = 2000
+  /** Live-view notifications: at most one per log entry per window, carrying its latest state. */
+  private readonly notifyDelayMs = 250
+  private listeners: ReadonlySet<(entry: RequestLogEntry) => void> = new Set()
+  private pendingNotifications: ReadonlyMap<string, RequestLogEntry> = new Map()
+  private notifyTimers: ReadonlyMap<string, NodeJS.Timeout> = new Map()
+
+  /** Subscribe to added or updated entries (without bodies). Returns the unsubscribe function. */
+  onLogChanged(listener: (entry: RequestLogEntry) => void): () => void {
+    this.listeners = new Set([...this.listeners, listener])
+    return () => { this.listeners = new Set([...this.listeners].filter(item => item !== listener)) }
+  }
+
+  private notifyChanged(entry: RequestLogEntry): void {
+    if (!this.listeners.size) return
+    const { requestBody: _request, responseBody: _response, errorStack: _stack, ...summary } = entry
+    this.pendingNotifications = new Map([...this.pendingNotifications, [entry.id, summary]])
+    if (this.notifyTimers.has(entry.id)) return
+    const timer = setTimeout(() => {
+      const latest = this.pendingNotifications.get(entry.id)
+      this.pendingNotifications = new Map([...this.pendingNotifications].filter(([id]) => id !== entry.id))
+      this.notifyTimers = new Map([...this.notifyTimers].filter(([id]) => id !== entry.id))
+      if (!latest) return
+      for (const listener of this.listeners) {
+        try { listener(latest) } catch (error) {
+          console.error('[RequestLogs] Log change listener failed:', error)
+        }
+      }
+    }, this.notifyDelayMs)
+    timer.unref?.()
+    this.notifyTimers = new Map([...this.notifyTimers, [entry.id, timer]])
+  }
 
   constructor(options: RequestLogManagerOptions) {
     this.storageDir = options.storageDir
@@ -103,6 +134,7 @@ export class RequestLogManager {
     this.requestLogs = [...this.requestLogs, logEntry]
     this.requestLogs = trimRequestLogsToMaxEntries(this.requestLogs, this.config)
     this.schedulePersist()
+    this.notifyChanged(logEntry)
 
     return logEntry
   }
@@ -120,6 +152,7 @@ export class RequestLogManager {
 
     this.requestLogs = this.requestLogs.map((entry, i) => i === index ? { ...entry, ...sanitizeRequestLogUpdates(updates, this.config) } : entry)
     this.schedulePersist()
+    this.notifyChanged(this.requestLogs[index])
     return true
   }
 
@@ -249,17 +282,22 @@ export class RequestLogManager {
       .filter((entry): entry is RequestLogEntry => entry !== null)
   }
 
+  /**
+   * Throttle, not debounce: a steady stream of requests less than persistDelayMs apart would
+   * otherwise postpone the write forever. The first change starts the timer; later changes join it.
+   */
   private schedulePersist(): void {
     this.dirty = true
-
-    if (this.persistTimer) {
-      clearTimeout(this.persistTimer)
-    }
+    if (this.persistTimer) return
 
     this.persistTimer = setTimeout(() => {
       this.persistTimer = null
-      this.persistNow()
+      try { this.persistNow() } catch (error) {
+        // Entries stay dirty, so the next change or the quit flush retries the write.
+        console.error('[RequestLogs] Failed to save request logs:', error)
+      }
     }, this.persistDelayMs)
+    this.persistTimer.unref?.()
   }
 
   private persistNow(): void {

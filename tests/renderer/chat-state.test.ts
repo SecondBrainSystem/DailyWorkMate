@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { CHAT_STORAGE_KEY, loadPersistedChatState, persistChatState } from '../../src/renderer/src/lib/chatWorkspace.ts'
+import { CHAT_STORAGE_KEY, chatStateBackup, loadPersistedChatState, persistChatState, restoreOmittedImages } from '../../src/renderer/src/lib/chatWorkspace.ts'
 import { createProxyHeaders, readChatCompletionStream } from '../../src/renderer/src/lib/chatClient.ts'
 
 test('clear persists immediately and cannot restore previous history', () => {
@@ -34,13 +34,47 @@ test('workspace failures and confirmed tools survive history normalization witho
   assert.deepEqual(restored.messages, [failure, tools])
 })
 
-test('quota failure removes stale history without silently dropping attachments', () => {
-  let removed = ''
+test('a backup that cannot be written keeps the previous good copy', () => {
+  const values = new Map([[CHAT_STORAGE_KEY, '{"messages":[{"id":"old","role":"user","content":"kept"}]}']])
   const saved = persistChatState({ messages: [], model: '', promptId: '', vision: 'auto', thinking: 'auto' }, {
-    setItem: () => { throw new Error('QuotaExceededError') }, removeItem: key => { removed = key },
+    setItem: () => { throw new Error('QuotaExceededError') },
   })
   assert.equal(saved, false)
-  assert.equal(removed, CHAT_STORAGE_KEY)
+  assert.equal(loadPersistedChatState({ getItem: key => values.get(key) ?? null }).messages[0].content, 'kept')
+  const oversized = persistChatState({ messages: [{ id: 'big', role: 'user', content: 'x'.repeat(3_000_001) }], model: '', promptId: '', vision: 'auto', thinking: 'auto' }, {
+    setItem: (key, value) => { values.set(key, value) },
+  })
+  assert.equal(oversized, false)
+  assert.equal(loadPersistedChatState({ getItem: key => values.get(key) ?? null }).messages[0].content, 'kept')
+})
+
+const image = (id: string) => ({ id, name: id + '.png', mimeType: 'image/png', size: 4, kind: 'image' as const, content: 'data:image/png;base64,AAAA' })
+const text = (id: string) => ({ id, name: id + '.txt', mimeType: 'text/plain', size: 2, kind: 'text' as const, content: 'hi' })
+
+test('the synchronous backup leaves out image data and records the omitted ids', () => {
+  const values = new Map<string, string>()
+  const state = { messages: [{ id: 'u', role: 'user' as const, content: 'see', attachments: [image('a'), text('t')] }], draftAttachments: [image('d')], model: 'm', promptId: '', vision: 'auto' as const, thinking: 'auto' as const }
+  assert.equal(persistChatState(state, { setItem: (key, value) => { values.set(key, value) } }), true)
+  assert.doesNotMatch(values.get(CHAT_STORAGE_KEY)!, /base64/)
+  const restored = loadPersistedChatState({ getItem: key => values.get(key) ?? null })
+  assert.deepEqual(restored.messages[0].attachments, [text('t')])
+  assert.deepEqual(restored.draftAttachments, [])
+  assert.deepEqual(restored.omittedImageIds, ['a', 'd'])
+  assert.equal(state.messages[0].attachments.length, 2, 'the live state is not mutated')
+  assert.equal(chatStateBackup({ ...state, messages: [], draftAttachments: [] }).omittedImageIds, undefined)
+})
+
+test('recovering a backup restores omitted images from history in their original order', () => {
+  const full = { messages: [{ id: 'u', role: 'user' as const, content: 'see', attachments: [image('a'), text('t')] }], draftAttachments: [image('d')], model: 'm', promptId: '', vision: 'auto' as const, thinking: 'auto' as const }
+  const backup = { ...chatStateBackup(full), messages: [...chatStateBackup(full).messages, { id: 'new', role: 'user' as const, content: 'later' }] }
+  const restored = restoreOmittedImages(backup, full)
+  assert.deepEqual(restored.messages[0].attachments, [image('a'), text('t')])
+  assert.deepEqual(restored.draftAttachments, [image('d')])
+  assert.equal(restored.messages[1].content, 'later')
+  assert.equal('omittedImageIds' in restored, false)
+  const lost = restoreOmittedImages(backup, undefined)
+  assert.deepEqual(lost.messages[0].attachments, [text('t')])
+  assert.equal('omittedImageIds' in lost, false)
 })
 
 test('SSE DONE releases the reader even when the server keeps the connection open', async () => {

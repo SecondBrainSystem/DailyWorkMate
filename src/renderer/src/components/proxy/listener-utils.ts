@@ -19,9 +19,14 @@ export function listenerKey(endpoint: ListenerEndpoint): string {
   return `${normalizeListenerHost(endpoint.host)}:${endpoint.port}`
 }
 
-export function listenerUrl(endpoint: ListenerEndpoint): string {
+/** host:port as typed in a client; IPv6 hosts need brackets or the port is read as part of the address. */
+export function listenerAddress(endpoint: ListenerEndpoint): string {
   const host = normalizeListenerHost(endpoint.host)
-  return `http://${host.includes(':') ? `[${host}]` : host}:${endpoint.port}/v1`
+  return `${host.includes(':') ? `[${host}]` : host}:${endpoint.port}`
+}
+
+export function listenerUrl(endpoint: ListenerEndpoint): string {
+  return `http://${listenerAddress(endpoint)}/v1`
 }
 
 export function validateListenerPort(value: string): string | undefined {

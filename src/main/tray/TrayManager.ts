@@ -78,6 +78,8 @@ export class TrayManager {
   private tray: Tray | null = null
   private trayWindow: TrayWindow | null = null
   private mainWindow: BrowserWindow | null = null
+  /** Recreates the main window when it was closed (e.g. on macOS) or destroyed. */
+  private openWindow?: () => Promise<void>
   private isRunning: boolean = false
 
   private constructor() {}
@@ -89,8 +91,9 @@ export class TrayManager {
     return TrayManager.instance
   }
 
-  public create(mainWindow: BrowserWindow): void {
+  public create(mainWindow: BrowserWindow, openWindow?: () => Promise<void>): void {
     this.mainWindow = mainWindow
+    this.openWindow = openWindow ?? this.openWindow
     if (this.tray) return
 
     this.mainWindow = mainWindow
@@ -155,8 +158,8 @@ export class TrayManager {
       this.trayWindow?.setHeight(height)
     })
 
+    // Quitting asks for confirmation first; app.isQuitting is set only once the user confirms.
     ipcMain.on('tray:quit-app', () => {
-      ;(app as any).isQuitting = true
       app.quit()
     })
   }
@@ -175,6 +178,10 @@ export class TrayManager {
       }
       this.mainWindow.show()
       this.mainWindow.focus()
+    } else if (!app.isQuitting && this.openWindow) {
+      void this.openWindow().catch(error => console.error('[Tray] Unable to reopen the main window:', error))
+    } else if (!this.openWindow) {
+      console.error('[Tray] The main window is closed and cannot be recreated')
     }
     this.trayWindow?.hide()
   }
@@ -192,11 +199,11 @@ export class TrayManager {
       {
         label: isZh
           ? this.isRunning
-            ? '停止代理'
-            : '启动代理'
+            ? '停止本地服务'
+            : '启动本地服务'
           : this.isRunning
-            ? 'Stop Proxy'
-            : 'Start Proxy',
+            ? 'Stop local service'
+            : 'Start local service',
         click: () => {
           const config = ConfigManager.get()
           void (proxyServer.isRunning() ? proxyServer.stop() : proxyServer.start(config.proxyPort, config.proxyHost)).then(success => {
@@ -213,7 +220,6 @@ export class TrayManager {
       {
         label: isZh ? '退出 DailyWorkMate' : 'Quit DailyWorkMate',
         click: () => {
-          ;(app as any).isQuitting = true
           app.quit()
         },
       },
@@ -243,8 +249,8 @@ export class TrayManager {
   }
 }
 
-export function createTrayManager(mainWindow: BrowserWindow): TrayManager {
+export function createTrayManager(mainWindow: BrowserWindow, openWindow?: () => Promise<void>): TrayManager {
   const manager = TrayManager.getInstance()
-  manager.create(mainWindow)
+  manager.create(mainWindow, openWindow)
   return manager
 }

@@ -1,12 +1,20 @@
 import { boundedText } from './companion'
 import type { AgentInput } from './companion'
+import type { PaneLayout, SplitDirection, TerminalTab } from './terminalTabs'
 
+/** `opencode` is listed so the Terminal panel can route to a Work tab; the terminal host never runs it. */
 export type ShellKind = 'powershell' | 'cmd' | 'wsl' | 'opencode'
-export interface TerminalPreferences { restoreOnStartup: boolean; keepRunningOnExit: boolean }
+export interface TerminalPreferences {
+  restoreOnStartup: boolean
+  /** Legacy, always false: terminals stop with the application. Kept so saved files and older callers stay valid. */
+  keepRunningOnExit: boolean
+}
 export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = { restoreOnStartup: true, keepRunningOnExit: false }
 export interface TerminalCreateInput {
   id: string; kind: ShellKind; directory: string; cols: number; rows: number
   opencode?: Omit<AgentInput, 'prompt' | 'history'>
+  /** Open as a new pane next to `beside`, in that pane's tab, instead of as a new tab. */
+  split?: { beside: string; direction: SplitDirection }
 }
 export interface TerminalSession {
   id: string; kind: ShellKind; title: string; directory: string; cols: number; rows: number
@@ -17,6 +25,8 @@ export interface TerminalState {
   defaultDirectory: string
   preferences: TerminalPreferences; sessions: TerminalSession[]; activeId: string
   shells: Array<{ kind: ShellKind; available: boolean; reason: string }>
+  /** Pane layout per tab; `activeId` is the focused pane of the active tab. Absent: one pane per tab. */
+  tabs?: TerminalTab[]
 }
 export interface TerminalOutput { data: string; cursor: number; reset: boolean; session: TerminalSession }
 export interface TerminalManagerAPI {
@@ -29,6 +39,8 @@ export interface TerminalManagerAPI {
   write: (id: string, data: string) => Promise<void>
   resize: (id: string, cols: number, rows: number) => Promise<void>
   savePreferences: (preferences: TerminalPreferences) => Promise<TerminalState>
+  /** Persist divider positions; the panes of the tab must stay the same. */
+  saveLayout: (tabId: string, layout: PaneLayout) => Promise<TerminalState>
   pickDirectory: () => Promise<string | null>
 }
 export function terminalId(value: unknown): string {
@@ -47,10 +59,13 @@ export function validateTerminalCreate(value: TerminalCreateInput): TerminalCrea
   const opencode = value.opencode
   if (value.kind === 'opencode' && (!opencode || !opencode.workspaceId || !opencode.model)) throw new Error('Select an authorized folder and model for OpenCode')
   if (opencode && opencode.accessScope !== undefined && !['group', 'folder'].includes(opencode.accessScope)) throw new Error('Invalid OpenCode access scope')
+  const split = value.split
+  if (split !== undefined && (!split || (split.direction !== 'row' && split.direction !== 'column'))) throw new Error('Invalid terminal split')
   return { id: terminalId(value.id), kind: value.kind, directory: boundedText(value.directory, 'terminal directory', 4096, true), cols: value.cols, rows: value.rows,
     ...(value.kind === 'opencode' && opencode ? { opencode: {
       workspaceId: boundedText(opencode.workspaceId, 'workspace ID', 80, true), model: boundedText(opencode.model, 'model', 300, true),
       groupId: boundedText(opencode.groupId || '', 'group ID', 80), relativePath: boundedText(opencode.relativePath || '', 'relative path', 4096),
       accessScope: opencode.accessScope || 'group', sessionId: boundedText(opencode.sessionId || '', 'OpenCode session ID', 140),
-    } } : {}) }
+    } } : {}),
+    ...(split ? { split: { beside: terminalId(split.beside), direction: split.direction } } : {}) }
 }

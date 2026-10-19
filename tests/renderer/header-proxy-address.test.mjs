@@ -17,7 +17,11 @@ test('header proxy badge uses the server status so configured endpoints cannot m
   assert.match(headerSource, /const \[host, setHost\] = useState\('127\.0\.0\.1'\)/)
   assert.match(headerSource, /setHost\(status\.host \|\| '127\.0\.0\.1'\)/)
   assert.doesNotMatch(headerSource, /setHost\(config\.proxyHost/)
-  assert.match(headerSource, /\{host\}:\{port\}/)
+  // IPv6 hosts are bracketed by the shared formatter, as in the listener list and the tray.
+  assert.match(headerSource, /\{listenerAddress\(\{ host, port \}\)\}/)
+  const traySource = readFileSync(join(root, 'src/renderer/src/components/Tray/TrayView.tsx'), 'utf8')
+  assert.match(traySource, /const url = listenerUrl\(\{ host, port \}\)/)
+  assert.doesNotMatch(traySource, /`http:\/\/\$\{host\}:\$\{port\}`/)
   assert.doesNotMatch(headerSource, /127\.0\.0\.1:\{port\}/)
 })
 

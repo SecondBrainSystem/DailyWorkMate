@@ -16,6 +16,8 @@ import { storeManager } from '../store/store'
 import { closeHttpServer } from './serverLifecycle'
 import { isInternalProxyKey } from './internalAuth'
 import { describeProxyListenError } from './listenError'
+import { authorizeApiKey } from './apiKeyAuth'
+import { isLoopbackAddress } from '../../shared/proxyListeners'
 
 const SLOW_REQUEST_THRESHOLD_MS = 1500
 
@@ -24,7 +26,8 @@ interface ActiveListener {
   readonly port: number
   readonly host: string
   readonly startedAt: number
-  readonly connections: ReadonlySet<Socket>
+  /** Owned by this listener only; sockets add and remove themselves as they open and close. */
+  readonly connections: Set<Socket>
 }
 
 /**
@@ -111,45 +114,22 @@ export class ProxyServer {
       }
 
       const config = storeManager.getConfig()
-      if (isInternalProxyKey(ctx.get('Authorization').replace(/^Bearer /, ''))) { await next(); return }
-      
-      if (config.enableApiKey) {
-        const authHeader = ctx.get('Authorization') || ''
-        const providedKey = authHeader.startsWith('Bearer ') 
-          ? authHeader.slice(7) 
-          : (ctx.query.api_key as string) || ctx.get('X-API-Key')
-        
-        if (!providedKey) {
-          ctx.status = 401
-          ctx.body = {
-            error: {
-              message: 'API key is required',
-              type: 'invalid_request_error',
-              code: 'missing_api_key',
-            },
-          }
-          return
-        }
-        
-        const validKey = (config.apiKeys || []).find(
-          k => k.key === providedKey && k.enabled
-        )
-        
-        if (!validKey) {
-          ctx.status = 401
-          ctx.body = {
-            error: {
-              message: 'Invalid API key',
-              type: 'invalid_request_error',
-              code: 'invalid_api_key',
-            },
-          }
-          return
-        }
-        
-        storeManager.recordApiKeyUsage(validKey.id)
+      const authHeader = ctx.get('Authorization') || ''
+      // The internal desktop key never leaves this machine, so it is only honoured on loopback.
+      if (isLoopbackAddress(ctx.socket?.remoteAddress) && isInternalProxyKey(authHeader.replace(/^Bearer /, ''))) { await next(); return }
+      const query = ctx.query.api_key
+      const auth = authorizeApiKey({
+        enableApiKey: config.enableApiKey, apiKeys: config.apiKeys,
+        providedKey: authHeader.startsWith('Bearer ') ? authHeader.slice(7) : (typeof query === 'string' ? query : '') || ctx.get('X-API-Key'),
+        localAddress: ctx.socket?.localAddress, remoteAddress: ctx.socket?.remoteAddress,
+      })
+      if (!auth.ok) {
+        ctx.status = 401
+        ctx.body = { error: { message: auth.message, type: 'invalid_request_error', code: auth.code } }
+        return
       }
-      
+      if (auth.keyId) storeManager.recordApiKeyUsage(auth.keyId)
+
       await next()
     })
 
@@ -167,13 +147,16 @@ export class ProxyServer {
           const selected = ctx.state.dispatchSelection
           const failure = ctx.state.streamError || (disconnected ? 'Client disconnected before completion' : undefined)
           const failed = Boolean(failure) || ctx.status >= 400
+          // Bodies can be up to 50MB; serialize them only when the log will keep them.
+          const logConfig = storeManager.getConfig().requestLogConfig
+          const keepBodies = Boolean(logConfig?.enabled && logConfig.includeBodies)
           const body = ctx.state.responseLogBody || (ctx.body && typeof ctx.body === 'object' && !('pipe' in ctx.body) ? JSON.stringify(ctx.body) : '')
           storeManager.addRequestLog({
             timestamp: startTime, status: failed ? 'error' : 'success', statusCode: failure ? 502 : ctx.status,
             method: ctx.method, url: ctx.path, model: String(request?.model || ''),
             actualModel: selected?.actualModel, providerId: selected?.provider.id, providerName: selected?.provider.name,
             accountId: selected?.account.id, accountName: selected?.account.name,
-            requestBody: request ? JSON.stringify(request) : undefined,
+            requestBody: request && keepBodies ? JSON.stringify(request) : undefined,
             userInput: typeof request?.prompt === 'string' ? request.prompt : JSON.stringify(request?.messages?.filter((message: any) => message.role === 'user').slice(-1) || []),
             responseStatus: failure ? 502 : ctx.status, responseBody: body, responsePreview: body.slice(0, 500),
             latency: Date.now() - startTime, isStream: Boolean(request?.stream), errorMessage: failure || (failed ? body.slice(0, 500) : undefined),
@@ -405,13 +388,11 @@ export class ProxyServer {
 
     return new Promise(resolve => {
       const server = new HttpServer(this.app.callback())
+      // Copying the set per connection was O(n^2) under load; the set belongs to this server alone.
+      const connections = new Set<Socket>()
       server.on('connection', connection => {
-        this.listeners = this.listeners.map(listener => listener.server === server
-          ? { ...listener, connections: new Set([...listener.connections, connection]) } : listener)
-        connection.once('close', () => {
-          this.listeners = this.listeners.map(listener => listener.server === server
-            ? { ...listener, connections: new Set([...listener.connections].filter(socket => socket !== connection)) } : listener)
-        })
+        connections.add(connection)
+        connection.once('close', () => connections.delete(connection))
       })
       server.on('close', () => this.removeListener(server))
       const handleListenError = async (error: unknown): Promise<void> => {
@@ -430,7 +411,7 @@ export class ProxyServer {
             this.sharedLifecycleActive = true
           }
           if (!this.listeners.length) this.setPrimary(endpoint.port, endpoint.host)
-          this.listeners = [...this.listeners, { ...endpoint, server, startedAt: Date.now(), connections: new Set<Socket>() }]
+          this.listeners = [...this.listeners, { ...endpoint, server, startedAt: Date.now(), connections }]
           this.broadcastStatus()
           storeManager.addLog('info', `Proxy server started successfully, listening on ${endpoint.host}:${endpoint.port}`)
           resolve(true)
@@ -479,7 +460,9 @@ export class ProxyServer {
       // Bind the replacement first where possible so a bad address cannot take
       // an otherwise healthy primary endpoint offline.
       if (!requiresRelease && !await this.startListener(endpoint.port, endpoint.host)) return false
-      if (!await this.stopListener(primary)) return false
+      // Re-read the primary: the listener list is replaced as listeners start and stop.
+      const current = this.listeners.find(listener => listener.server === primary.server)
+      if (current && !await this.stopListener(current)) return false
       if (requiresRelease && !await this.startListener(endpoint.port, endpoint.host)) {
         const failure = this.lastError || 'Failed to restart the primary proxy listener'
         if (await this.startListener(primary.port, primary.host)) {

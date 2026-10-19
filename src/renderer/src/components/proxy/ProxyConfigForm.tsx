@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
+import { useShallow } from 'zustand/react/shallow'
 import { useProxyStore } from '@/stores/proxyStore'
 import { useToast } from '@/hooks/use-toast'
 import { Server, AlertCircle } from 'lucide-react'
@@ -22,7 +23,10 @@ interface FormErrors {
 
 export function ProxyConfigForm({ onConfigChange }: ProxyConfigFormProps) {
   const { t } = useTranslation()
-  const { appConfig, proxyConfig, setProxyConfig, saveAppConfig, startProxy, stopProxy, isLoading } = useProxyStore()
+  const { appConfig, proxyConfig, setProxyConfig, saveAppConfig, startProxy, stopProxy, isLoading } = useProxyStore(useShallow(state => ({
+    appConfig: state.appConfig, proxyConfig: state.proxyConfig, setProxyConfig: state.setProxyConfig, saveAppConfig: state.saveAppConfig,
+    startProxy: state.startProxy, stopProxy: state.stopProxy, isLoading: state.isLoading,
+  })))
   const { toast } = useToast()
   const savedPort = appConfig?.proxyPort ?? proxyConfig.port
   const savedHost = appConfig?.proxyHost || proxyConfig.host

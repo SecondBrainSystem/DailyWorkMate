@@ -29,3 +29,9 @@ test('legacy background retention is disabled while preserving the startup resto
   assert.deepEqual(validateTerminalPreferences({ restoreOnStartup: true, keepRunningOnExit: true }), { restoreOnStartup: true, keepRunningOnExit: false })
   assert.deepEqual(validateTerminalPreferences({ restoreOnStartup: false, keepRunningOnExit: true }), { restoreOnStartup: false, keepRunningOnExit: false })
 })
+
+test('a split request names an existing pane ID and a direction, nothing else', () => {
+  const beside = '22222222-1111-1111-1111-111111111111'
+  assert.deepEqual(validateTerminalCreate({ ...input, split: { beside, direction: 'column', file: 'bad.exe' } }), { ...input, split: { beside, direction: 'column' } })
+  for (const split of [null, { beside, direction: 'diagonal' }, { beside: '../x', direction: 'row' }]) assert.throws(() => validateTerminalCreate({ ...input, split }))
+})

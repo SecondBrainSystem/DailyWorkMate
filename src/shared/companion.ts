@@ -49,12 +49,15 @@ export interface OpenCodeFreeCatalogue {
   models: Array<{ id: string; apiModel: string; name: string; contextLimit: number; outputLimit: number; toolCall: boolean }>
   updatedAt: number | null; stale: boolean; error?: string
 }
+export interface CompanionGetOptions { assets?: boolean }
 export interface CompanionSnapshot {
+  /** false: avatarUrl/avatarModelUrl are empty and messages is [] — keep the previously loaded ones. */
   assetsIncluded?: boolean
   warnings?: string[]
   settings: CompanionSettings
   workspaces: WorkspaceGrant[]
   groups: WorkspaceGroup[]
+  /** Legacy chat messages from before history moved to the renderer, for one-time migration. */
   messages: CompanionMessage[]
   home: string
   avatarUrl: string
@@ -106,7 +109,8 @@ export interface CompanionAPI {
   checkOpenCodeUpdate: () => Promise<OpenCodeRuntimeStatus>
   installOpenCodeUpdate: () => Promise<OpenCodeRuntimeStatus>
   openCodeModels: (forceRefresh?: boolean) => Promise<OpenCodeFreeCatalogue>
-  get: () => Promise<CompanionSnapshot>
+  /** Pass { assets: false } for folder and settings data only (no avatar images or legacy messages). */
+  get: (options?: CompanionGetOptions) => Promise<CompanionSnapshot>
   saveSettings: (settings: CompanionSettings) => Promise<CompanionSnapshot>
   saveMessages: (messages: CompanionMessage[]) => Promise<void>
   pickAvatar: () => Promise<CompanionSnapshot>

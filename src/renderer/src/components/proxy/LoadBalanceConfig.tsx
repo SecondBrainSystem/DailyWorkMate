@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow'
 import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeading } from '@/components/ui/card'
@@ -20,12 +21,7 @@ interface LoadBalanceConfigProps {
  */
 export function LoadBalanceConfig({ onConfigChange }: LoadBalanceConfigProps) {
   const { t } = useTranslation()
-  const {
-    loadBalanceStrategy,
-    setLoadBalanceStrategy,
-    saveAppConfig,
-    isLoading,
-  } = useProxyStore()
+  const { loadBalanceStrategy, setLoadBalanceStrategy, saveAppConfig, isLoading } = useProxyStore(useShallow(state => ({ loadBalanceStrategy: state.loadBalanceStrategy, setLoadBalanceStrategy: state.setLoadBalanceStrategy, saveAppConfig: state.saveAppConfig, isLoading: state.isLoading })))
   const { toast } = useToast()
 
   const initialStrategyRef = useRef<LoadBalanceStrategy>(loadBalanceStrategy)

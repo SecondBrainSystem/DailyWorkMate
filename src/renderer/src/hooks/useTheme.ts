@@ -5,7 +5,8 @@ const DARK_QUERY = '(prefers-color-scheme: dark)'
 
 /** Reads the theme preference; ThemeProvider is the one place that applies it to the document. */
 export function useTheme() {
-  const { theme, setTheme } = useSettingsStore()
+  const theme = useSettingsStore(state => state.theme)
+  const setTheme = useSettingsStore(state => state.setTheme)
   const [systemDark, setSystemDark] = useState(() => window.matchMedia(DARK_QUERY).matches)
 
   useEffect(() => {

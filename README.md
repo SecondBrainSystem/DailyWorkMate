@@ -9,7 +9,7 @@ DailyWorkMate is a desktop companion for everyday work. Talk through a plan, let
 ## Highlights
 
 - **Free models, self-hosted or hosted:** add a local or LAN Ollama node to run open models with no API fees, or use OpenCode's free models directly (the free catalog and quotas are provided by OpenCode and may change).
-- **Pick up where you left off:** terminal tabs, shell types and working directories are saved automatically and restored the next time you start the app — no need to reopen terminals and `cd` back after a reboot.
+- **Pick up where you left off:** terminal tabs, split panes, shell types and working directories are saved automatically and restored the next time you start the app — no need to reopen terminals and `cd` back after a reboot.
 - **Workspace history:** authorized folders, folder groups and recent Work sessions are kept, so you can reopen a session and continue.
 - **AI that works in your folders:** run OpenCode or Claude Code against folders you authorize, with model, engine and access scope always visible.
 - **One window:** chat and planning, workspace agents and a real terminal in a single desktop app, plus a local OpenAI-compatible proxy for other clients.
@@ -37,7 +37,8 @@ Drag one or more local folders from your file manager into Work (or use **Add fo
 | OpenCode | Use a native OpenCode v2 session inside the app; install the optional runtime with the setup script. |
 | Claude Code | Use a locally installed Claude Code CLI through the configured model proxy. |
 | Task visibility | Follow responses, tools, errors and permission requests; stop tasks or change models. |
-| Focus mode | Select **Focus mode** in the upper right to make Work fullscreen while keeping session tabs. Select **Exit focus** or press Esc to return. |
+| Focus mode | Select **Focus mode** in the upper right to make Work fullscreen while keeping session tabs. Select **Exit focus** or press F11 to return; Esc also exits when the focus is outside a terminal. |
+| One control row | Tabs, model picker, tips (**?**) and terminal options share a single row above the sessions; tips and options open as small panels instead of taking rows. The double-chevron button at the end of the row also folds the page title away in Work and Terminal (remembered; Chat always shows it). |
 
 Shell commands run with your operating-system account's permissions. Folder rules constrain agent tools; they are not an OS sandbox. Read-only and subfolder scopes disable commands where the engine cannot enforce a narrower boundary.
 
@@ -47,10 +48,13 @@ Shell commands run with your operating-system account's permissions. Folder rule
 
 The **Terminal** tab is a real PTY terminal with xterm.js. On Windows it supports **PowerShell, CMD and installed WSL distributions**. Choosing OpenCode opens a folder-bound Work session.
 
-- Keep multiple terminal tabs open and switch views without restarting their processes.
-- Select **Focus mode** in the upper right for a fullscreen terminal. **Exit focus** or Esc restores the layout while the same processes and sessions continue running. Switch between Work and Terminal in fullscreen; returning to Chat exits focus mode.
+- Keep multiple terminal tabs open and switch views without restarting their processes. Each tab shows what its terminal is doing: a pulsing dot while a command runs or an agent such as Claude Code, Codex or OpenCode works on a turn, a green check once it has finished (until you type in that terminal), and a quiet ring when idle. Simply having Claude Code, Codex or OpenCode open, or a command that finishes within two seconds, does not light up; only an actual turn or a longer command does. The Work and Terminal tabs above show the same marks, so you can see a finished run from the chat view.
+- Split a tab into up to four panes to run a script in one while working in another: **Split right** (Alt+Shift+=) or **Split down** (Alt+Shift+-). Alt+Arrow moves between panes. Drag a divider, or focus it and use the arrow keys, to resize. Each pane is its own shell, starts in the focused pane's folder, and has its own close button. Narrow windows stack side-by-side panes vertically.
+- Select **Focus mode** in the upper right (or press F11) for a fullscreen terminal. **Exit focus** or F11 restores the layout while the same processes and sessions continue running. Inside a terminal, Esc goes to the shell or TUI (for example Claude Code or vim) instead of leaving fullscreen. Switch between Work and Terminal in fullscreen; returning to Chat exits focus mode.
 - Drop a folder to choose **Open a terminal here** or **Add to authorized workspaces**.
 - Click the folder icon or path in the footer to open the current directory; it follows `cd` changes. Use normal shell history, copy output, and resize the terminal.
+- Scroll back with the mouse wheel. Programs such as Claude Code, Codex or vim may take over the mouse; hold Shift while scrolling to view the terminal's own history instead. **Terminal options → History lines** keeps 10,000 lines by default (1,000–50,000).
+- If a long-running program's display drifts (for example its input box is no longer visible while typing still works), select **Redraw** in the pane's status bar to repaint it.
 - Restore unclosed tabs and directories at startup, with a clean screen for each new shell.
 - Quitting waits for ordinary terminals and work processes to stop. If psmux sessions are detected, choose to close them, retain them, or cancel quitting. Minimizing to the tray keeps the app open.
 
@@ -58,7 +62,7 @@ Screenshots show the real application with fictional demonstration data. The ter
 
 ## Models and integrations
 
-DailyWorkMate includes provider/account management, official API-key presets, Ollama nodes, model mappings, request logs and a local OpenAI-compatible proxy. The separate AI Chat page supports task prompts and translation target languages. OpenCode's free-model catalog is provided dynamically; availability and quotas may change. Catalog errors do not indicate exhausted quota. Catalog status, free-model guidance and folder-drop help live under **Tips & help**, collapsed by default; expand it for details and catalog refresh.
+DailyWorkMate includes provider/account management, official API-key presets, Ollama nodes, model mappings, request logs and a local OpenAI-compatible proxy. The separate AI Chat page supports task prompts and translation target languages. OpenCode's free-model catalog is provided dynamically; availability and quotas may change. Catalog errors do not indicate exhausted quota. Catalog status, free-model guidance and folder-drop help open from the **?** button in the control row; a dot on it marks a catalog problem or a free-model limitation.
 
 Configure a provider or Ollama node first, then select a model in the assistant. Image, reasoning and tool support depend on the selected provider/model. Speech endpoints are separate from chat endpoints.
 

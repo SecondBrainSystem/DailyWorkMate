@@ -11,7 +11,7 @@ import { useProxyStore } from '@/stores/proxyStore'
 
 export function Models() {
   const { t } = useTranslation()
-  const { fetchAppConfig } = useProxyStore()
+  const fetchAppConfig = useProxyStore(state => state.fetchAppConfig)
   const [searchParams, setSearchParams] = useSearchParams()
   const tabFromUrl = searchParams.get('tab')
   const [activeTab, setActiveTab] = useState(tabFromUrl || 'list')

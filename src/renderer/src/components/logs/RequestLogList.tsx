@@ -121,13 +121,14 @@ export function RequestLogList() {
     refreshLogs().finally(() => setIsLoading(false))
   }, [refreshLogs])
 
+  // Main pushes a notice per new/updated log; coalesce bursts into one reload. The slow interval
+  // only covers missed notices (e.g. while the page was hidden).
   useEffect(() => {
-    const interval = setInterval(() => {
-      if (!document.hidden) refreshLogs().catch((error) => {
-        console.error('Failed to refresh request logs:', error)
-      })
-    }, 3000)
-    return () => clearInterval(interval)
+    let pending: ReturnType<typeof setTimeout> | undefined
+    const refresh = () => { if (!document.hidden) refreshLogs().catch(error => console.error('Failed to refresh request logs:', error)) }
+    const unsubscribe = window.electronAPI?.requestLogs?.onNewLog?.(() => { if (!pending) pending = setTimeout(() => { pending = undefined; refresh() }, 300) })
+    const interval = setInterval(refresh, 15000)
+    return () => { clearInterval(interval); clearTimeout(pending); unsubscribe?.() }
   }, [refreshLogs])
 
   useEffect(() => {

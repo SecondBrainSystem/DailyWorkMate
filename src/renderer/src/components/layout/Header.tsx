@@ -1,8 +1,11 @@
+import { useShallow } from 'zustand/react/shallow'
 import { useTranslation } from 'react-i18next'
 import { Sun, Moon, Monitor, Languages, Play, Pause, Loader2, PanelLeft, Sparkles, Bot } from 'lucide-react'
 import { useLocation } from 'react-router-dom'
 import { useGuardedNavigate } from './navigationGuard'
 import { useTheme } from '@/hooks/useTheme'
+import { useIsChinese } from '@/hooks/useIsChinese'
+import { listenerAddress } from '@/components/proxy/listener-utils'
 import { cn } from '@/lib/utils'
 import { useEffect, useState } from 'react'
 import { useSettingsStore, type Theme } from '@/stores/settingsStore'
@@ -36,7 +39,8 @@ const workspaceTabs = [
 export function Header() {
   const { t } = useTranslation()
   const { theme, setTheme, isDark } = useTheme()
-  const { language, setLanguage, sidebarHidden, toggleSidebarHidden } = useSettingsStore()
+  const { setLanguage, sidebarHidden, toggleSidebarHidden } = useSettingsStore(useShallow(state => ({ setLanguage: state.setLanguage, sidebarHidden: state.sidebarHidden, toggleSidebarHidden: state.toggleSidebarHidden })))
+  const chinese = useIsChinese()
   const { pathname } = useLocation()
   const guardedNavigate = useGuardedNavigate()
   const [proxyEnabled, setProxyEnabled] = useState(false)
@@ -90,10 +94,10 @@ export function Header() {
   }
 
   const toggleLanguage = () => {
-    setLanguage(language === 'zh-CN' ? 'en-US' : 'zh-CN')
+    setLanguage(chinese ? 'en-US' : 'zh-CN')
   }
 
-  const proxyAction = proxyEnabled ? serviceCount > 1 ? language === 'zh-CN' ? '停止全部服务' : 'Stop all services' : t('proxyStatus.stop') : t('proxyStatus.start')
+  const proxyAction = proxyEnabled ? serviceCount > 1 ? t('proxyStatus.stopAll') : t('proxyStatus.stop') : t('proxyStatus.start')
 
   return (
     <header className="app-topbar">
@@ -128,8 +132,8 @@ export function Header() {
         <span className="proxy-pill-state">
           {proxyEnabled ? t('dashboard.running') : t('dashboard.stopped')}
         </span>
-        <button type="button" className="proxy-pill-label" title={language === 'zh-CN' ? '管理本地服务' : 'Manage local services'} onClick={() => guardedNavigate('/proxy')}>
-          {host}:{port}
+        <button type="button" className="proxy-pill-label" title={t('proxyStatus.manage')} onClick={() => guardedNavigate('/proxy')}>
+          {listenerAddress({ host, port })}
           {serviceCount > 1 && ` +${serviceCount - 1}`}
         </button>
         <button
@@ -157,8 +161,8 @@ export function Header() {
         <button
           onClick={toggleLanguage}
           className="topbar-icon-btn"
-          title={language === 'zh-CN' ? t('header.switchToEnglish') : t('header.switchToChinese')}
-          aria-label={language === 'zh-CN' ? t('header.switchToEnglish') : t('header.switchToChinese')}
+          title={chinese ? t('header.switchToEnglish') : t('header.switchToChinese')}
+          aria-label={chinese ? t('header.switchToEnglish') : t('header.switchToChinese')}
         >
           <Languages />
         </button>

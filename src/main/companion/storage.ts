@@ -59,7 +59,14 @@ export class CompanionStorage {
         if (input.groups !== undefined && (!Array.isArray(input.groups) || input.groups.length > 64)) throw new Error('Invalid workspace groups')
         const groups = (input.groups || []).map(group => validateWorkspaceGroup(group, workspaces, group.id))
         if (new Set(groups.map(group => group.id)).size !== groups.length) throw new Error('Duplicate workspace group IDs')
-        saved = { settings, workspaces, groups, messages: this.validateMessages(input.messages) }
+        // Chat history now lives in the renderer; unreadable legacy messages must not reset folder grants.
+        let messages: CompanionMessage[] = []
+        try { messages = this.validateMessages(input.messages ?? []) }
+        catch (error) {
+          this.warnings.push('旧版聊天记录无法读取，已忽略。 / Legacy chat messages could not be read and were ignored.')
+          console.error('[Companion] Ignoring legacy messages:', error instanceof Error ? error.message : String(error))
+        }
+        saved = { settings, workspaces, groups, messages }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
           const file = path.join(this.home, 'data', 'companion.json')
@@ -93,9 +100,15 @@ export class CompanionStorage {
         if (/[\u0000-\u001f\u007f]/.test(checked)) throw new Error('Invalid ' + name)
         return checked
       }
+      if (message.tools !== undefined && (!Array.isArray(message.tools) || message.tools.length > 200)) throw new Error('Invalid message tools')
+      if (message.toolStatus !== undefined && !['none', 'used'].includes(message.toolStatus)) throw new Error('Invalid message tool status')
       return { id: boundedText(message.id, 'message ID', 80), role: message.role, content: boundedText(message.content, 'message', 200000), mode: message.mode, createdAt: message.createdAt,
         ...(message.role === 'assistant' && message.model !== undefined ? { model: metadata(message.model, 'message model', 300) } : {}),
         ...(message.role === 'assistant' && message.retryOf !== undefined ? { retryOf: metadata(message.retryOf, 'retry message ID', 80) } : {}),
+        ...(message.tools !== undefined ? { tools: message.tools.map(tool => ({ id: boundedText(tool?.id, 'tool ID', 200), name: boundedText(tool?.name, 'tool name', 200),
+          status: boundedText(tool?.status, 'tool status', 80), title: boundedText(tool?.title, 'tool title', 1000) })) } : {}),
+        ...(message.toolStatus !== undefined ? { toolStatus: message.toolStatus } : {}),
+        ...(message.error !== undefined ? { error: boundedText(message.error, 'message error', 20000) } : {}),
       }
     })
     if (JSON.stringify(messages).length > 6 * 1024 * 1024) throw new Error('Conversation exceeds 6 MiB; start a new conversation')
@@ -216,15 +229,19 @@ export class CompanionStorage {
     const name = (await this.get()).settings.avatar
     if (!name) return ''
     if (!/^avatar\.(png|jpe?g|webp|gif)$/.test(name)) throw new Error('Invalid saved avatar')
-    if ((await stat(path.join(this.home, 'data', name))).size > 5 * 1024 * 1024) throw new Error('Saved avatar exceeds 5 MiB')
     const mime = name.endsWith('jpg') || name.endsWith('jpeg') ? 'image/jpeg' : 'image/' + name.split('.').pop()
-    return 'data:' + mime + ';base64,' + (await readFile(path.join(this.home, 'data', name))).toString('base64')
+    return this.cachedAsset(path.join(this.home, 'data', name), bytes => {
+      if (bytes.length > 5 * 1024 * 1024) throw new Error('Saved avatar exceeds 5 MiB')
+      return 'data:' + mime + ';base64,' + bytes.toString('base64')
+    })
   }
+  /** Encoded assets are reused until the file changes; the 2D and 3D avatar are cached side by side. */
   async cachedAsset(file: string, build: (bytes: Buffer) => string) {
     const info = await stat(file), stamp = String(info.mtimeMs) + ':' + info.size
     const cached = this.avatarCache.get(file)
     if (cached?.stamp === stamp) return cached.url
-    const url = build(await readFile(file)); this.avatarCache = new Map([[file, { stamp, url }]])
+    const url = build(await readFile(file))
+    this.avatarCache = new Map([...[...this.avatarCache].filter(([key]) => key !== file).slice(-1), [file, { stamp, url }]])
     return url
   }
   async cleanAvatarModels() {

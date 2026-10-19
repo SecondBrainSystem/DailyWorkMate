@@ -118,7 +118,7 @@ ModelRow.displayName = 'ModelRow'
 export function ModelList() {
   const { t } = useTranslation()
   const { providers, accounts, modelsLastUpdated } = useProvidersStore()
-  const { modelMappings } = useProxyStore()
+  const modelMappings = useProxyStore(state => state.modelMappings)
   useEffect(() => { void Promise.all([window.electronAPI.providers.getAll(), window.electronAPI.accounts.getAll()]).then(([providers, accounts]) => { useProvidersStore.getState().setProviders(providers); useProvidersStore.getState().setAccounts(accounts) }).catch(error => setLoadError(String(error))) }, [])
   const { toast } = useToast()
   

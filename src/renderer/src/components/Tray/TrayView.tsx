@@ -7,6 +7,8 @@ import iconsPng from '@/assets/icons/icons.png'
 import { useTranslation } from 'react-i18next'
 import { toast } from '@/hooks/use-toast'
 import type { ProxyStatus } from '@shared/types'
+import { useShallow } from 'zustand/react/shallow'
+import { listenerAddress, listenerUrl } from '@/components/proxy/listener-utils'
 
 interface ProviderInfo {
   id: string
@@ -18,7 +20,9 @@ interface ProviderInfo {
 export function TrayView() {
   const { t } = useTranslation()
   const { toggleTheme, isDark } = useTheme()
-  const { providers, accounts, setProviders, setAccounts, setIsLoading, isLoading } = useProvidersStore()
+  const { providers, accounts, setProviders, setAccounts, setIsLoading, isLoading } = useProvidersStore(useShallow(state => ({
+    providers: state.providers, accounts: state.accounts, setProviders: state.setProviders, setAccounts: state.setAccounts, setIsLoading: state.setIsLoading, isLoading: state.isLoading,
+  })))
 
   const [proxyRunning, setProxyRunning] = useState(false)
   const [proxyLoading, setProxyLoading] = useState(false)
@@ -97,7 +101,7 @@ export function TrayView() {
   }
 
   const handleCopyUrl = async () => {
-    const url = `http://${host}:${port}`
+    const url = listenerUrl({ host, port })
     try {
       await navigator.clipboard.writeText(url)
       setCopied(true)
@@ -213,11 +217,11 @@ export function TrayView() {
               <button
                 onClick={handleCopyUrl}
                 className="group flex items-center gap-1.5"
-                aria-label={`${t('common.copy')} ${host}:${port}`}
+                aria-label={`${t('common.copy')} ${listenerUrl({ host, port })}`}
                 title={t('common.copy')}
               >
                 <code className="truncate font-mono text-sm font-semibold">
-                  {host}:{port}
+                  {listenerAddress({ host, port })}
                 </code>
                 {copied ? (
                   <Check size={12} className="flex-shrink-0 text-success" />

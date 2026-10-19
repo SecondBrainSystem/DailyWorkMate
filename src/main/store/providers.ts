@@ -5,6 +5,7 @@
 
 import { storeManager } from './store'
 import { Provider, ProviderType, AuthType, BUILTIN_PROVIDERS } from './types'
+import { providerFromBuiltin } from '../providers/builtin/index.ts'
 
 /**
  * Provider Manager Class
@@ -245,11 +246,7 @@ export class ProviderManager {
     const customProviders = providers.filter((p) => p.type === 'custom')
     
     const now = Date.now()
-    const defaultBuiltin: Provider[] = BUILTIN_PROVIDERS.map((p) => ({
-      ...p,
-      createdAt: now,
-      updatedAt: now,
-    }))
+    const defaultBuiltin: Provider[] = BUILTIN_PROVIDERS.map((p) => providerFromBuiltin(p, now))
     
     const allProviders = [...defaultBuiltin, ...customProviders]
     storeManager.getStore()?.set('providers', allProviders)

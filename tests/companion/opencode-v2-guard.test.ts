@@ -75,10 +75,14 @@ test('automatic command configuration cannot authorize readonly or restricted fo
   await assert.rejects(invoke('shell', { command: 'echo qa' }), /restricted folder scope/)
 })
 
-test('automatically allowed commands still require an authorized writable working directory', async () => {
+test('commands are never approved automatically while any folder in scope is read only', async () => {
   const { root, directory, grant, grants, readonlyDirectory, invoke } = await fixture(true, { readonlyChild: true })
   const config = buildOpenCodeV2Config(grants, grant, 'qa-model', 'http://127.0.0.1:1111/v1', undefined, undefined, path.join(root, 'guard'), true, true)
-  assert.equal(config.permissions.findLast(rule => rule.action === 'shell' && rule.resource === '*')?.effect, 'allow')
+  // A command such as `Remove-Item ..\readonly -Recurse` could reach the read-only folder.
+  assert.equal(config.permissions.findLast(rule => rule.action === 'shell' && rule.resource === '*')?.effect, 'ask')
+  const allWritable = grants.map(item => ({ ...item, writable: true }))
+  const writableConfig = buildOpenCodeV2Config(allWritable, grant, 'qa-model', 'http://127.0.0.1:1111/v1', undefined, undefined, path.join(root, 'guard'), true, true)
+  assert.equal(writableConfig.permissions.findLast(rule => rule.action === 'shell' && rule.resource === '*')?.effect, 'allow')
   assert.equal((await invoke('shell', { command: 'echo qa' }) as Record<string, unknown>).workdir, directory)
   await assert.rejects(invoke('shell', { command: 'echo qa', workdir: readonlyDirectory }), /writable/)
   await assert.rejects(invoke('shell', { command: 'echo qa', workdir: root }), /authorized/)

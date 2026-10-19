@@ -35,7 +35,8 @@ export function MainLayout() {
         <Header />
         <main className="app-content">
           {companionLoaded && <div className="app-page" hidden={pathname !== '/'}><ErrorBoundary><Suspense fallback={null}><Companion visible={pathname === '/'} /></Suspense></ErrorBoundary></div>}
-          <div className="app-page" key={pathname}>
+          {/* "/" renders nothing here (the Assistant above stays mounted); an empty padded page would add a page scroll. */}
+          <div className="app-page" key={pathname} hidden={pathname === '/'}>
             <ErrorBoundary><Outlet /></ErrorBoundary>
           </div>
         </main>

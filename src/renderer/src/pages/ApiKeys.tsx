@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { LoadError } from '@/components/ui/load-error'
@@ -53,7 +54,7 @@ function generateId(): string {
 
 export default function ApiKeysPage() {
   const { t, i18n } = useTranslation()
-  const { config, updateConfig, isSaving } = useSettingsStore()
+  const { config, updateConfig, isSaving } = useSettingsStore(useShallow(state => ({ config: state.config, updateConfig: state.updateConfig, isSaving: state.isSaving })))
   const [showAddDialog, setShowAddDialog] = useState(false)
   const [newKeyName, setNewKeyName] = useState('')
   const [visibleKeys, setVisibleKeys] = useState<Set<string>>(new Set())

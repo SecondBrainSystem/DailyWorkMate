@@ -18,6 +18,8 @@ import {
   OAuthProgressEvent,
 } from '../types'
 
+const escapeHtml = (value = '') => value.replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]!)
+
 /**
  * OAuth adapter abstract base class
  */
@@ -165,15 +167,14 @@ export abstract class BaseOAuthAdapter {
       <body>
         <div class="container">
           ${data.error 
-            ? `<h1 class="error">❌ Login Failed</h1><p>${data.errorDescription || data.error}</p>`
+            // Query parameters are attacker-controllable: escape them before they reach the HTML.
+            ? `<h1 class="error">❌ Login Failed</h1><p>${escapeHtml(data.errorDescription || data.error)}</p>`
             : `<h1 class="success">✅ Login Successful</h1><p>Processing, please wait...</p>`
           }
           <p style="font-size: 12px; opacity: 0.7;">This window can be closed</p>
         </div>
         <script>
-          if (window.electronAPI) {
-            window.electronAPI.send('oauth:callback', ${JSON.stringify(data)});
-          }
+          // This page opens in the system browser; the callback is handled by processCallback below.
           setTimeout(() => window.close(), 2000);
         </script>
       </body>

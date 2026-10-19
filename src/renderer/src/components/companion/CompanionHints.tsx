@@ -1,36 +1,39 @@
-import { ChevronRight } from 'lucide-react'
+import { CircleHelp } from 'lucide-react'
+import { useTranslation } from 'react-i18next'
 import type { OpenCodeFreeCatalogue } from '@shared/companion'
 import { Button } from '@/components/ui/button'
+import { HeaderPopover } from './HeaderPopover'
 
-export function CompanionHints({ chinese, catalogue, loading = false, onRefresh, freeModelHint, folderDrop = false }: {
-  chinese: boolean
+/** Tips & help as a button in the control row; a dot marks a catalogue problem or a free-model limitation. */
+export function CompanionHints({ catalogue, loading = false, onRefresh, freeModelHint, folderDrop = false }: {
   catalogue?: OpenCodeFreeCatalogue
   loading?: boolean
   onRefresh: () => void
   freeModelHint?: string
   folderDrop?: boolean
 }) {
+  const { t } = useTranslation()
   const catalogueNotice = catalogue && (loading || catalogue.error || catalogue.stale || !catalogue.models.length)
   if (!folderDrop && !catalogueNotice && !freeModelHint) return null
-  const status = !catalogueNotice ? freeModelHint ? (chinese ? '免费模型使用提示' : 'Free model guidance') : ''
-    : loading ? (chinese ? '免费模型目录加载中…' : 'Loading free models…')
-      : catalogue?.error ? (chinese ? '免费模型目录暂不可用' : 'Free model list unavailable')
-        : catalogue?.stale ? (chinese ? '免费模型目录待刷新' : 'Free model list needs refresh')
-          : (chinese ? '暂无官方免费模型' : 'No official free models')
-  return <details className="companion-hints" data-companion-hints>
-    <summary><ChevronRight size={14} aria-hidden="true" /><span>{chinese ? '提示与帮助' : 'Tips & help'}</span><span role="status" className="companion-hints-status">{status}</span></summary>
-    <div className="companion-hints-body">
-      {catalogueNotice && <div data-free-models-status className="companion-hints-catalogue" aria-busy={loading}>
-        <div className="min-w-0 flex-1 break-words">
-          <p>{chinese ? 'OpenCode 免费模型：' : 'OpenCode free models: '}{loading ? (chinese ? '正在加载目录…' : 'Loading the model list…') : catalogue?.error || (catalogue?.stale
-            ? (chinese ? '目录已过期，请刷新后使用。' : 'The model list has expired. Refresh it before use.')
-            : (chinese ? '当前没有可用的官方免费模型。' : 'No official free models are available in the current list.'))}</p>
-          {catalogue?.error && <p className="mt-1">{chinese ? '目录异常不代表额度已用完。其他模型仍可使用。' : 'A model list error does not indicate exhausted quota. Other models remain available.'}</p>}
-        </div>
-        <Button size="sm" variant="outline" disabled={loading} aria-label={chinese ? '刷新免费模型' : 'Refresh free models'} onClick={onRefresh}>{chinese ? '刷新目录' : 'Refresh list'}</Button>
-      </div>}
-      {freeModelHint && <p data-free-model-limit>{freeModelHint}</p>}
-      {folderDrop && <p className="folder-drop-hint">{chinese ? '可从文件管理器拖入文件夹，设置用途、权限和分组。' : 'Drag folders from your file manager to choose access and groups.'}</p>}
-    </div>
-  </details>
+  const status = !catalogueNotice ? freeModelHint ? t('companion.hints.freeModelGuidance') : ''
+    : loading ? t('companion.hints.loadingFree')
+      : catalogue?.error ? t('companion.hints.freeUnavailable')
+        : catalogue?.stale ? t('companion.hints.freeStale')
+          : t('companion.hints.noFree')
+  const title = t('companion.hints.title') + (status ? ' · ' + status : '')
+  return <HeaderPopover rootProps={{ 'data-companion-hints': status }} icon={<CircleHelp size={16} aria-hidden="true" />} label={t('companion.hints.title')} title={title}
+    badge={!!catalogueNotice || !!freeModelHint} panelClassName="companion-hints-body">
+    {status && <p className="companion-hints-status" role="status">{status}</p>}
+    {catalogueNotice && <div data-free-models-status className="companion-hints-catalogue" aria-busy={loading}>
+      <div className="min-w-0 flex-1 break-words">
+        <p>{t('companion.hints.freeModels')}{loading ? t('companion.hints.loadingList') : catalogue?.error || (catalogue?.stale
+          ? t('companion.hints.listExpired')
+          : t('companion.hints.listEmpty'))}</p>
+        {catalogue?.error && <p className="mt-1">{t('companion.hints.listError')}</p>}
+      </div>
+      <Button size="sm" variant="outline" disabled={loading} aria-label={t('companion.hints.refreshLabel')} onClick={onRefresh}>{t('companion.hints.refresh')}</Button>
+    </div>}
+    {freeModelHint && <p data-free-model-limit>{freeModelHint}</p>}
+    {folderDrop && <p className="folder-drop-hint">{t('companion.hints.folderDrop')}</p>}
+  </HeaderPopover>
 }

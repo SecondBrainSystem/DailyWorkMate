@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow'
 import { Card, CardContent, CardHeading } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
@@ -12,14 +13,7 @@ import { DEFAULT_TYPOGRAPHY, type TypographySettings } from '../../../../shared/
 /** Theme and language are switched from the top bar; this tab holds the remaining display preferences. */
 export function AppearanceSettings() {
   const { t } = useTranslation()
-  const {
-    theme, setTheme, language, setLanguage,
-    sidebarCollapsed,
-    setSidebarCollapsed,
-    uiTypography,
-    updateConfig,
-    isSaving,
-  } = useSettingsStore()
+  const { theme, setTheme, language, setLanguage, sidebarCollapsed, setSidebarCollapsed, uiTypography, updateConfig, isSaving } = useSettingsStore(useShallow(state => ({ theme: state.theme, setTheme: state.setTheme, language: state.language, setLanguage: state.setLanguage, sidebarCollapsed: state.sidebarCollapsed, setSidebarCollapsed: state.setSidebarCollapsed, uiTypography: state.uiTypography, updateConfig: state.updateConfig, isSaving: state.isSaving })))
 
   return (
 <div className="space-y-6">

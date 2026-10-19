@@ -15,7 +15,49 @@ import {
   DEFAULT_CONFIG,
 } from './types'
 import { normalizeToolCallingConfig } from '../../shared/toolCalling'
-import { parseProxyListeners } from '../../shared/proxyListeners'
+import { networkExposureError, parseProxyListeners } from '../../shared/proxyListeners'
+
+const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+
+/** Check the listed fields of a nested settings object; absent fields keep their stored value. */
+function validateFields(errors: string[], name: string, value: unknown, fields: Record<string, 'boolean' | 'string' | 'count'>): value is Record<string, unknown> {
+  if (!isRecord(value)) { errors.push(`${name} must be an object`); return false }
+  for (const [field, kind] of Object.entries(fields)) {
+    const item = value[field]
+    if (item === undefined) continue
+    const valid = kind === 'count' ? Number.isInteger(item) && (item as number) >= 0 && (item as number) <= 10_000_000 : typeof item === kind
+    if (!valid) errors.push(`${name}.${field} must be ${kind === 'count' ? 'a non-negative integer' : `a ${kind}`}`)
+  }
+  return true
+}
+
+/** Imported backups and API callers may send any JSON; routing and chat code trust these shapes. */
+function validateNestedConfig(config: Partial<AppConfig>, errors: string[]): void {
+  if (config.ollamaRouting !== undefined) {
+    validateFields(errors, 'ollamaRouting', config.ollamaRouting, { forceModel: 'boolean', model: 'string', autoSelectUrl: 'boolean', providerId: 'string' })
+  }
+  if (config.sessionConfig !== undefined && validateFields(errors, 'sessionConfig', config.sessionConfig, {
+    sessionTimeout: 'count', maxMessagesPerSession: 'count', deleteAfterTimeout: 'boolean', maxSessionsPerAccount: 'count',
+  }) && config.sessionConfig.maxMessagesPerSession === 0) errors.push('sessionConfig.maxMessagesPerSession must be at least 1')
+  const context = config.contextManagement as unknown
+  if (context !== undefined && validateFields(errors, 'contextManagement', context, { enabled: 'boolean' })) {
+    const strategies = context.strategies
+    if (strategies !== undefined && validateFields(errors, 'contextManagement.strategies', strategies, {})) {
+      const shapes = {
+        slidingWindow: { enabled: 'boolean', maxMessages: 'count' },
+        tokenLimit: { enabled: 'boolean', maxTokens: 'count' },
+        summary: { enabled: 'boolean', keepRecentMessages: 'count', summaryPrompt: 'string' },
+      } as const
+      for (const [name, fields] of Object.entries(shapes)) {
+        if (strategies[name] !== undefined) validateFields(errors, `contextManagement.strategies.${name}`, strategies[name], fields)
+      }
+    }
+    const order = context.executionOrder
+    if (order !== undefined && (!Array.isArray(order) || order.some(item => !['slidingWindow', 'tokenLimit', 'summary'].includes(item)))) {
+      errors.push('contextManagement.executionOrder may only contain slidingWindow, tokenLimit and summary')
+    }
+  }
+}
 
 /**
  * Config Manager class
@@ -337,6 +379,13 @@ export class ConfigManager {
     if (config.apiKeys !== undefined && (!Array.isArray(config.apiKeys) || config.apiKeys.some(key => !key || typeof key.key !== 'string' || typeof key.id !== 'string' || typeof key.enabled !== 'boolean'))) errors.push('Invalid API keys')
     if (config.modelMappings !== undefined && (!config.modelMappings || typeof config.modelMappings !== 'object' || Array.isArray(config.modelMappings) || Object.values(config.modelMappings).some(mapping => !mapping || typeof mapping.actualModel !== 'string' || !mapping.actualModel.trim()))) errors.push('Invalid model mappings')
     if (config.managementApi?.enableManagementApi && !config.managementApi.managementApiSecret && !this.get().managementApi.managementApiSecret) errors.push('Set a management API secret before enabling it')
+    validateNestedConfig(config, errors)
+    if (errors.length === 0 && ['enableApiKey', 'apiKeys', 'proxyHost', 'additionalProxyListeners'].some(field => field in config)) {
+      // Turning off key checks while a LAN listener is configured would open it to the network.
+      const current = this.get()
+      const exposure = networkExposureError({ ...current, ...config })
+      if (exposure && !networkExposureError(current)) errors.push(exposure)
+    }
     
     if (config.proxyPort !== undefined) {
       if (config.proxyPort < 1 || config.proxyPort > 65535) {

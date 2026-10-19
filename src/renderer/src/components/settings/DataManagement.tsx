@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow'
 import { useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeading } from '@/components/ui/card'
@@ -26,15 +27,7 @@ import {
 
 export function DataManagement() {
   const { t } = useTranslation()
-  const {
-    logLevel,
-    setLogLevel,
-    logRetentionDays,
-    setLogRetentionDays,
-    config,
-    updateConfig,
-    isSaving,
-  } = useSettingsStore()
+  const { logLevel, setLogLevel, logRetentionDays, setLogRetentionDays, config, updateConfig, isSaving } = useSettingsStore(useShallow(state => ({ logLevel: state.logLevel, setLogLevel: state.setLogLevel, logRetentionDays: state.logRetentionDays, setLogRetentionDays: state.setLogRetentionDays, config: state.config, updateConfig: state.updateConfig, isSaving: state.isSaving })))
   const { toast } = useToast()
   const [isExporting, setIsExporting] = useState(false)
   const [isImporting, setIsImporting] = useState(false)

@@ -31,3 +31,30 @@ export function parseProxyListeners(value: unknown): ProxyListenerConfig[] {
   if (new Set(keys).size !== keys.length) throw new Error('Duplicate proxy services are not allowed')
   return listeners
 }
+
+/** Loopback hosts and socket addresses, including IPv4-mapped IPv6 (::ffff:127.0.0.1) and ::1. */
+export function isLoopbackAddress(address: string | undefined): boolean {
+  if (typeof address !== 'string') return false
+  const host = address.trim().toLowerCase().replace(/^\[([^\]]+)\]$/, '$1').replace(/^::ffff:/, '')
+  return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host)
+}
+
+interface ExposureConfig {
+  proxyHost?: string
+  additionalProxyListeners?: readonly ProxyListenerConfig[]
+  enableApiKey?: boolean
+  apiKeys?: readonly { key?: string; enabled?: boolean }[]
+}
+
+export function hasUsableApiKey(config: ExposureConfig): boolean {
+  return Boolean(config.enableApiKey) && (config.apiKeys || []).some(key => key?.enabled && typeof key.key === 'string' && key.key.trim())
+}
+
+/** A configured listener reachable from other machines must require an API key. */
+export function networkExposureError(config: ExposureConfig): string | undefined {
+  const hosts = [config.proxyHost, ...(Array.isArray(config.additionalProxyListeners) ? config.additionalProxyListeners.map(listener => listener?.host) : [])]
+    .filter((host): host is string => typeof host === 'string' && Boolean(host.trim()))
+  const exposed = hosts.filter(host => !isLoopbackAddress(host))
+  if (!exposed.length || hasUsableApiKey(config)) return undefined
+  return `A proxy service listens on ${exposed.join(', ')}, which other devices can reach. Keep API key authentication enabled with at least one enabled key, or change those services to 127.0.0.1 first. / 代理服务监听 ${exposed.join(', ')}，局域网设备可以访问。请保持 API Key 认证开启并至少保留一个启用的 Key，或先把这些服务改为 127.0.0.1。`
+}

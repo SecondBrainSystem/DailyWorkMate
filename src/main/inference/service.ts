@@ -83,15 +83,18 @@ export async function executeInternalInference(input: InternalInferenceRequest, 
   const startTime = Date.now()
   const requestId = `desktop-${randomUUID()}`
   let request: ChatCompletionRequest
+  const config = storeManager.getConfig()
   try {
-    request = normalizeFeatureRequest(checked.body as ChatCompletionRequest, { ...storeManager.getConfig().modelFeatureDefaults, thinking: 'auto' }, checked.headers)
+    const body = checked.body as ChatCompletionRequest
+    // Fold header switches in before normalizing so dispatch reuses this normalized request.
+    const withHeaders = body && typeof body === 'object' && !Array.isArray(body) ? {
+      ...body,
+      ...(body.web_search === undefined && checked.headers?.['x-web-search'] !== undefined ? { web_search: checked.headers['x-web-search'] === 'true' } : {}),
+      ...(body.deep_research === undefined && checked.headers?.['x-deep-research'] !== undefined ? { deep_research: checked.headers['x-deep-research'] === 'true' } : {}),
+    } : body
+    request = normalizeFeatureRequest(withHeaders, { ...config.modelFeatureDefaults, thinking: 'auto' }, checked.headers)
   } catch (error) {
     return failure(400, error instanceof ModelFeatureError ? error.message : 'Invalid request body', 'invalid_request', error instanceof ModelFeatureError ? error.param : null)
-  }
-  request = {
-    ...request,
-    ...(request.web_search === undefined && checked.headers?.['x-web-search'] !== undefined ? { web_search: checked.headers['x-web-search'] === 'true' } : {}),
-    ...(request.deep_research === undefined && checked.headers?.['x-deep-research'] !== undefined ? { deep_research: checked.headers['x-deep-research'] === 'true' } : {}),
   }
   const dispatched = await dispatchChatCompletion(request, requestId, 'desktop', checked.headers, signal)
   const { result, selection } = dispatched
@@ -100,15 +103,17 @@ export async function executeInternalInference(input: InternalInferenceRequest, 
   const responseBody = result.success
     ? !request.stream && isAnthropicToolFormat(request.tool_format) ? transformResponseToAnthropic(result.body) : result.body
     : errorResponse.response.body
+  // Bodies can be up to 50MB; serialize them only when request logging keeps bodies.
+  const keepBodies = Boolean(config.requestLogConfig?.enabled && config.requestLogConfig.includeBodies)
   const log = storeManager.addRequestLog({
     timestamp: startTime, status: result.success ? 'success' : 'error', statusCode: result.success ? 200 : result.status || 500,
     method: 'POST', url: '/v1/chat/completions', model: request.model, actualModel,
     providerId: selection?.provider.id, providerName: selection?.provider.name,
     accountId: selection?.account.id, accountName: selection?.account.name,
-    requestBody: JSON.stringify(request), userInput: extractUserInput(request),
+    requestBody: keepBodies ? JSON.stringify(request) : undefined, userInput: extractUserInput(request),
     webSearch: request.web_search, reasoningEffort: request.reasoning_effort,
     responseStatus: result.success ? 200 : result.status || 500,
-    responseBody: !result.success || !request.stream ? JSON.stringify(responseBody) : undefined,
+    responseBody: !result.success || (!request.stream && keepBodies) ? JSON.stringify(responseBody) : undefined,
     latency: Date.now() - startTime, isStream: Boolean(request.stream), errorMessage: result.error,
   })
   if (!result.success) return errorResponse
@@ -122,7 +127,7 @@ export async function executeInternalInference(input: InternalInferenceRequest, 
       status: error ? 'error' : 'success', responseBody: body || undefined,
       errorMessage: error?.message, latency: Date.now() - startTime,
     })
-  })
+  }, { maxBodyChars: keepBodies ? config.requestLogConfig.maxBodyChars : 0 })
   const abort = () => output.destroy(new Error('Client cancelled the request'))
   // Cancellation may arrive while dispatch is still waiting for the first token.
   output.on('error', () => {}) // Keep an early abort safe until IPC attaches its stream consumer.

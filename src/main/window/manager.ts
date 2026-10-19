@@ -67,10 +67,11 @@ export function createWindow(options: WindowOptions = {}): BrowserWindow {
   })
 
   mainWindow.webContents.on('will-prevent-unload', event => {
+    // A committed quit already asked about unsaved changes before stopping any service.
+    if (app.isQuitting) { event.preventDefault(); return }
     const chinese = app.getLocale().startsWith('zh')
     const discard = dialog.showMessageBoxSync(mainWindow!, { type: 'question', message: chinese ? '有未保存的修改，是否放弃并离开？' : 'Discard unsaved changes and leave?', buttons: chinese ? ['继续编辑', '放弃修改'] : ['Keep editing', 'Discard'], defaultId: 0, cancelId: 0 }) === 1
     if (discard) event.preventDefault()
-    else app.isQuitting = false
   })
 
   mainWindow.once('ready-to-show', () => {
@@ -104,6 +105,32 @@ export function createWindow(options: WindowOptions = {}): BrowserWindow {
 
 export function getMainWindow(): BrowserWindow | null {
   return mainWindow
+}
+
+// Pages register unsaved changes as beforeunload listeners; a synthetic event asks them without unloading.
+const UNSAVED_PROBE = "(() => { const event = new Event('beforeunload', { cancelable: true }); window.dispatchEvent(event); return event.defaultPrevented })()"
+/**
+ * Ask about unsaved changes while every service still runs, so "keep editing" cannot leave the app
+ * open after cleanup. Resolves true when quitting may continue.
+ */
+export async function confirmDiscardUnsavedChanges(timeout = 3000): Promise<boolean> {
+  const window = mainWindow
+  if (!window || window.isDestroyed() || window.webContents.isCrashed()) return true
+  let timer: NodeJS.Timeout | undefined
+  let unsaved: unknown
+  try {
+    unsaved = await Promise.race([window.webContents.executeJavaScript(UNSAVED_PROBE),
+      new Promise((_resolve, reject) => { timer = setTimeout(() => reject(new Error('The page did not answer')), timeout) })])
+  } catch (error) {
+    // A hung or crashed page has nothing it could still save.
+    console.error('[Window] Could not check for unsaved changes before quitting:', error instanceof Error ? error.message : String(error))
+    return true
+  } finally { clearTimeout(timer) }
+  if (unsaved !== true || window.isDestroyed()) return true
+  const chinese = app.getLocale().startsWith('zh')
+  const { response } = await dialog.showMessageBox(window, { type: 'question', message: chinese ? '有未保存的修改，是否放弃并退出？' : 'Discard unsaved changes and quit?',
+    buttons: chinese ? ['继续编辑', '放弃修改并退出'] : ['Keep editing', 'Discard and quit'], defaultId: 0, cancelId: 0, noLink: true })
+  return response === 1
 }
 
 export function showWindow(): void {

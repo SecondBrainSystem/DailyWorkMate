@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow'
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeading } from '@/components/ui/card'
@@ -66,12 +67,7 @@ const DEFAULT_MODEL_MAPPING_KEYS = new Set(Object.keys(DEFAULT_MODEL_MAPPINGS))
 
 export function ModelMappingConfig({ onConfigChange }: ModelMappingConfigProps) {
   const { t } = useTranslation()
-  const {
-    modelMappings,
-    setModelMappings,
-    saveAppConfig,
-    isLoading,
-  } = useProxyStore()
+  const { modelMappings, setModelMappings, saveAppConfig, isLoading } = useProxyStore(useShallow(state => ({ modelMappings: state.modelMappings, setModelMappings: state.setModelMappings, saveAppConfig: state.saveAppConfig, isLoading: state.isLoading })))
   const { registerBlocker, unregisterBlocker } = useNavigationStore()
   const { toast } = useToast()
   

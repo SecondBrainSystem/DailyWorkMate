@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow'
 import { useState, useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Card, CardContent, CardHeading } from '@/components/ui/card'
@@ -20,7 +21,7 @@ interface FormErrors {
 
 export function AdvancedConfig({ onConfigChange }: AdvancedConfigProps) {
   const { t } = useTranslation()
-  const { proxyConfig, setProxyConfig, saveAppConfig, isLoading } = useProxyStore()
+  const { proxyConfig, setProxyConfig, saveAppConfig, isLoading } = useProxyStore(useShallow(state => ({ proxyConfig: state.proxyConfig, setProxyConfig: state.setProxyConfig, saveAppConfig: state.saveAppConfig, isLoading: state.isLoading })))
   const { toast } = useToast()
   
   const initialFormDataRef = useRef({

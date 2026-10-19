@@ -29,7 +29,7 @@ before(async () => {
             getEffectiveModels: id => state.providers.find(p => p.id === id).supportedModels.map(model => ({displayName:model,actualModelId:model})),
             getAccountsByProviderId: id => [{id,providerId:id,status:'active',credentials:{authType:'none'}}],
             getAccountById: () => undefined,
-            addLog: (...args) => state.logs.push(args), recordRequestInStats: (...args) => state.outcomes.push(args),
+            addLog: (...args) => state.logs.push(args), recordRequestInStats: (...args) => state.outcomes.push(args), recordAccountUsage: () => {}, updateProvider: () => null,
             recordTokenUsage: () => {}, addRequestLog: () => undefined,
           }`, resolveDir: process.cwd() }))
     } }],

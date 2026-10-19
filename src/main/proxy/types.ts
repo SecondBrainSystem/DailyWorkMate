@@ -249,6 +249,8 @@ export interface ForwardResult {
   skipTransform?: boolean
   error?: string
   errorCode?: string
+  /** Upstream Retry-After, in milliseconds, when the failure carried one. */
+  retryAfterMs?: number
   latency?: number
   providerSessionId?: string
   parentMessageId?: string

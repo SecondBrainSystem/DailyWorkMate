@@ -8,95 +8,11 @@ import type { LegacyToolPromptConfig, ToolCallingConfig } from '../../shared/too
 import { DEFAULT_TOOL_CALLING_CONFIG } from '../../shared/toolCalling.ts'
 import { DEFAULT_MODEL_FEATURES, type ModelFeatureDefaults } from '../../shared/modelFeatures.ts'
 import { DEFAULT_TYPOGRAPHY, type TypographySettings } from '../../shared/typography.ts'
+import deepseekConfig from '../providers/builtin/deepseek.ts'
 
-/**
- * Account Status Enum
- */
-export type AccountStatus = 'active' | 'inactive' | 'expired' | 'error'
-
-/**
- * Provider Type Enum
- */
-export type ProviderType = 'builtin' | 'custom'
-/** `api`: official API-key provider (see shared/apiProviders.ts). */
-export type UpstreamKind = 'ollama' | 'api'
-export type OllamaEndpoint =
-  | 'ollama_chat'
-  | 'openai_chat'
-  | 'ollama_generate'
-  | 'openai_completion'
-  | 'claude_chat'
-export type VisionSupport = 'supported' | 'unsupported' | 'unknown'
-
-export interface OllamaModelMetadata {
-  name: string
-  endpoint?: OllamaEndpoint
-  /** Only an explicit per-model test sets passed/failed. Discovery is not inference. */
-  testStatus?: 'untested' | 'passed' | 'failed'
-  latency?: number
-  vision: VisionSupport
-  visionSource?: 'api-show' | 'manual-test'
-  testedAt?: number
-  error?: string
-}
-
-export type OllamaAuthType = 'none' | 'basic' | 'bearer' | 'api-key'
-
-export interface OllamaAuthInput {
-  type: OllamaAuthType
-  username?: string
-  password?: string
-  token?: string
-  headerName?: string
-  headerValue?: string
-}
-
-export interface OllamaRoutingConfig {
-  forceModel: boolean
-  model: string
-  autoSelectUrl: boolean
-  providerId: string
-}
-
-/**
- * Authentication Type Enum
- * - oauth: OAuth authentication
- * - token: Simple Token authentication
- * - cookie: Cookie authentication
- * - userToken: User Token authentication (DeepSeek)
- * - refresh_token: Refresh token authentication (GLM)
- * - jwt: JWT/Refresh token authentication (Kimi)
- * - realUserID_token: realUserID+JWT authentication (MiniMax)
- * - tongyi_sso_ticket: Tongyi SSO ticket authentication (Qwen)
- */
-export type AuthType = 
-  | 'oauth' 
-  | 'token' 
-  | 'cookie' 
-  | 'userToken' 
-  | 'refresh_token' 
-  | 'jwt' 
-  | 'realUserID_token' 
-  | 'tongyi_sso_ticket'
-
-/**
- * Credential Field Configuration Interface
- * Defines credential fields required by provider
- */
-export interface CredentialField {
-  /** Field name */
-  name: string
-  /** Field label (display name) */
-  label: string
-  /** Field type */
-  type: 'text' | 'password' | 'textarea'
-  /** Whether required */
-  required: boolean
-  /** Placeholder text */
-  placeholder?: string
-  /** Help text */
-  helpText?: string
-}
+// Shared with the renderer: the canonical definitions live in src/shared/types.ts.
+import type { AccountStatus, ProviderType, UpstreamKind, OllamaEndpoint, VisionSupport, OllamaModelMetadata, OllamaAuthType, OllamaAuthInput, OllamaRoutingConfig, AuthType, CredentialField } from '../../shared/types'
+export type { AccountStatus, ProviderType, UpstreamKind, OllamaEndpoint, VisionSupport, OllamaModelMetadata, OllamaAuthType, OllamaAuthInput, OllamaRoutingConfig, AuthType, CredentialField } from '../../shared/types'
 
 /**
  * Built-in Provider Configuration Interface
@@ -296,57 +212,8 @@ export type LogLevel = 'debug' | 'info' | 'warn' | 'error'
  */
 export type SessionStatus = 'active' | 'expired' | 'deleted'
 
-/**
- * Sliding Window Configuration Interface
- * Controls message count-based context trimming
- */
-export interface SlidingWindowConfig {
-  /** Whether sliding window strategy is enabled */
-  enabled: boolean
-  /** Maximum number of messages to keep */
-  maxMessages: number
-}
-
-/**
- * Token Limit Configuration Interface
- * Controls token count-based context trimming
- */
-export interface TokenLimitConfig {
-  /** Whether token limit strategy is enabled */
-  enabled: boolean
-  /** Maximum number of tokens to keep */
-  maxTokens: number
-}
-
-/**
- * Summary Configuration Interface
- * Controls context summarization strategy
- */
-export interface SummaryConfig {
-  /** Whether summary strategy is enabled */
-  enabled: boolean
-  /** Number of recent messages to keep after summarization */
-  keepRecentMessages: number
-  /** Custom summary prompt template (optional) */
-  summaryPrompt?: string
-}
-
-/**
- * Context Management Configuration Interface
- * Controls how conversation context is managed and trimmed
- */
-export interface ContextManagementConfig {
-  /** Whether context management is enabled */
-  enabled: boolean
-  /** Strategy configurations */
-  strategies: {
-    slidingWindow: SlidingWindowConfig
-    tokenLimit: TokenLimitConfig
-    summary: SummaryConfig
-  }
-  /** Execution order of strategies */
-  executionOrder: ('slidingWindow' | 'tokenLimit' | 'summary')[]
-}
+export type { SlidingWindowConfig, TokenLimitConfig, SummaryConfig, ContextManagementConfig } from '../../shared/types'
+import type { SlidingWindowConfig, TokenLimitConfig, SummaryConfig, ContextManagementConfig } from '../../shared/types'
 
 /**
  * Chat Message Interface
@@ -685,7 +552,8 @@ export interface ProviderModelOverrides {
  */
 export type UserModelOverrides = Record<string, ProviderModelOverrides>
 
-export const DEEPSEEK_PRIMARY_MODELS = ['deepseek-v4-flash', 'deepseek-v4-pro']
+/** The builtin DeepSeek definition is the single source of its model list. */
+export const DEEPSEEK_PRIMARY_MODELS: readonly string[] = deepseekConfig.supportedModels || []
 
 export const DEEPSEEK_LEGACY_MODEL_MAPPING_NAMES = [
   'deepseek-chat',

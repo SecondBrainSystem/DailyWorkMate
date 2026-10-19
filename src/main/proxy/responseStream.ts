@@ -1,8 +1,43 @@
-import { PassThrough, Transform, pipeline, type Readable } from 'node:stream'
+import { PassThrough, Transform, finished, pipeline, type Readable } from 'node:stream'
 import { StringDecoder } from 'node:string_decoder'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 
-const MAX_LOG_CHARS = 1024 * 1024
+/** Longest partial line kept while looking for complete SSE/NDJSON events. */
+const MAX_PENDING_LINE_CHARS = 1024 * 1024
+/** Matches the request log default (requestLogs/types.ts maxBodyChars). */
+const DEFAULT_LOG_BODY_CHARS = 8000
+/** End of the stream kept for token counting when no usage line was recognised. */
+const TAIL_CHARS = 4096
+const USAGE_PATTERN = /"(?:usage|total_tokens|totalTokens|prompt_tokens|completion_tokens|input_tokens|output_tokens|prompt_eval_count|eval_count)"/
+
+/**
+ * Bounded record of a relayed stream for logs and token accounting: the first `maxBodyChars`
+ * characters (what the request log keeps), the last line that carried token usage, and a short tail.
+ * Memory and work per chunk stay constant however long the response runs.
+ */
+export function createStreamRecorder(maxBodyChars = DEFAULT_LOG_BODY_CHARS) {
+  const limit = Math.max(0, Math.floor(maxBodyChars))
+  let head = ''
+  let total = 0
+  let tail = ''
+  let usageLine = ''
+  return {
+    append(text: string): void {
+      total += text.length
+      if (head.length < limit) head += text.slice(0, limit - head.length)
+      tail += text
+      // Trim only once the tail doubles, so each character is copied a bounded number of times.
+      if (tail.length > TAIL_CHARS * 2) tail = tail.slice(-TAIL_CHARS)
+    },
+    line(line: string): void { if (USAGE_PATTERN.test(line)) usageLine = line },
+    body(): string {
+      if (total <= head.length) return head
+      const recent = tail.slice(-TAIL_CHARS)
+      const extra = [usageLine && !recent.includes(usageLine) ? usageLine : '', recent].filter(Boolean).join('\n')
+      return head ? `${head}\n...[${total - head.length} chars not kept]\n${extra}` : extra
+    },
+  }
+}
 
 /** Reset the deadline for every chunk and cancel the upstream on close. */
 export function watchResponseStream(source: Readable, timeout: number, signal?: AbortSignal): Readable {
@@ -30,6 +65,19 @@ export function watchResponseStream(source: Readable, timeout: number, signal?: 
   else if (source.destroyed && !source.readableEnded) output.destroy(new Error('Upstream closed before completion'))
   if (signal?.aborted) abort()
   return output
+}
+
+/**
+ * Run provider session cleanup once the client-facing stream ends, fails or is closed early
+ * (client disconnect). Replaces patching `stream.end`, which missed the last two cases.
+ */
+export function afterStream(stream: NodeJS.ReadableStream, label: string, cleanup: () => unknown): void {
+  let ran = false
+  finished(stream as Readable, () => {
+    if (ran) return
+    ran = true
+    Promise.resolve().then(cleanup).catch(error => console.error(`[${label}] Failed to delete the upstream session:`, error))
+  })
 }
 
 export function convertUpstreamStream(source: Readable, transform: Transform): Transform {
@@ -72,19 +120,21 @@ export function relayResponseStream(
   transforms: Transform[],
   protocol: 'openai' | 'ollama' | 'claude',
   onComplete: (error: Error | undefined, body: string) => void,
+  options: { maxBodyChars?: number } = {},
 ): PassThrough {
   const output = new PassThrough()
   const decoder = new StringDecoder('utf8')
-  let tail = ''
+  const recorder = createStreamRecorder(options.maxBodyChars)
   let pending = ''
   let upstreamError: Error | undefined
   let settled = false
   const inspect = (text: string) => {
-    tail = (tail + text).slice(-MAX_LOG_CHARS)
+    recorder.append(text)
     pending += text
     const lines = pending.split(/\r?\n/)
-    pending = (lines.pop() || '').slice(-MAX_LOG_CHARS)
+    pending = (lines.pop() || '').slice(-MAX_PENDING_LINE_CHARS)
     for (const line of lines) {
+      recorder.line(line)
       const raw = line.startsWith('data:') ? line.slice(5).trim() : line.trim()
       if (!raw.startsWith('{')) continue
       try {
@@ -105,7 +155,7 @@ export function relayResponseStream(
   const complete = (error?: Error) => {
     if (settled) return
     settled = true
-    onComplete(error || upstreamError, tail)
+    onComplete(error || upstreamError, recorder.body())
   }
   const streams = [source as Readable, ...transforms, observer]
   // Keep the client-facing stream writable when the internal pipeline fails.

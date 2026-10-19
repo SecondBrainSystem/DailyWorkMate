@@ -19,7 +19,7 @@ export function ApiProviderIcon({ preset, name, className }: { preset?: string; 
   return <span aria-hidden="true" className={cn('grid h-7 w-7 place-items-center rounded-lg text-sm font-semibold text-white', className)} style={{ background: `hsl(${hue} 55% 45%)` }}>{name.replace(/[^\p{L}\p{N}]/gu, '').slice(0, 1).toUpperCase()}</span>
 }
 
-export const apiPresetName = (preset: ApiPreset, chinese: boolean) => preset.id === CUSTOM_API_PRESET ? (chinese ? '自定义接口' : 'Custom endpoint') : preset.name
+export const apiPresetName = (preset: ApiPreset, t: (key: string) => string) => preset.id === CUSTOM_API_PRESET ? t('providers.api.custom') : preset.name
 
 /**
  * Add an official API key: pick a vendor, paste the key. The key is verified by reading the vendor's
@@ -33,8 +33,7 @@ export function AddApiProviderDialog({ open, onOpenChange, providers, initialPre
   initialPreset?: string
   onAdded: (result: ApiProviderResult, name: string) => void
 }) {
-  const { t, i18n } = useTranslation()
-  const chinese = i18n.language.startsWith('zh')
+  const { t } = useTranslation()
   const [presetId, setPresetId] = useState('')
   const [regionId, setRegionId] = useState('')
   const [apiKey, setApiKey] = useState('')
@@ -61,7 +60,7 @@ export function AddApiProviderDialog({ open, onOpenChange, providers, initialPre
     setBusy(true); setError('')
     try {
       const result = await window.electronAPI.app.addApiProvider({ presetId: preset.id, regionId: region?.id, apiKey, ...(baseUrl.trim() && baseUrl.trim() !== region?.baseUrl ? { baseUrl: baseUrl.trim() } : {}), ...(custom ? { name } : {}) })
-      onAdded(result, custom ? (name.trim() || baseUrl) : apiPresetName(preset, chinese))
+      onAdded(result, custom ? (name.trim() || baseUrl) : apiPresetName(preset, t))
       onOpenChange(false)
     } catch (failure) { setError(failure instanceof Error ? failure.message.replace(/^Error invoking remote method '[^']+': (Error: )?/, '') : String(failure)) }
     finally { setBusy(false) }
@@ -72,7 +71,7 @@ export function AddApiProviderDialog({ open, onOpenChange, providers, initialPre
       <DialogHeader>
         <DialogTitle className="flex items-center gap-2">
           {preset && !initialPreset && <Button variant="ghost" size="icon" className="-ml-2 h-8 w-8" disabled={busy} onClick={() => { setPresetId(''); setError('') }} aria-label={t('common.back')}><ArrowLeft className="h-4 w-4" /></Button>}
-          {preset ? apiPresetName(preset, chinese) : t('providers.api.add')}
+          {preset ? apiPresetName(preset, t) : t('providers.api.add')}
         </DialogTitle>
         <DialogDescription>{preset ? existing ? t('providers.api.existing') : preset.protocol === 'anthropic' ? t('providers.api.claudeProtocol') : t('providers.api.openaiCompatible') : t('providers.api.chooseHint')}</DialogDescription>
       </DialogHeader>
@@ -80,9 +79,9 @@ export function AddApiProviderDialog({ open, onOpenChange, providers, initialPre
       {!preset ? <div className="grid grid-cols-2 gap-2 sm:grid-cols-3" role="list">
         {API_PRESETS.map(item => <button key={item.id} type="button" role="listitem" data-api-preset={item.id} onClick={() => setPresetId(item.id)}
           className="flex items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-muted/60">
-          <ApiProviderIcon preset={item.id} name={apiPresetName(item, chinese)} />
+          <ApiProviderIcon preset={item.id} name={apiPresetName(item, t)} />
           <span className="min-w-0">
-            <span className="block truncate text-sm font-medium">{apiPresetName(item, chinese)}</span>
+            <span className="block truncate text-sm font-medium">{apiPresetName(item, t)}</span>
             <span className="block truncate text-xs text-muted-foreground">{configured.has(item.id) && item.id !== CUSTOM_API_PRESET ? t('providers.api.configured') : item.protocol === 'anthropic' ? 'Messages API' : 'OpenAI API'}</span>
           </span>
         </button>)}

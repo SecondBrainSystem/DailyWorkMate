@@ -90,6 +90,7 @@ export type {
 
 export interface Account {
   lastValidatedAt?: number
+  lastStatusCheck?: number
   id: string
   providerId: string
   name: string
@@ -180,7 +181,7 @@ export interface AppConfig {
   toolCallingConfig: ToolCallingConfig
   toolPromptConfig?: LegacyToolPromptConfig
   managementApi: ManagementApiConfig
-  contextManagement?: import('../main/store/types').ContextManagementConfig
+  contextManagement?: ContextManagementConfig
   language: 'zh-CN' | 'en-US'
 }
 
@@ -467,4 +468,56 @@ export interface EffectiveModel {
   actualModelId: string
   isCustom: boolean
   metadata?: OllamaModelMetadata
+}
+
+/**
+ * Sliding Window Configuration Interface
+ * Controls message count-based context trimming
+ */
+export interface SlidingWindowConfig {
+  /** Whether sliding window strategy is enabled */
+  enabled: boolean
+  /** Maximum number of messages to keep */
+  maxMessages: number
+}
+
+/**
+ * Token Limit Configuration Interface
+ * Controls token count-based context trimming
+ */
+export interface TokenLimitConfig {
+  /** Whether token limit strategy is enabled */
+  enabled: boolean
+  /** Maximum number of tokens to keep */
+  maxTokens: number
+}
+
+/**
+ * Summary Configuration Interface
+ * Controls context summarization strategy
+ */
+export interface SummaryConfig {
+  /** Whether summary strategy is enabled */
+  enabled: boolean
+  /** Number of recent messages to keep after summarization */
+  keepRecentMessages: number
+  /** Custom summary prompt template (optional) */
+  summaryPrompt?: string
+}
+
+/**
+ * Context Management Configuration Interface
+ * Controls how conversation context is managed and trimmed
+ */
+export interface ContextManagementConfig {
+  /** Whether context management is enabled */
+  enabled: boolean
+  /** Strategy configurations */
+  strategies: {
+    slidingWindow: SlidingWindowConfig
+    tokenLimit: TokenLimitConfig
+    summary: SummaryConfig
+  }
+  /** Execution order of strategies */
+  executionOrder: ('slidingWindow' | 'tokenLimit' | 'summary')[]
 }

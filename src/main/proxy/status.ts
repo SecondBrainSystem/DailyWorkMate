@@ -5,6 +5,10 @@
 
 import { ProxyStatistics, ProxyConfig } from './types'
 
+/** Model names come from clients; cap distinct keys so statistics cannot grow without bound. */
+const MAX_MODEL_KEYS = 200
+const increment = (usage: Record<string, number>, key: string) => ({ ...usage, [key]: (usage[key] || 0) + 1 })
+
 /**
  * Proxy status manager
  */
@@ -42,11 +46,15 @@ export class ProxyStatusManager {
    */
   getStatistics(): ProxyStatistics {
     this.cleanupOldTimestamps()
-    this.statistics.requestsPerMinute = this.requestTimestamps.length
-    this.statistics.avgLatency = this.statistics.totalRequests > 0
-      ? this.latencySum / this.statistics.totalRequests
-      : 0
-    return { ...this.statistics }
+    // Callers receive their own nested maps; the live counters are never shared.
+    return {
+      ...this.statistics,
+      requestsPerMinute: this.requestTimestamps.length,
+      avgLatency: this.statistics.totalRequests > 0 ? this.latencySum / this.statistics.totalRequests : 0,
+      modelUsage: { ...this.statistics.modelUsage },
+      providerUsage: { ...this.statistics.providerUsage },
+      accountUsage: { ...this.statistics.accountUsage },
+    }
   }
 
   /**
@@ -95,29 +103,26 @@ export class ProxyStatusManager {
    * Record request start
    */
   recordRequestStart(model: string, providerId?: string, accountId?: string): void {
-    this.statistics.totalRequests++
-    this.statistics.activeConnections++
-    this.requestTimestamps.push(Date.now())
-
-    this.statistics.modelUsage[model] = (this.statistics.modelUsage[model] || 0) + 1
-
-    if (providerId) {
-      this.statistics.providerUsage[providerId] = (this.statistics.providerUsage[providerId] || 0) + 1
+    const { modelUsage } = this.statistics
+    const name = String(model).slice(0, 200)
+    const modelKey = name in modelUsage || Object.keys(modelUsage).length < MAX_MODEL_KEYS ? name : 'other'
+    this.statistics = {
+      ...this.statistics,
+      totalRequests: this.statistics.totalRequests + 1,
+      activeConnections: this.statistics.activeConnections + 1,
+      modelUsage: increment(modelUsage, modelKey),
+      providerUsage: providerId ? increment(this.statistics.providerUsage, providerId) : this.statistics.providerUsage,
+      accountUsage: accountId ? increment(this.statistics.accountUsage, accountId) : this.statistics.accountUsage,
     }
-
-    if (accountId) {
-      this.statistics.accountUsage[accountId] = (this.statistics.accountUsage[accountId] || 0) + 1
-    }
-
     this.cleanupOldTimestamps()
+    this.requestTimestamps = [...this.requestTimestamps, Date.now()]
   }
 
   /**
    * Record request success
    */
   recordRequestSuccess(latency: number): void {
-    this.statistics.successRequests++
-    this.statistics.activeConnections = Math.max(0, this.statistics.activeConnections - 1)
+    this.statistics = { ...this.statistics, successRequests: this.statistics.successRequests + 1, activeConnections: Math.max(0, this.statistics.activeConnections - 1) }
     this.latencySum += latency
   }
 
@@ -125,8 +130,7 @@ export class ProxyStatusManager {
    * Record request failure
    */
   recordRequestFailure(latency: number): void {
-    this.statistics.failedRequests++
-    this.statistics.activeConnections = Math.max(0, this.statistics.activeConnections - 1)
+    this.statistics = { ...this.statistics, failedRequests: this.statistics.failedRequests + 1, activeConnections: Math.max(0, this.statistics.activeConnections - 1) }
     this.latencySum += latency
   }
 
@@ -168,7 +172,7 @@ export class ProxyStatusManager {
    * Set port
    */
   setPort(port: number): void {
-    this.config.port = port
+    this.config = { ...this.config, port }
   }
 
   /**
@@ -182,7 +186,7 @@ export class ProxyStatusManager {
    * Set host
    */
   setHost(host: string): void {
-    this.config.host = host
+    this.config = { ...this.config, host }
   }
 }
 

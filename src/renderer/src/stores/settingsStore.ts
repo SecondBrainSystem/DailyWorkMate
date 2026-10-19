@@ -44,6 +44,36 @@ interface SettingsState {
   fetchConfig: () => Promise<void>
 }
 
+export const SETTINGS_STORAGE_KEY = 'dailyworkmate-settings'
+const THEMES: readonly Theme[] = ['light', 'dark', 'system']
+
+/** Reads the theme from a persisted settings snapshot; anything malformed is ignored. */
+export function themeFromPersistedSettings(raw: string | null): Theme | undefined {
+  if (!raw) return undefined
+  try {
+    const theme = (JSON.parse(raw) as { state?: { theme?: unknown } } | null)?.state?.theme
+    return THEMES.includes(theme as Theme) ? theme as Theme : undefined
+  } catch (error) {
+    console.warn('[Settings] Ignoring unreadable settings from another window:', error instanceof Error ? error.name : 'invalid data')
+    return undefined
+  }
+}
+
+/**
+ * The tray and main windows share localStorage but each holds its own store, so a theme picked
+ * in one window must be adopted by the other when its storage event arrives. Only the theme is
+ * taken: a full rehydrate would reset the in-memory config.
+ */
+export function syncThemeAcrossWindows(target: Pick<Window, 'addEventListener' | 'removeEventListener'> = window): () => void {
+  const changed = (event: StorageEvent) => {
+    if (event.key !== SETTINGS_STORAGE_KEY) return
+    const theme = themeFromPersistedSettings(event.newValue)
+    if (theme && theme !== useSettingsStore.getState().theme) useSettingsStore.setState({ theme })
+  }
+  target.addEventListener('storage', changed)
+  return () => target.removeEventListener('storage', changed)
+}
+
 export const useSettingsStore = create<SettingsState>()(
   persist(
     (set, get) => ({
@@ -122,7 +152,7 @@ export const useSettingsStore = create<SettingsState>()(
       },
     }),
     {
-      name: 'dailyworkmate-settings',
+      name: SETTINGS_STORAGE_KEY,
       partialize: ({ theme, language, uiTypography, sidebarCollapsed, sidebarHidden }) => ({ theme, language, uiTypography, sidebarCollapsed, sidebarHidden }),
       merge: (persisted, current) => ({ ...current, ...persisted as Partial<SettingsState>,
         config: null, uiTypography: normalizeTypography((persisted as Partial<SettingsState> | undefined)?.uiTypography), isSaving: false }),

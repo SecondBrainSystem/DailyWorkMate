@@ -69,7 +69,7 @@ export function Dashboard() {
         title={t('dashboard.title')}
         description={t('dashboard.description')}
         actions={<>
-          <select className="rounded border bg-background p-2 text-sm" aria-label={t('dashboard.requestTrend')} value={trendDays} onChange={event => setTrendDays(Number(event.target.value))}>{[7, 14, 30].map(days => <option key={days} value={days}>{days} {t('common.days')}</option>)}</select>
+          <select className="rounded border bg-background p-2 text-sm" aria-label={t('dashboard.requestsTrend')} value={trendDays} onChange={event => setTrendDays(Number(event.target.value))}>{[7, 14, 30].map(days => <option key={days} value={days}>{days} {t('common.days')}</option>)}</select>
           {lastUpdated && (
             <span className="text-xs text-muted-foreground">
               {t('dashboard.lastUpdated')}: {new Date(lastUpdated).toLocaleTimeString()}

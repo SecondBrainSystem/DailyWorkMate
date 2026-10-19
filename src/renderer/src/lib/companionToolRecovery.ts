@@ -1,3 +1,4 @@
+import i18n from 'i18next'
 import type { AgentEngine, AgentInput, CompanionSnapshot } from '../../../shared/companion'
 import { chatWorkspaceIdentity, type ChatWorkspaceSelection } from './workspaceAgent.ts'
 
@@ -75,7 +76,7 @@ export function createToolRecoveryRetryInput(
 ): AgentInput {
   const model = current.model.trim()
   if (!model || model === candidate.sourceModel.trim()) {
-    throw new Error('请选择其他模型重试。 / Select a different model to retry.')
+    throw new Error(i18n.t('toolRecovery.differentModel'))
   }
   const scope = candidate.workspace
   if (!scope.workspaceId || candidate.conversationId !== current.conversationId
@@ -84,11 +85,11 @@ export function createToolRecoveryRetryInput(
     || scope.groupId !== current.workspace.groupId
     || scope.accessScope !== current.workspace.accessScope
     || scope.relativePath !== current.workspace.relativePath) {
-    throw new Error('会话或工作区已变化，请重新发送问题。 / The conversation or workspace changed. Send the question again.')
+    throw new Error(i18n.t('toolRecovery.contextChanged'))
   }
   const access = chatWorkspaceIdentity(current.snapshot, current.workspace, candidate.sourceModel, current.systemPrompt, candidate.engine)
   if (access !== candidate.workspaceAccess) {
-    throw new Error('工作区授权已变化，请重新发送问题。 / Workspace permissions changed. Send the question again.')
+    throw new Error(i18n.t('toolRecovery.accessChanged'))
   }
   return {
     ...scope,

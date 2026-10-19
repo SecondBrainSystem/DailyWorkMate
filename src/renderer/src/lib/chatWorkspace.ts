@@ -48,6 +48,8 @@ export interface PersistedChatState {
   agentEngine?: 'claude' | 'chat'
   /** Target language of a translation task conversation. */
   translationTarget?: TranslationTarget
+  /** Set only in the localStorage backup: images it left out, restored from IndexedDB history by id. */
+  omittedImageIds?: string[]
 }
 
 export const CHAT_STORAGE_KEY = 'dailyworkmate.chat.workspace.v1'
@@ -106,7 +108,49 @@ export function normalizeChatWorkspace(parsed: unknown): PersistedChatState {
     ...(typeof input.agentWorkspaceAccess === 'string' ? { agentWorkspaceAccess: input.agentWorkspaceAccess.slice(0, 150000) } : {}),
     ...(input.agentEngine === 'claude' || input.agentEngine === 'chat' ? { agentEngine: input.agentEngine } : {}),
     ...(isTranslationTarget(input.translationTarget) ? { translationTarget: input.translationTarget } : {}),
+    ...(Array.isArray(input.omittedImageIds) && input.omittedImageIds.length ? { omittedImageIds: input.omittedImageIds.filter((id): id is string => typeof id === 'string').slice(0, 1000) } : {}),
   }
+}
+
+const imagesOf = (items: ChatAttachment[] | undefined) => (items || []).filter(item => item.kind === 'image')
+const textOf = (items: ChatAttachment[] | undefined) => items?.filter(item => item.kind !== 'image')
+
+/**
+ * The synchronous localStorage backup is written on the UI thread after every pause in typing, so it
+ * leaves out image data URLs (up to 20 MB each). IndexedDB history keeps them; the backup records their ids.
+ */
+export function chatStateBackup(state: PersistedChatState): PersistedChatState {
+  const omittedImageIds = [...state.messages.flatMap(message => imagesOf(message.attachments)), ...imagesOf(state.draftAttachments)].map(item => item.id)
+  if (!omittedImageIds.length) return state
+  return {
+    ...state,
+    messages: state.messages.map(message => message.attachments ? { ...message, attachments: textOf(message.attachments) } : message),
+    ...(state.draftAttachments ? { draftAttachments: textOf(state.draftAttachments) } : {}),
+    omittedImageIds,
+  }
+}
+
+/** Puts images left out of a backup back in their original order, taking them from the full history copy. */
+export function restoreOmittedImages(backup: PersistedChatState, source: PersistedChatState | undefined): PersistedChatState {
+  const { omittedImageIds = [], ...rest } = backup
+  if (!omittedImageIds.length) return rest
+  const omitted = new Set(omittedImageIds)
+  const merge = (kept: ChatAttachment[] | undefined, full: ChatAttachment[] | undefined) => {
+    if (!imagesOf(full).some(item => omitted.has(item.id))) return kept
+    const keptById = new Map((kept || []).map(item => [item.id, item]))
+    const ordered = (full || []).flatMap(item => keptById.get(item.id) ?? (item.kind === 'image' && omitted.has(item.id) ? [item] : []))
+    return [...ordered, ...(kept || []).filter(item => !ordered.some(other => other.id === item.id))]
+  }
+  const fullMessages = new Map((source?.messages || []).map(message => [message.id, message]))
+  const messages = rest.messages.map(message => {
+    const attachments = merge(message.attachments, fullMessages.get(message.id)?.attachments)
+    return attachments === message.attachments ? message : { ...message, attachments }
+  })
+  const draftAttachments = merge(rest.draftAttachments, source?.draftAttachments)
+  const restored = { ...rest, messages, ...(draftAttachments ? { draftAttachments } : {}) }
+  const found = [...messages.flatMap(message => imagesOf(message.attachments)), ...imagesOf(draftAttachments)].filter(item => omitted.has(item.id)).length
+  if (found < omitted.size) console.warn(`[Chat] ${omitted.size - found} image attachment(s) were not in saved history and could not be restored`)
+  return restored
 }
 
 export function loadPersistedChatState(storage: Pick<Storage, 'getItem'> = localStorage): PersistedChatState {
@@ -119,18 +163,18 @@ export function loadPersistedChatState(storage: Pick<Storage, 'getItem'> = local
   }
 }
 
-/** Never drop attachment content silently: warn and remove stale history if the snapshot cannot be saved. */
-export function persistChatState(state: PersistedChatState, storage: Pick<Storage, 'setItem' | 'removeItem'> = localStorage): boolean {
+/**
+ * Writes the synchronous backup (without image data, see chatStateBackup). When it cannot be written, the
+ * previous backup stays: it is older than IndexedDB history, so startup only uses it if history was lost too.
+ */
+export function persistChatState(state: PersistedChatState, storage: Pick<Storage, 'setItem'> = localStorage): boolean {
   try {
-    const serialized = JSON.stringify(state)
+    const serialized = JSON.stringify(chatStateBackup(state))
     if (serialized.length > MAX_PERSISTED_CHAT_CHARS) throw new Error('ChatStorageLimit')
     storage.setItem(CHAT_STORAGE_KEY, serialized)
     return true
   } catch (error) {
-    console.warn('[Chat] Could not save chat workspace:', error instanceof Error ? error.name : 'storage unavailable')
-    try { storage.removeItem(CHAT_STORAGE_KEY) } catch (removeError) {
-      console.warn('[Chat] Could not remove stale chat workspace:', removeError instanceof Error ? removeError.name : 'storage unavailable')
-    }
+    console.warn('[Chat] Could not update the chat backup; keeping the previous one:', error instanceof Error ? error.message : 'storage unavailable')
     return false
   }
 }

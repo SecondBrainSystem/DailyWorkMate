@@ -35,7 +35,7 @@ before(async () => {
             getEffectiveModels: id => (state.providers.find(provider => provider.id === id)?.supportedModels || []).map(model => ({ displayName: model, actualModelId: model })),
             getAccountsByProviderId: id => state.accounts.filter(account => account.providerId === id), getAccountById: id => state.accounts.find(account => account.id === id),
             updateAccount: (id, updates) => { state.accounts = state.accounts.map(account => account.id === id ? { ...account, ...updates } : account) },
-            addLog: (...args) => state.logs.push(args), recordRequestInStats: () => {}, recordTokenUsage: () => {},
+            addLog: (...args) => state.logs.push(args), recordRequestInStats: () => {}, recordAccountUsage: () => {}, updateProvider: () => null, recordTokenUsage: () => {},
             addRequestLog: log => { const entry = { ...log, id: String(state.requests.length) }; state.requests.push(entry); return entry }, updateRequestLog: () => {},
           }`, resolveDir: process.cwd() }))
     } }],

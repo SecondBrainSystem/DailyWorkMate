@@ -3,6 +3,7 @@ import { randomBytes } from 'node:crypto'
 import { closeTerminalProcess, terminalSpawner, type TerminalProcess, type TerminalSpawn } from './terminalProcess'
 import { boundedText, type TerminalInput, type TerminalSnapshot } from '../../shared/companion'
 import type { OpenCodeService } from './opencode'
+import { appendOutput, emptyOutput, readOutput, type OutputBuffer } from '../terminal/outputBuffer'
 
 const OUTPUT_LIMIT = 2 * 1024 * 1024
 /** Each Work tab attaches to the guarded server for its folder scope; this caps the native clients. */
@@ -19,8 +20,7 @@ type PreparedTerminal = Awaited<ReturnType<OpenCodeService['prepareTerminal']>>
 interface Entry {
   pty: TerminalProcess | null
   current: TerminalSnapshot
-  output: string
-  cursor: number
+  output: OutputBuffer
   /** Server attachment held by this client; released exactly once. */
   attachment: number | null
   /** Retained while this tab is open so a crashed display client can rejoin its live server. */
@@ -42,7 +42,7 @@ export class OpenCodeTerminalService {
     if (!/^[a-f0-9-]{32,36}$/.test(id)) throw new Error('Invalid terminal ID')
     if (this.entries.has(id)) throw new Error('This OpenCode terminal is already open')
     if (this.entries.size >= MAX_OPENCODE_TERMINALS) throw new Error(`最多同时打开 ${MAX_OPENCODE_TERMINALS} 个工作标签。 / At most ${MAX_OPENCODE_TERMINALS} work tabs can be open at once.`)
-    const entry: Entry = { pty: null, current: { id, sessionId: '', running: false, starting: true, data: '', cursor: 0, error: '', reset: false }, output: '', cursor: 0, attachment: null, runtime: null }
+    const entry: Entry = { pty: null, current: { id, sessionId: '', running: false, starting: true, data: '', cursor: 0, error: '', reset: false }, output: emptyOutput(), attachment: null, runtime: null }
     this.entries.set(id, entry)
     try {
       const runtime = await this.agent.prepareTerminal(input)
@@ -84,8 +84,7 @@ export class OpenCodeTerminalService {
     entry.current = { ...entry.current, sessionId: runtime.sessionId, running: true, starting: false, error: '' }
     terminal.onData(chunk => {
       if (this.entries.get(id) !== entry || entry.pty !== terminal) return
-      entry.output = (entry.output + chunk).slice(-OUTPUT_LIMIT)
-      entry.cursor += chunk.length
+      entry.output = appendOutput(entry.output, chunk, OUTPUT_LIMIT)
     })
     terminal.onExit(({ exitCode }) => {
       if (entry.pty !== terminal) return
@@ -123,17 +122,17 @@ export class OpenCodeTerminalService {
     await this.refreshAccess()
     const entry = this.entry(id)
     this.checkServer(entry)
-    if (entry.current.starting) return this.poll(id, entry.cursor)
+    if (entry.current.starting) return this.poll(id, entry.output.cursor)
     if (entry.current.accessChanged) throw new Error('文件夹权限已更改，原任务已停止。请重新启动终端。 / Folder permissions changed and the original task stopped. Start the terminal again.')
     if (entry.pty && entry.current.running) {
       entry.pty.resize(size.cols, size.rows)
-      return this.poll(id, entry.cursor)
+      return this.poll(id, entry.output.cursor)
     }
     if (!this.canReconnect(entry)) throw new Error('原 OpenCode 服务已停止，无法恢复正在执行的任务。请重新启动终端。 / The original OpenCode server stopped. Its running task cannot be resumed; start the terminal again.')
     // A new TUI sends its own device probes and full screen. Replaying the previous
     // client's probes could feed stale terminal responses into its input parser.
     const previousOutput = entry.output
-    entry.output = ''
+    entry.output = emptyOutput(previousOutput.cursor)
     try { this.spawnClient(entry, size) }
     catch (error) { entry.output = previousOutput; throw error }
     return { ...this.poll(id, 0), reset: true }
@@ -154,9 +153,9 @@ export class OpenCodeTerminalService {
   poll(id: string, cursor: number): TerminalSnapshot {
     const entry = this.entry(id)
     this.checkServer(entry)
-    if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > entry.cursor) throw new Error('Invalid terminal output cursor')
-    const start = entry.cursor - entry.output.length
-    return { ...entry.current, canReconnect: this.canReconnect(entry), cursor: entry.cursor, reset: cursor < start, data: entry.output.slice(Math.max(0, cursor - start)) }
+    if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > entry.output.cursor) throw new Error('Invalid terminal output cursor')
+    const { data, reset } = readOutput(entry.output, cursor, OUTPUT_LIMIT)
+    return { ...entry.current, canReconnect: this.canReconnect(entry), cursor: entry.output.cursor, reset, data }
   }
   write(id: string, data: string) {
     const entry = this.entry(id)
@@ -200,7 +199,8 @@ export class OpenCodeTerminalService {
       const entry = this.entries.get(id)
       if (!entry) return
       this.entries.delete(id)
-      if (!entry.pty) this.agent.cancelPreparation?.(id)
+      // Only a queued or running preparation is cancelled; the agent forgets the ID once that preparation ends.
+      if (entry.current.starting && !entry.runtime) this.agent.cancelPreparation?.(id)
       const terminal = entry.pty
       entry.pty = null
       const pending = (async () => {

@@ -284,11 +284,12 @@ app.whenReady().then(async () => {
   await js(`localStorage.setItem('companion-qa-free-error', 'empty')`)
   await click(`document.querySelector('button[aria-label="Refresh models"]')`)
   await waitFor(`document.querySelector('[data-free-models-status]')?.textContent.includes('QA_FREE_CATALOGUE_UNAVAILABLE')`, 'free catalogue failure is visible even with proxy models available')
-  assert.equal(await js(`document.querySelector('[data-companion-hints]').open`), false, 'catalogue failures stay folded by default')
-  assert.ok(await js(`document.querySelector('[data-companion-hints]>summary').textContent.includes('Free model list unavailable')`))
-  assert.ok(await js(`document.querySelector('[data-companion-hints]').getBoundingClientRect().height <= 40`), 'folded notices occupy one compact row')
-  await click(`document.querySelector('[data-companion-hints]>summary')`)
-  assert.equal(await js(`document.querySelector('[data-companion-hints]').open`), true)
+  // Tips & help is a button in the control row: closed by default, a dot and its tooltip carry the status.
+  assert.equal(await js(`document.querySelector('[data-companion-hints] > button').getAttribute('aria-expanded')`), 'false', 'catalogue failures stay folded by default')
+  assert.ok(await js(`document.querySelector('[data-companion-hints] > button').title.includes('Free model list unavailable') && !!document.querySelector('[data-companion-hints] .header-popover-badge')`))
+  assert.ok(await js(`!!document.querySelector('[data-companion-hints]').closest('.companion-chat-header')`), 'tips take no row of their own')
+  await click(`document.querySelector('[data-companion-hints] > button')`)
+  assert.equal(await js(`document.querySelector('[data-companion-hints] > button').getAttribute('aria-expanded') === 'true' && !document.querySelector('[data-companion-hints] [role=dialog]').hidden`), true)
   assert.equal(await js(`document.querySelector(${JSON.stringify(modelSelector)}).value`), 'qa-model-alt')
   assert.equal(await js(`document.querySelector(${JSON.stringify(modelSelector)}).querySelectorAll('optgroup option').length`), 3)
   assert.equal(await js(`document.querySelector(${JSON.stringify(modelSelector)}).disabled`), false, 'A failed free catalogue must not disable working proxy models')
@@ -394,6 +395,23 @@ app.whenReady().then(async () => {
   await select(modelSelector, 'opencode-free/qa-free')
   await waitFor(`document.querySelector('[data-free-model-limit]')?.textContent.includes('without a workspace')`, 'official free service limitation is visible in ordinary chat')
   assert.equal(await js(`document.querySelector(${JSON.stringify(modelSelector)}).disabled`), false, 'A free service warning does not disable model selection')
+  // Every provider and Ollama node unavailable: the free OpenCode models stay selectable in Chat, Work and Terminal.
+  await js(`localStorage.setItem('companion-qa-no-proxy-models', '1')`)
+  await click(`document.querySelector('button[aria-label="Refresh models"]')`)
+  const freeOnly = `(() => { const values = [...document.querySelector(${JSON.stringify(modelSelector)}).querySelectorAll('optgroup option')].map(option => option.value); return values.length > 0 && values.every(value => value.startsWith('opencode-free/')) })()`
+  await waitFor(freeOnly, 'with no proxy models the free models are still offered')
+  for (const view of ['Work', 'Terminal', 'Chat']) {
+    await click(button(view)); await sleep(300)
+    assert.equal(await js(`document.querySelector(${JSON.stringify(modelSelector)}).disabled`), false, view + ': the model picker stays usable without proxy models')
+    assert.equal(await js(freeOnly), true, view + ': free models are listed')
+    if (view !== 'Work') {
+      await select(modelSelector, 'opencode-free/qa-free'); await sleep(300)
+      assert.equal(await js(`document.querySelector(${JSON.stringify(modelSelector)}).value`), 'opencode-free/qa-free', view + ': choosing a free model sticks')
+    }
+  }
+  await js(`localStorage.removeItem('companion-qa-no-proxy-models')`)
+  await click(`document.querySelector('button[aria-label="Refresh models"]')`)
+  await waitFor(`[...document.querySelector(${JSON.stringify(modelSelector)}).querySelectorAll('optgroup option')].some(option => option.value === 'qa-model')`, 'proxy models return')
   await select('select[aria-label="Chat workspace"]', 'folder:qa-folder')
   await waitFor(`document.querySelector('[data-free-model-limit]')?.textContent.includes('strictly read-only')`, 'free model warning covers read-only chat workspaces')
   assert.equal(await js(`JSON.parse(localStorage.getItem('companion-qa')).workspaces.find(folder => folder.id === 'qa-folder').writable`), false, 'A free model selection never elevates folder access')

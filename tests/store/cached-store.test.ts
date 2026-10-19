@@ -22,7 +22,12 @@ test('reads come from memory while every write reaches the encrypted file', asyn
     returned.port = 99
     assert.equal(store.get('config').port, 1, 'callers cannot change the cache through returned objects')
 
+    const version = store.version
+    const shared = store.peek('config') as { port: number }
+    assert.equal(shared, store.peek('config'), 'peek returns the cached value without copying')
+    assert.throws(() => { shared.port = 5 }, TypeError, 'the shared value is frozen')
     store.set('providers', [{ id: 'a', when: new Date(0), skip: undefined }])
+    assert.equal(store.version, version + 1, 'every write changes the version')
     assert.deepEqual(store.get('providers'), [{ id: 'a', when: '1970-01-01T00:00:00.000Z' }], 'values read back as persisted JSON')
     store.set({ sessions: [1] })
     assert.equal(store.get('config.port'), 1)

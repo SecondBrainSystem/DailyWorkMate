@@ -1,18 +1,21 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { ChevronLeft, Folder, FolderCog, FolderOpen, FolderPlus, History, Pencil, Layers, LoaderCircle, Plus, Terminal as TerminalIcon, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { TerminalPhase } from './OpenCodeTerminal'
+import { ActivityMark } from './ActivityMark'
+import { combineActivity, type ActivityState } from '@/lib/terminalActivity'
 // xterm loads with the first Work tab, not with the assistant page.
 const OpenCodeTerminal = lazy(() => import('./OpenCodeTerminal').then(module => ({ default: module.OpenCodeTerminal })))
 import type { CompanionCopy } from './copy'
+import { useIsChinese } from '@/hooks/useIsChinese'
 import { folderLabel } from '@/lib/folderLabel'
 import { describeWorkScope, MAX_OPEN_WORK_SESSIONS, type WorkAccess, type WorkScope, type WorkSession, type WorkSessions as WorkSessionsModel } from '@/lib/workSessions'
 import type { AgentEngine, CompanionSnapshot, TerminalInput, WorkspaceEntry } from '@shared/companion'
 
 type History = TerminalInput['history']
 const accessText = (copy: CompanionCopy, access: WorkAccess) => access === 'edit' ? copy.accessEdit : access === 'mixed' ? copy.accessMixed : copy.accessRead
-const count = (template: string, n: number) => template.replace('{n}', String(n))
 const engineName = (engine?: AgentEngine) => engine === 'claude' ? 'Claude Code' : 'OpenCode'
 /** Claude Code cannot limit edits per folder, so a partly editable group runs read only. */
 const sessionAccess = (session: WorkSession, access: WorkAccess): WorkAccess => session.engine === 'claude' && access === 'mixed' ? 'read' : access
@@ -23,11 +26,13 @@ const sessionAccess = (session: WorkSession, access: WorkAccess): WorkAccess => 
  * reopenable under "Recent sessions". A tab connects the first time it is shown and then stays
  * connected (also while the Chat view is open) until it is closed.
  */
-export function WorkSessions({ work, snapshot, copy, chinese, visible, screenReaderMode, prepare, loadHistory, onFolders, onAddFolder, onError, models }: {
+export function WorkSessions({ work, snapshot, copy, visible, screenReaderMode, prepare, loadHistory, onFolders, onAddFolder, onError, models, onActivity }: {
   work: WorkSessionsModel
+  /** All Work tabs together, for the Work tab above: an agent working, an unseen finished turn, or idle. */
+  onActivity?: (state: ActivityState) => void
   models: string[]
   snapshot: CompanionSnapshot | null
-  copy: CompanionCopy; chinese: boolean
+  copy: CompanionCopy
   /** The Work view is showing. Hidden tabs stay connected. */
   visible: boolean
   screenReaderMode: boolean
@@ -39,8 +44,13 @@ export function WorkSessions({ work, snapshot, copy, chinese, visible, screenRea
   onAddFolder: () => void
   onError: (message: string) => void
 }) {
+  const { t } = useTranslation()
   const [mounted, setMounted] = useState<Set<string>>(() => new Set())
   const [phases, setPhases] = useState<Record<string, TerminalPhase>>({})
+  const [activity, setActivity] = useState<Record<string, ActivityState>>({})
+  const summary = combineActivity(work.open.map(session => activity[session.id]))
+  const reportActivity = useRef(onActivity); reportActivity.current = onActivity
+  useEffect(() => { reportActivity.current?.(summary) }, [summary])
   const [histories, setHistories] = useState<Record<string, History | null>>({})
   const [creating, setCreating] = useState(false)
   const [rename, setRename] = useState<{ id: string; title: string } | null>(null)
@@ -80,7 +90,7 @@ export function WorkSessions({ work, snapshot, copy, chinese, visible, screenRea
   }, [work.open, snapshot])
   const openNew = () => { if (full) onError(copy.workSessionLimit); else setCreating(true) }
   const closeSession = (id: string) => {
-    if (['starting', 'running', 'recovering', 'disconnected'].includes(phases[id] || '') && !window.confirm(chinese ? '关闭会话会结束正在执行的任务，继续？' : 'Closing this session ends its running task. Continue?')) return
+    if (['starting', 'running', 'recovering', 'disconnected'].includes(phases[id] || '') && !window.confirm(t('companion.work.closeConfirm'))) return
     work.close(id)
   }
   const reopen = (id: string) => { if (!work.reopen(id)) onError(copy.workSessionLimit); else setRecentOpen(false) }
@@ -89,7 +99,7 @@ export function WorkSessions({ work, snapshot, copy, chinese, visible, screenRea
     const info = describeWorkScope(snapshot, session)
     return <span className="work-session-details" title={info.paths.join('\n')}>
       {session.groupId && session.accessScope === 'group' ? <Layers size={13} /> : <Folder size={13} />}
-      <span className="work-session-path">{info.paths.length > 1 ? count(copy.foldersCount, info.paths.length) : info.paths[0]}</span>
+      <span className="work-session-path">{info.paths.length > 1 ? t('companion.foldersCount', { n: info.paths.length }) : info.paths[0]}</span>
       <span className="work-chip" data-access={sessionAccess(session, info.access)}>{accessText(copy, sessionAccess(session, info.access))}</span>
       <span className="work-chip">{info.commands && sessionAccess(session, info.access) !== 'read' ? copy.commandsAsk : copy.commandsOff}</span>
       <span className="work-chip">{engineName(session.engine)}</span>
@@ -104,16 +114,16 @@ export function WorkSessions({ work, snapshot, copy, chinese, visible, screenRea
     if (info.missing) return <div className="work-panel"><FolderCog size={28} /><p>{copy.folderMissing}</p><div className="work-panel-actions">
       <Button size="sm" variant="outline" onClick={onFolders}><FolderCog size={14} className="mr-2" />{copy.folderAccess}</Button>
       <Button size="sm" variant="outline" onClick={() => closeSession(session.id)}><X size={14} className="mr-2" />{copy.closeWorkSession}</Button></div></div>
-    if (!session.model) return <div className="work-panel"><TerminalIcon size={28} /><p>{chinese ? '在上方选择这个会话使用的模型后开始连接。' : 'Choose a model for this session above to connect.'}</p></div>
+    if (!session.model) return <div className="work-panel"><TerminalIcon size={28} /><p>{t('companion.work.chooseModel')}</p></div>
     return null
   }
 
   return <div className="work-sessions" hidden={!visible}>
-    <Dialog open={!!rename} onOpenChange={open => { if (!open) setRename(null) }}><DialogContent><DialogHeader><DialogTitle>{chinese ? '会话标题' : 'Session title'}</DialogTitle><DialogDescription>{chinese ? '标题只用于区分标签，不会影响任务。' : 'The title helps identify this tab and does not interrupt the task.'}</DialogDescription></DialogHeader><input className="rounded border bg-background p-2" maxLength={120} aria-label={chinese ? '会话标题' : 'Session title'} value={rename?.title || ''} onChange={event => setRename(current => current ? { ...current, title: event.target.value } : current)} /><DialogFooter><Button variant="outline" onClick={() => setRename(null)}>{copy.cancel}</Button><Button onClick={() => { if (rename) work.rename(rename.id, rename.title); setRename(null) }}>{copy.save}</Button></DialogFooter></DialogContent></Dialog>
+    <Dialog open={!!rename} onOpenChange={open => { if (!open) setRename(null) }}><DialogContent><DialogHeader><DialogTitle>{t('companion.work.titleLabel')}</DialogTitle><DialogDescription>{t('companion.work.titleHint')}</DialogDescription></DialogHeader><input className="rounded border bg-background p-2" maxLength={120} aria-label={t('companion.work.titleLabel')} value={rename?.title || ''} onChange={event => setRename(current => current ? { ...current, title: event.target.value } : current)} /><DialogFooter><Button variant="outline" onClick={() => setRename(null)}>{copy.cancel}</Button><Button onClick={() => { if (rename) work.rename(rename.id, rename.title); setRename(null) }}>{copy.save}</Button></DialogFooter></DialogContent></Dialog>
     <div className="work-session-bar">
-      {active && <button type="button" className="companion-icon-button" aria-label={chinese ? '打开工作区当前文件夹' : 'Open current workspace folder'} title={chinese ? '在文件管理器中打开当前文件夹' : 'Open current folder in file manager'} disabled={!workspaces.some(folder => folder.id === active.workspaceId)} onClick={() => { void window.electronAPI.companion.openWorkspace(active.workspaceId, active.accessScope === 'folder' ? active.relativePath : '').catch(error => onError(error instanceof Error ? error.message : String(error))) }}><FolderOpen size={16} /></button>}
-      {active && <button className="companion-icon-button" aria-label={chinese ? '修改会话标题' : 'Rename session'} title={chinese ? '修改会话标题' : 'Rename session'} onClick={() => setRename({ id: active.id, title: active.title || '' })}><Pencil size={14} /></button>}
-      <div ref={strip} className="work-session-tabs" role="tablist" aria-label={chinese ? '工作会话' : 'Work sessions'}>
+      {active && <button type="button" className="companion-icon-button" aria-label={t('companion.work.openFolder')} title={t('companion.work.openFolderTitle')} disabled={!workspaces.some(folder => folder.id === active.workspaceId)} onClick={() => { void window.electronAPI.companion.openWorkspace(active.workspaceId, active.accessScope === 'folder' ? active.relativePath : '').catch(error => onError(error instanceof Error ? error.message : String(error))) }}><FolderOpen size={16} /></button>}
+      {active && <button className="companion-icon-button" aria-label={t('companion.work.rename')} title={t('companion.work.rename')} onClick={() => setRename({ id: active.id, title: active.title || '' })}><Pencil size={14} /></button>}
+      <div ref={strip} className="work-session-tabs" role="tablist" aria-label={t('companion.work.tabs')}>
         {work.open.map((session, index) => {
           const info = describeWorkScope(snapshot, session)
           const selected = session.id === active?.id
@@ -126,7 +136,7 @@ export function WorkSessions({ work, snapshot, copy, chinese, visible, screenRea
                 work.activate(work.open[next].id)
                 strip.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus()
               }}>
-              <i className="work-session-dot" data-phase={info.missing ? 'error' : mounted.has(session.id) ? phases[session.id] || 'starting' : 'idle'} aria-hidden="true" />
+              <ActivityMark state={activity[session.id] ?? 'idle'} idle={<i className="work-session-dot" data-phase={info.missing ? 'error' : mounted.has(session.id) ? phases[session.id] || 'starting' : 'idle'} aria-hidden="true" />} />
               <span className="work-session-name">{labels[session.id]}</span>
               {session.engine === 'claude' && <span className="work-chip">Claude</span>}
               <span className="work-chip" data-access={sessionAccess(session, info.access)}>{accessText(copy, sessionAccess(session, info.access))}</span>
@@ -144,7 +154,7 @@ export function WorkSessions({ work, snapshot, copy, chinese, visible, screenRea
           <Button onClick={openNew}><Plus size={15} className="mr-2" />{copy.newWorkSession}</Button></>
           : <><FolderPlus size={30} /><h2>{copy.noFoldersTitle}</h2><p>{copy.noFoldersBody}</p>
             <Button onClick={onAddFolder}><FolderPlus size={15} className="mr-2" />{copy.addFolder}</Button></>}
-        {!!work.recent.length && <RecentList work={work} snapshot={snapshot} copy={copy} chinese={chinese} limit={5} onReopen={reopen} />}
+        {!!work.recent.length && <RecentList work={work} snapshot={snapshot} copy={copy} limit={5} onReopen={reopen} />}
       </div>
       : work.open.map(session => {
         const blocked = panel(session)
@@ -153,22 +163,24 @@ export function WorkSessions({ work, snapshot, copy, chinese, visible, screenRea
         if (!mounted.has(session.id)) return null
         const history = session.importFrom && !session.sessionId ? histories[session.id] : undefined
         if (history === null) return <div key={session.id} hidden={hidden} className="work-panel" role="status"><LoaderCircle size={22} className="animate-spin" /></div>
-        return <Suspense key={session.id} fallback={<div hidden={hidden} className="work-panel" role="status"><LoaderCircle size={22} className="animate-spin" /></div>}><OpenCodeTerminal hidden={hidden} chinese={chinese} screenReaderMode={screenReaderMode} details={details(session)} engine={session.engine}
+        return <Suspense key={session.id} fallback={<div hidden={hidden} className="work-panel" role="status"><LoaderCircle size={22} className="animate-spin" /></div>}><OpenCodeTerminal hidden={hidden} screenReaderMode={screenReaderMode} details={details(session)} engine={session.engine}
           prepare={() => prepare(session.model)}
           input={{ workspaceId: session.workspaceId, groupId: session.groupId, accessScope: session.accessScope, relativePath: session.relativePath, model: session.model, sessionId: session.sessionId, newSession: !session.sessionId, ...(session.engine === 'claude' ? { engine: session.engine } : history?.length ? { history } : {}) }}
           onSession={sessionId => work.connected(session.id, sessionId)}
-          onPhase={phase => setPhases(current => current[session.id] === phase ? current : { ...current, [session.id]: phase })} /></Suspense>
+          onPhase={phase => setPhases(current => current[session.id] === phase ? current : { ...current, [session.id]: phase })}
+          onActivity={state => setActivity(current => (current[session.id] ?? 'idle') === state ? current : { ...current, [session.id]: state })} /></Suspense>
       })}
-    {creating && <NewWorkSessionDialog snapshot={snapshot} copy={copy} chinese={chinese} model={work.model} models={models} initial={work.lastScope} onClose={() => setCreating(false)} onFolders={() => { setCreating(false); onFolders() }} onAddFolder={onAddFolder}
+    {creating && <NewWorkSessionDialog snapshot={snapshot} copy={copy} model={work.model} models={models} initial={work.lastScope} onClose={() => setCreating(false)} onFolders={() => { setCreating(false); onFolders() }} onAddFolder={onAddFolder}
       onCreate={(scope, model, engine) => { if (work.create(scope, model, engine)) setCreating(false); else onError(copy.workSessionLimit) }} />}
     <Dialog open={recentOpen} onOpenChange={setRecentOpen}><DialogContent className="companion-settings max-h-[80vh] max-w-xl overflow-y-auto">
       <DialogHeader><DialogTitle className="flex items-center gap-2"><History size={18} />{copy.recentSessions}</DialogTitle><DialogDescription>{copy.noRecentSessions}</DialogDescription></DialogHeader>
-      <RecentList work={work} snapshot={snapshot} copy={copy} chinese={chinese} onReopen={reopen} />
+      <RecentList work={work} snapshot={snapshot} copy={copy} onReopen={reopen} />
     </DialogContent></Dialog>
   </div>
 }
 
-function RecentList({ work, snapshot, copy, chinese, limit, onReopen }: { work: WorkSessionsModel; snapshot: CompanionSnapshot | null; copy: CompanionCopy; chinese: boolean; limit?: number; onReopen: (id: string) => void }) {
+function RecentList({ work, snapshot, copy, limit, onReopen }: { work: WorkSessionsModel; snapshot: CompanionSnapshot | null; copy: CompanionCopy; limit?: number; onReopen: (id: string) => void }) {
+  const chinese = useIsChinese()
   const items = limit ? work.recent.slice(0, limit) : work.recent
   if (!items.length) return <p className="work-recent-empty">{copy.noRecentSessions}</p>
   return <div className="work-recent" aria-label={copy.recentSessions}>
@@ -188,10 +200,11 @@ function RecentList({ work, snapshot, copy, chinese, limit, onReopen }: { work: 
 }
 
 /** Pick the folder (or group) a new session works in. The session keeps it for life. */
-function NewWorkSessionDialog({ snapshot, copy, chinese, model: initialModel, models, initial, onClose, onCreate, onFolders, onAddFolder }: {
-  snapshot: CompanionSnapshot | null; copy: CompanionCopy; chinese: boolean; model: string; models: string[]; initial?: WorkScope
+function NewWorkSessionDialog({ snapshot, copy, model: initialModel, models, initial, onClose, onCreate, onFolders, onAddFolder }: {
+  snapshot: CompanionSnapshot | null; copy: CompanionCopy; model: string; models: string[]; initial?: WorkScope
   onClose: () => void; onCreate: (scope: WorkScope, model: string, engine: AgentEngine) => void; onFolders: () => void; onAddFolder: () => void
 }) {
+  const { t } = useTranslation()
   const [model, setModel] = useState(initialModel || models[0] || '')
   const [engine, setEngine] = useState<AgentEngine>('opencode')
   const claudeAvailable = !!snapshot?.claudeCode?.available
@@ -224,7 +237,7 @@ function NewWorkSessionDialog({ snapshot, copy, chinese, model: initialModel, mo
           setScope(kind === 'group' ? { workspaceId: first?.id || '', groupId: id, accessScope: 'group', relativePath: '' } : { workspaceId: id, groupId: '', accessScope: 'group', relativePath: '' })
         }}>
           <optgroup label={copy.folders}>{workspaces.map(item => <option key={item.id} value={'folder:' + item.id}>{item.name} · {item.writable ? copy.accessEdit : copy.accessRead}</option>)}</optgroup>
-          {!!groups.length && <optgroup label={copy.groupPrefix}>{groups.map(item => <option key={item.id} value={'group:' + item.id}>{copy.groupPrefix}：{item.name} · {count(copy.foldersCount, item.workspaceIds.length)}</option>)}</optgroup>}
+          {!!groups.length && <optgroup label={copy.groupPrefix}>{groups.map(item => <option key={item.id} value={'group:' + item.id}>{copy.groupPrefix}：{item.name} · {t('companion.foldersCount', { n: item.workspaceIds.length })}</option>)}</optgroup>}
         </select></label>
       {group && scope && <label className="companion-field">{copy.startFolder}
         <select aria-label={copy.startFolder} value={scope.workspaceId} onChange={event => setScope({ ...scope, workspaceId: event.target.value })}>{members.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>}
@@ -248,9 +261,10 @@ function NewWorkSessionDialog({ snapshot, copy, chinese, model: initialModel, mo
           const next = event.target.value as AgentEngine
           setEngine(next)
           if (next === 'claude' && model.startsWith('opencode-free/')) setModel(models.find(id => !id.startsWith('opencode-free/')) || '')
-        }}><option value="opencode">OpenCode v2</option><option value="claude" disabled={!claudeAvailable}>Claude Code{claudeAvailable ? '' : chinese ? '（未安装）' : ' (not installed)'}</option></select></label>
+        }}><option value="opencode">OpenCode v2</option><option value="claude" disabled={!claudeAvailable}>Claude Code{claudeAvailable ? '' : t('companion.work.notInstalled')}</option></select></label>
         <label className="companion-field">{copy.sessionModel}<select aria-label={copy.sessionModel} value={model} onChange={event => setModel(event.target.value)}><option value="" disabled>{copy.model}</option>{[...new Set([model, ...engineModels])].filter(Boolean).map(id => <option key={id} value={id}>{id}</option>)}</select></label>
-        <button type="button" className="companion-read-button" onClick={onFolders}><FolderCog size={13} />{chinese ? '修改文件夹权限' : 'Change folder permissions'}</button>
+        <button type="button" className="companion-read-button" onClick={onFolders}><FolderCog size={13} />{t('companion.work.changeFolderAccess')}
+</button>
       </div>}
     </div>}
     <DialogFooter><Button variant="outline" onClick={onClose}>{copy.cancel}</Button>

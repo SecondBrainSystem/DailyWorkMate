@@ -11,7 +11,9 @@ const save = next => { state = next; localStorage.setItem('companion-qa', JSON.s
 // Like the main process: after a permission change, only the affected Work tabs reconnect.
 const grantsChanged = async next => { if (process.argv.includes('--companion-native-terminal')) await ipcRenderer.invoke('qa:refreshAccess'); return next }
 let status = { isRunning: !process.argv.includes('--companion-qa-proxy-stopped'), port, host: '127.0.0.1', uptime: 1, connections: 0 }
-const proxyModels = [{ id: 'qa-model' }, { id: 'qa-model-alt' }, { id: 'qa-model-bad' }]
+const allProxyModels = [{ id: 'qa-model' }, { id: 'qa-model-alt' }, { id: 'qa-model-bad' }]
+// 'companion-qa-no-proxy-models' simulates every provider and Ollama node being unavailable.
+const currentProxyModels = () => localStorage.getItem('companion-qa-no-proxy-models') ? [] : allProxyModels
 let agent = { sessionId: 'qa-session', running: false, text: '', error: '', tools: [], permissions: [] }
 let approved = false
 let plainReply = ''
@@ -73,15 +75,15 @@ function createInferenceFixture(getPort, record = () => {}, catalogue) {
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
-  inference: createInferenceFixture(async () => port, record, () => proxyModels),
+  inference: createInferenceFixture(async () => port, record, currentProxyModels),
   getPathForFile: file => webUtils.getPathForFile(file),
-  ...(process.argv.includes('--unified-terminal') ? { terminal: Object.fromEntries(['get','create','select','close','restart','poll','write','resize','savePreferences','pickDirectory'].map(name => [name, (...args) => ipcRenderer.invoke('qa:terminal:' + name, ...args)])) } : {}),
+  ...(process.argv.includes('--unified-terminal') ? { terminal: Object.fromEntries(['get','create','select','close','restart','poll','write','resize','savePreferences','pickDirectory','saveLayout'].map(name => [name, (...args) => ipcRenderer.invoke('qa:terminal:' + name, ...args)])) } : {}),
   app: { openExternal: async url => { record('openExternal', url); return true } },
   config: { get: async () => config, update: async updates => { config = { ...config, ...updates }; return true }, onConfigChanged: () => () => {} },
   store: { get: async key => key === 'config' ? config : [], set: async () => {} },
   proxy: {
     getStatus: async () => status,
-    getModels: async () => { record('proxy:getModels'); return proxyModels },
+    getModels: async () => { record('proxy:getModels'); return currentProxyModels() },
     start: async () => { record('proxy:start'); status = {...status, isRunning:true}; return true },
     stop: async () => { status = {...status, isRunning:false}; return true },
     onStatusChanged: () => () => {},

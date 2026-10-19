@@ -10,6 +10,7 @@ import { readUpstreamErrorBody } from '../upstreamError'
 import { createOllamaAgents } from '../connectionAgents'
 import { requestOllama } from '../../ollama/request'
 import { awaitFirstOutput } from '../firstOutput'
+import { UPSTREAM_TIMEOUT, UPSTREAM_UNREACHABLE, retryAfter, upstreamFailure } from '../upstreamFailure'
 import {
   claudeToOpenAIResponse,
   createClaudeToOpenAIStream,
@@ -105,10 +106,11 @@ export class OllamaAdapter {
       }
 
       const url = `${normalizeOllamaUrl(provider.apiEndpoint)}${path}`
-      const failedStatus = async (response: { status: number; data: unknown }): Promise<ForwardResult> => ({
+      const failedStatus = async (response: { status: number; data: unknown; headers?: unknown }): Promise<ForwardResult> => ({
         success: false,
         status: response.status >= 400 ? response.status : 502,
         error: upstreamError(await readUpstreamErrorBody(response.data), response.status, path),
+        ...retryAfter(response.headers),
       })
 
       if (request.stream) {
@@ -126,11 +128,14 @@ export class OllamaAdapter {
           const first = await awaitFirstOutput(convert(response.data), timeout, signal)
           if (first.ok) return { success: true, status: response.status, stream: first.stream, skipTransform: true }
           if (first.reason === 'aborted' || signal?.aborted) return { success: false, status: 499, error: `Ollama ${path} request cancelled` }
-          if (first.reason === 'timeout') return { success: false, status: 504, error: `Ollama ${path} stream: ${first.error.message}` }
-          if (first.reason === 'stream_error' && attempt < STREAM_ATTEMPTS) continue
+          if (first.reason === 'timeout') return { success: false, status: 504, errorCode: UPSTREAM_TIMEOUT, error: `Ollama ${path} stream: ${first.error.message}` }
+          if (first.reason === 'stream_error' && !first.finished && attempt < STREAM_ATTEMPTS) continue
           return {
             success: false,
             status: 502,
+            // A node that keeps closing before any output is broken. An empty but completed answer or
+            // an error event may be caused by the request, so those only count toward quarantine.
+            ...(first.reason === 'stream_error' && !first.finished ? { errorCode: UPSTREAM_UNREACHABLE } : {}),
             error: `Ollama ${path} stream produced no output: ${first.error.message}${attempt > 1 ? ` (tried ${attempt} times)` : ''}`,
           }
         }
@@ -168,10 +173,8 @@ export class OllamaAdapter {
       return { success: true, status: response.status, body: claudeToOpenAIResponse(response.data, actualModel) }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      const status = signal?.aborted || axios.isCancel(error) ? 499
-        : error instanceof ModelFeatureError ? 400
-          : axios.isAxiosError(error) && ['ECONNABORTED', 'ETIMEDOUT'].includes(error.code || '') ? 504 : 502
-      return { success: false, status, error: `Ollama ${path} request failed: ${message}` }
+      if (error instanceof ModelFeatureError) return { success: false, status: 400, error: `Ollama ${path} request failed: ${message}` }
+      return { success: false, ...upstreamFailure(error, signal), error: `Ollama ${path} request failed: ${message}` }
     }
   }
 }

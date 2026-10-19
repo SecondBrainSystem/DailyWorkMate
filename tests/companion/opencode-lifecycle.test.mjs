@@ -44,8 +44,9 @@ before(async () => {
         async assertGuard() { configure({guards:state.guards+1}); if(state.guardError) throw new Error('Workspace guard is not active'); }
         async getSession(id) { return {id,directory:this.directory}; }
         async createSession() { const sessions=state.sessions+1; configure({sessions}); return {id:'session_'+sessions,directory:this.directory}; }
-        async messages() { const next=state.nextMessages; if(next) {configure({nextMessages:null}); return next.promise;} return state.messages; }
-        async permissions() { return []; }
+        async messages() { configure({messageCalls:(state.messageCalls||0)+1}); const next=state.nextMessages; if(next) {configure({nextMessages:null}); return next.promise;} return state.messages; }
+        async permissions() { configure({permissionCalls:(state.permissionCalls||0)+1}); return state.permissions||[]; }
+        async reply(id,requestId,allow) { configure({replies:[...(state.replies||[]),{id,requestId,allow}]}); }
         async addHistory(id,text) { configure({imported:[...state.imported,{id,text}]}); }
         async setInstructions(id,text) { configure({terminalInstructions:{id,text}}); }
         async selectModel(id,model) { configure({terminalModel:{id,model}}); const wait=state.selecting; if(wait) { configure({selecting:null,selectingStarted:true}); await wait.promise; } }
@@ -84,7 +85,7 @@ beforeEach(async () => {
   const grant = { id:'qa',path:workspace,name:'workspace',writable:false }
   saved = {settings:{persona:'test'},workspaces:[grant],groups:[]}
   service = new fixtureModule.OpenCodeService({home,get:async()=>saved,grant:async()=>grant},
-    ()=>({proxyHost:'127.0.0.1',proxyPort:11434,enableApiKey:false,apiKeys:[]}),executable)
+    ()=>({proxyHost:'127.0.0.1',proxyPort:11434,enableApiKey:false,apiKeys:[]}),executable,undefined,{refreshIntervals:{messages:0,live:0,permissions:0}})
   input = {workspaceId:'qa',model:'qa-model',prompt:'List this folder',newSession:true}
 })
 afterEach(() => service?.dispose())
@@ -133,7 +134,7 @@ test('ordinary chat runs V2 in an isolated readonly directory without inheriting
   const state = fixtureModule.state
   assert.equal(result.running, true)
   assert.equal(state.guards, 1)
-  assert.deepEqual(state.configuration, { allowShell:false, autoApproveCommands:true, shellEffect:'deny' })
+  assert.deepEqual(state.configuration, { allowShell:false, autoApproveCommands:false, shellEffect:'deny' })
   assert.equal(state.grants.length, 1)
   assert.equal(state.grants[0].writable, false)
   assert.equal(state.cwd, state.grants[0].path)
@@ -235,12 +236,12 @@ test('authorized writable chat and assistant sessions configure automatic native
 
 test('automatic chat command policy keeps readonly and restricted folder commands denied', async () => {
   await service.start(input)
-  assert.deepEqual(fixtureModule.state.configuration, { allowShell:true, autoApproveCommands:true, shellEffect:'deny' })
+  assert.deepEqual(fixtureModule.state.configuration, { allowShell:false, autoApproveCommands:false, shellEffect:'deny' })
   assert.match(fixtureModule.state.prompts[0].input.system, /READ ONLY, so shell commands are disabled/)
   await service.stop()
   saved = { ...saved, workspaces:saved.workspaces.map(grant => ({ ...grant, writable:true })) }
   await service.start({ ...input, accessScope:'folder' })
-  assert.deepEqual(fixtureModule.state.configuration, { allowShell:false, autoApproveCommands:true, shellEffect:'deny' })
+  assert.deepEqual(fixtureModule.state.configuration, { allowShell:false, autoApproveCommands:false, shellEffect:'deny' })
   assert.match(fixtureModule.state.prompts[1].input.system, /restricted folder scope.*Shell commands are disabled/)
 })
 
@@ -266,7 +267,7 @@ test('chat automatic command servers remain separate from native Work approval s
 test('readonly Chat and Work isolate their command modes even when both configurations deny shell', async () => {
   const scope = { ...input, groupId:'', accessScope:'group' }
   const chat = await service.start(scope)
-  assert.deepEqual(fixtureModule.state.configuration, { allowShell:true, autoApproveCommands:true, shellEffect:'deny' })
+  assert.deepEqual(fixtureModule.state.configuration, { allowShell:false, autoApproveCommands:false, shellEffect:'deny' })
   fixtureModule.state.prompts[0].resolve()
   await flush()
   assert.equal((await service.poll()).running, false)
@@ -278,7 +279,7 @@ test('readonly Chat and Work isolate their command modes even when both configur
   assert.equal(fixtureModule.state.kills, 1, 'releasing the readonly Work server leaves its Chat server available')
   await service.start({ ...scope, newSession:false, sessionId:chat.sessionId })
   assert.equal(fixtureModule.state.spawns, 2, 'readonly Chat reuses its server after the Work attachment closes')
-  assert.deepEqual(fixtureModule.state.configuration, { allowShell:true, autoApproveCommands:true, shellEffect:'deny' })
+  assert.deepEqual(fixtureModule.state.configuration, { allowShell:false, autoApproveCommands:false, shellEffect:'deny' })
 })
 
 test('revoking writable chat access retires its automatic command server before another task', async () => {
@@ -292,7 +293,7 @@ test('revoking writable chat access retires its automatic command server before 
   assert.equal(fixtureModule.state.kills, 1, 'automatic permission must not survive revoking the writable grant')
   await service.start(input)
   assert.equal(fixtureModule.state.spawns, 2)
-  assert.deepEqual(fixtureModule.state.configuration, { allowShell:true, autoApproveCommands:true, shellEffect:'deny' })
+  assert.deepEqual(fixtureModule.state.configuration, { allowShell:false, autoApproveCommands:false, shellEffect:'deny' })
 })
 
 test('repeated guard failure never reuses an unvalidated server or dispatches a prompt', async () => {
@@ -597,4 +598,87 @@ test('event startup failure falls back to polling and event disconnect is correc
   fixtureModule.state.prompts[1].resolve()
   await flush()
   assert.equal((await service.poll()).text, 'Authoritative complete answer')
+})
+
+test('chat never auto-approves commands when a group mixes writable and read-only folders', async () => {
+  await secondFolder(false)
+  saved = { ...saved, workspaces:[{ ...saved.workspaces[0], writable:true }, saved.workspaces[1]], groups:[{ id:'mixed', name:'Mixed', workspaceIds:['qa','second'] }] }
+  await service.start({ ...input, groupId:'mixed' })
+  assert.deepEqual(fixtureModule.state.configuration, { allowShell:false, autoApproveCommands:false, shellEffect:'deny' })
+  assert.match(fixtureModule.state.prompts[0].input.system, /some authorized folders are READ ONLY/)
+  assert.doesNotMatch(fixtureModule.state.prompts[0].input.system, /without requesting further approval/)
+  await service.stop()
+  saved = { ...saved, workspaces:saved.workspaces.map(grant => ({ ...grant, writable:true })) }
+  await service.start({ ...input, groupId:'mixed' })
+  assert.deepEqual(fixtureModule.state.configuration, { allowShell:true, autoApproveCommands:true, shellEffect:'allow' }, 'every folder writable: commands run as in Claude Code')
+  const terminal = await service.prepareTerminal(terminalInput({ groupId:'mixed' }))
+  assert.equal(fixtureModule.state.configuration.shellEffect, 'ask', 'Work tabs still ask for each command')
+  await service.releaseTerminal(terminal.attachment)
+})
+
+test('a starting Work tab and a chat turn do not block or cancel each other', async () => {
+  const health = deferred()
+  fixtureModule.configure({ health })
+  const preparing = service.prepareTerminal(terminalInput())
+  await flush()
+  const chat = service.start({ ...input, workspaceId:'' })
+  health.resolve()
+  fixtureModule.configure({ health:null })
+  const [terminal, started] = await Promise.all([preparing, chat])
+  assert.equal(started.running, true)
+  assert.equal(service.agentBusy(), true)
+  await assert.rejects(service.start(input), /running or stopping/)
+  const second = await service.prepareTerminal(terminalInput())
+  assert.equal(fixtureModule.state.prompts[0].signal.aborted, false)
+  await service.releaseTerminal(terminal.attachment)
+  await service.releaseTerminal(second.attachment)
+})
+
+test('stopping during chat startup cancels it and stops its server', async () => {
+  const health = deferred()
+  fixtureModule.configure({ health })
+  const starting = service.start(input)
+  while (!fixtureModule.state.spawns) await flush()
+  await service.stop()
+  health.resolve()
+  await assert.rejects(starting, /cancelled|exited/)
+  assert.equal(fixtureModule.state.kills, 1)
+  assert.equal(fixtureModule.state.prompts.length, 0)
+  assert.equal(service.agentBusy(), false)
+})
+
+test('a cancellation for a tab that is not starting is not remembered', async () => {
+  service.cancelPreparation('0123456789abcdef0123456789abcdef')
+  const terminal = await service.prepareTerminal(terminalInput({ terminalId:'0123456789abcdef0123456789abcdef' }))
+  assert.ok(terminal.attachment)
+  await service.releaseTerminal(terminal.attachment)
+})
+
+test('permission replies report an ended session instead of failing on a stopped server', async () => {
+  await service.start(input)
+  fixtureModule.configure({ permissions:[{ id:'perm_1', sessionID:'session_1', permission:'shell', patterns:['npm test'] }] })
+  assert.equal((await service.poll()).permissions.length, 1)
+  await service.reply('perm_1', true)
+  assert.deepEqual(fixtureModule.state.replies, [{ id:'session_1', requestId:'perm_1', allow:true }])
+  await service.dispose()
+  await assert.rejects(service.reply('perm_1', true), /session has ended/)
+})
+
+test('while live events arrive, polls reuse the snapshot and refresh remote state only occasionally', async () => {
+  const home = path.dirname(saved.workspaces[0].path)
+  service = new fixtureModule.OpenCodeService({home,get:async()=>saved},
+    ()=>({proxyHost:'127.0.0.1',proxyPort:11434,enableApiKey:false,apiKeys:[]}),path.join(home,'opencode.exe'),undefined,{refreshIntervals:{messages:0,live:60000,permissions:60000}})
+  await service.start(input)
+  const live = fixtureModule.state.streams[0]
+  const before = fixtureModule.state.messageCalls
+  await service.poll()
+  assert.equal(fixtureModule.state.messageCalls, before + 1, 'the first poll reconciles durable messages')
+  for (let index = 0; index < 50; index++) live.onEvent({ type:'text', messageId:'assistant_1', ordinal:0, operation:'delta', text:'x' })
+  const polled = await service.poll()
+  assert.equal(polled.text, 'x'.repeat(50))
+  assert.equal(fixtureModule.state.messageCalls, before + 1, 'live text needs no message fetch')
+  assert.equal(fixtureModule.state.permissionCalls, 1)
+  live.onError(new Error('Disconnected'))
+  await service.poll()
+  assert.equal(fixtureModule.state.messageCalls, before + 2, 'without live events polling falls back to messages')
 })

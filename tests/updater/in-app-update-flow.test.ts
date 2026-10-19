@@ -21,7 +21,8 @@ test('preload and renderer types expose updater status for checkUpdate', () => {
   const electronTypes = readFileSync('src/renderer/src/types/electron.d.ts', 'utf8')
 
   assert.match(preload, /checkUpdate:\s*\(\): Promise<UpdateStatus>/)
-  assert.match(electronTypes, /checkUpdate:\s*\(\) => Promise<UpdateStatus>/)
+  // Renderer types are derived from the preload bridge, so its signature is the renderer's.
+  assert.match(electronTypes, /import\('\.\.\/\.\.\/\.\.\/preload\/index'\)\.ElectronAPI/)
   assert.doesNotMatch(preload, /hasUpdate: boolean; currentVersion: string; latestVersion: string; releaseUrl/)
   assert.doesNotMatch(electronTypes, /hasUpdate: boolean; currentVersion: string; latestVersion: string; releaseUrl/)
 })

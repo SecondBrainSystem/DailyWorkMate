@@ -32,6 +32,8 @@ before(async () => {
             getAccountsByProviderId: () => [state.account], getAccountById: () => state.account,
             updateAccount: (_id, updates) => {state.account = {...state.account,...updates}},
             addLog: (...args) => state.logs.push(args), recordRequestInStats: (...args) => state.outcomes.push(args),
+            recordAccountUsage: (_id, options = {}) => {state.account = {...state.account, requestCount: (state.account.requestCount || 0) + 1, ...(options.reactivate ? {status:'active', errorMessage:undefined} : {})}},
+            updateProvider: (_id, updates) => {state.provider = {...state.provider, ...updates}; return state.provider},
             recordTokenUsage: (...args) => state.tokens.push(args),
             addRequestLog: log => {const entry = {...log,id:String(state.requests.length)};state.requests.push(entry);return entry},
             updateRequestLog: (id, update) => {state.requests = state.requests.map(log => log.id === id ? {...log,...update} : log)},

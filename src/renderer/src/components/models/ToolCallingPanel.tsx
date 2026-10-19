@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow'
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Check, CheckCircle2, FlaskConical, Settings2, Wrench, XCircle } from 'lucide-react'
@@ -38,7 +39,7 @@ function mergeToolCallingConfig(
 
 export function ToolCallingPanel() {
   const { t } = useTranslation()
-  const { appConfig, saveAppConfig } = useProxyStore()
+  const { appConfig, saveAppConfig } = useProxyStore(useShallow(state => ({ appConfig: state.appConfig, saveAppConfig: state.saveAppConfig })))
   const [smokeStatus, setSmokeStatus] = useState<'not_run' | 'running' | 'pass' | 'failed'>('not_run')
   const config = appConfig?.toolCallingConfig ?? DEFAULT_TOOL_CALLING_CONFIG
   const clientAdapters = P0_TOOL_CLIENT_ADAPTERS.filter(

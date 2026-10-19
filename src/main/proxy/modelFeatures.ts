@@ -137,10 +137,35 @@ function headerBoolean(headers: Record<string, unknown>, ...keys: string[]): boo
 }
 
 /** Request body > headers > proxy defaults > upstream/model default. Does not mutate caller data. */
+const FEATURE_HEADERS = ['x-reasoning-effort', 'x-enable-thinking', 'x-enable-vision'] as const
+/**
+ * Requests pass through the route, dispatch, forwarder and adapters, each normalizing with its own
+ * defaults. A normalized result is a fixed point for the same defaults (headers it absorbed are now
+ * explicit fields), so remember those signatures instead of re-validating and copying messages again.
+ */
+const normalizedSignatures = new WeakMap<ChatCompletionRequest, ReadonlySet<string>>()
+
+function featureSignature(defaults: ModelFeatureDefaults, headers: Record<string, unknown>): string {
+  return JSON.stringify([defaults, FEATURE_HEADERS.map(name => headers[name] ?? null)])
+}
+
 export function normalizeFeatureRequest(
   request: ChatCompletionRequest,
   defaults?: Partial<ModelFeatureDefaults>,
   headers: Record<string, unknown> = {},
+): ChatCompletionRequest {
+  const config = normalizeModelFeatureDefaults(defaults)
+  const signature = featureSignature(config, headers)
+  if (request && typeof request === 'object' && normalizedSignatures.get(request)?.has(signature)) return request
+  const result = normalizeUncached(request, config, headers)
+  normalizedSignatures.set(result, new Set([signature, featureSignature(config, {})]))
+  return result
+}
+
+function normalizeUncached(
+  request: ChatCompletionRequest,
+  config: ModelFeatureDefaults,
+  headers: Record<string, unknown>,
 ): ChatCompletionRequest {
   validateChatRequest(request)
   if (request.extra_body !== undefined && (!request.extra_body || typeof request.extra_body !== 'object' || Array.isArray(request.extra_body))) {
@@ -149,7 +174,6 @@ export function normalizeFeatureRequest(
   const extra = (request.extra_body || {}) as ModelFeatureInput
   validateFeatureInput(request)
   validateFeatureInput(extra)
-  const config = normalizeModelFeatureDefaults(defaults)
   const headerEffort = headers['x-reasoning-effort'] as ModelFeatureInput['reasoning_effort']
   if (headerEffort !== undefined) validateFeatureInput({ reasoning_effort: headerEffort })
   const enabledThinking = explicitThinking(request) ?? explicitThinking(extra)

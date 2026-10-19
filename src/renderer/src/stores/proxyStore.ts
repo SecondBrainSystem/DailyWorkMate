@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { ProxyStatus, ProxyStatistics, LoadBalanceStrategy, ModelMapping, AppConfig } from '@/types/electron'
+import type { ProxyStatus, LoadBalanceStrategy, ModelMapping, AppConfig } from '@/types/electron'
 
 export interface ProxyConfig {
   port: number
@@ -13,7 +13,6 @@ export interface ProxyConfig {
 
 interface ProxyState {
   proxyStatus: ProxyStatus | null
-  proxyStatistics: ProxyStatistics | null
   proxyConfig: ProxyConfig
   loadBalanceStrategy: LoadBalanceStrategy
   modelMappings: ModelMapping[]
@@ -22,7 +21,6 @@ interface ProxyState {
   error: string | null
 
   setProxyStatus: (status: ProxyStatus | null) => void
-  setProxyStatistics: (statistics: ProxyStatistics | null) => void
   setProxyConfig: (config: Partial<ProxyConfig>) => void
   setLoadBalanceStrategy: (strategy: LoadBalanceStrategy) => void
   setModelMappings: (mappings: ModelMapping[]) => void
@@ -31,7 +29,6 @@ interface ProxyState {
   setError: (error: string | null) => void
   resetProxyConfig: () => void
   fetchProxyStatus: () => Promise<void>
-  fetchProxyStatistics: () => Promise<void>
   fetchAppConfig: () => Promise<void>
   saveAppConfig: (config: Partial<AppConfig>) => Promise<boolean>
   startProxy: (port?: number, host?: string) => Promise<boolean>
@@ -48,21 +45,8 @@ const DEFAULT_PROXY_CONFIG: ProxyConfig = {
   maxConnections: 100,
 }
 
-const DEFAULT_STATISTICS: ProxyStatistics = {
-  totalRequests: 0,
-  successRequests: 0,
-  failedRequests: 0,
-  avgLatency: 0,
-  requestsPerMinute: 0,
-  activeConnections: 0,
-  modelUsage: {},
-  providerUsage: {},
-  accountUsage: {},
-}
-
 export const useProxyStore = create<ProxyState>((set, get) => ({
   proxyStatus: null,
-  proxyStatistics: null,
   proxyConfig: DEFAULT_PROXY_CONFIG,
   loadBalanceStrategy: 'round-robin',
   modelMappings: [],
@@ -71,8 +55,6 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
   error: null,
 
   setProxyStatus: (status) => set({ proxyStatus: status }),
-
-  setProxyStatistics: (statistics) => set({ proxyStatistics: statistics }),
 
   setProxyConfig: (config) => set((state) => ({
     proxyConfig: { ...state.proxyConfig, ...config },
@@ -98,45 +80,6 @@ export const useProxyStore = create<ProxyState>((set, get) => ({
       set({ proxyStatus: status })
     } catch (error) {
       set({ error: (error as Error).message })
-    }
-  },
-
-  fetchProxyStatistics: async () => {
-    if (!window.electronAPI?.statistics?.get) {
-      set({ proxyStatistics: DEFAULT_STATISTICS })
-      return
-    }
-    try {
-      const persistentStats = await window.electronAPI.statistics.get()
-      const today = new Date().toISOString().split('T')[0]
-      const todayStats = persistentStats?.dailyStats?.[today] || {
-        totalRequests: 0,
-        successRequests: 0,
-        failedRequests: 0,
-        totalLatency: 0,
-        modelUsage: {},
-        providerUsage: {},
-      }
-      
-      const avgLatency = todayStats.successRequests > 0 
-        ? Math.round(todayStats.totalLatency / todayStats.successRequests) 
-        : 0
-      
-      const statistics: ProxyStatistics = {
-        totalRequests: todayStats.totalRequests,
-        successRequests: todayStats.successRequests,
-        failedRequests: todayStats.failedRequests,
-        avgLatency: avgLatency,
-        requestsPerMinute: 0,
-        activeConnections: 0,
-        modelUsage: todayStats.modelUsage,
-        providerUsage: todayStats.providerUsage,
-        accountUsage: persistentStats?.accountUsage || {},
-      }
-      
-      set({ proxyStatistics: statistics || DEFAULT_STATISTICS })
-    } catch (error) {
-      set({ proxyStatistics: DEFAULT_STATISTICS })
     }
   },
 

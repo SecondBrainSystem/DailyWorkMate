@@ -138,10 +138,6 @@ export async function registerIpcHandlers(mainWindow: BrowserWindow | null): Pro
     }
   })
 
-  ipcMain.handle(IpcChannels.PROXY_RESET_STATISTICS, async (): Promise<void> => {
-    proxyStatusManager.resetStatistics()
-  })
-
   ipcMain.handle(IpcChannels.CONFIG_GET, async () => {
     return { ...storeManager.getConfig(), internalProxyKey }
   })
@@ -283,36 +279,6 @@ export async function registerIpcHandlers(mainWindow: BrowserWindow | null): Pro
 
   ipcMain.handle(IpcChannels.PROVIDERS_IMPORT, async (_, jsonData: string): Promise<Provider> => {
     return CustomProviderManager.importProvider(jsonData)
-  })
-
-  ipcMain.handle(IpcChannels.PROVIDERS_SYNC_MODELS, async (_, providerId: string): Promise<{
-    success: boolean
-    supportedModels?: string[]
-    modelMappings?: Record<string, string>
-    error?: string
-  }> => {
-    try {
-      const result = await ProviderChecker.fetchProviderModels(providerId)
-      
-      const provider = ProviderManager.getById(providerId)
-      if (provider) {
-        ProviderManager.update(providerId, {
-          supportedModels: result.supportedModels,
-          modelMappings: result.modelMappings,
-        })
-      }
-
-      return {
-        success: true,
-        supportedModels: result.supportedModels,
-        modelMappings: result.modelMappings,
-      }
-    } catch (error) {
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Failed to sync models',
-      }
-    }
   })
 
   ipcMain.handle(IpcChannels.PROVIDERS_UPDATE_MODELS, async (_, providerId: string): Promise<{
@@ -781,6 +747,15 @@ export async function registerIpcHandlers(mainWindow: BrowserWindow | null): Pro
     storeManager.clearRequestLogs()
   })
 
+  // Live request log view: entries arrive without bodies; details load through REQUEST_LOGS_GET_BY_ID.
+  storeManager.onRequestLogChanged(log => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      try { if (!window.isDestroyed()) window.webContents.send(IpcChannels.REQUEST_LOGS_NEW, log) } catch (error) {
+        console.error('[IPC] Failed to send request log update:', error)
+      }
+    }
+  })
+
   // ==================== Statistics Handlers ====================
 
   ipcMain.handle(IpcChannels.STATISTICS_GET, async () => {
@@ -833,13 +808,14 @@ export async function registerIpcHandlers(mainWindow: BrowserWindow | null): Pro
     }
   })
 
+  // Quitting goes through the before-quit confirmation while the window still exists, so
+  // cancelling it never leaves a windowless app.
   ipcMain.handle(IpcChannels.APP_CLOSE, async (): Promise<void> => {
     const config = storeManager.getConfig()
     if (config.minimizeToTray) {
       mainWindow?.hide()
     } else {
-      app.isQuitting = true
-      mainWindow?.close()
+      app.quit()
     }
   })
 
@@ -1055,7 +1031,6 @@ function registerErrorRecoveryHandlers(mainWindow: BrowserWindow | null): void {
   })
 
   ipcMain.handle(IpcChannels.APP_CLOSE, async (): Promise<void> => {
-    app.isQuitting = true
-    mainWindow?.close()
+    app.quit()
   })
 }

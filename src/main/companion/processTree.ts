@@ -3,10 +3,18 @@ import path from 'node:path'
 
 /** Stop owned descendants while leaving detached psmux servers for the exit confirmation. */
 export async function stopProcessTree(pid: number, group = false): Promise<void> {
-  if (!Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid) throw new Error('Invalid child process ID')
+  await stopProcessTrees([pid], group)
+}
+
+/** Several trees from one process snapshot: each Windows snapshot costs 1–3 s, so per-PID calls slow down quitting. */
+export async function stopProcessTrees(pids: number[], group = false): Promise<void> {
+  if (!pids.length) return
+  if (pids.some(pid => !Number.isSafeInteger(pid) || pid <= 0 || pid === process.pid)) throw new Error('Invalid child process ID')
   if (process.platform !== 'win32') {
-    try { process.kill(group ? -pid : pid, 'SIGTERM') }
-    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
+    for (const pid of pids) {
+      try { process.kill(group ? -pid : pid, 'SIGTERM') }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error }
+    }
     return
   }
   // Select by ancestry and recheck creation time before killing each PID. Do not use taskkill /T:
@@ -35,7 +43,7 @@ function Stop-Owned([uint32]$target) {
     catch { if (Get-Process -Id $target -ErrorAction SilentlyContinue) { throw } }
   }
 }
-Stop-Owned ${pid}
+foreach ($target in @(${[...new Set(pids)].join(',')})) { Stop-Owned $target }
 `
   const executable = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
   await new Promise<void>((resolve, reject) => {

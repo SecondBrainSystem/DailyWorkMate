@@ -13,7 +13,7 @@ before(async () => {
   globalThis.window = { localStorage: globalThis.localStorage }
   await mkdir(path.dirname(output), { recursive: true })
   await build({
-    stdin: { contents: "export { useProxyStore } from './src/renderer/src/stores/proxyStore.ts'; export { useSettingsStore } from './src/renderer/src/stores/settingsStore.ts'; export { DEFAULT_CONFIG } from './src/main/store/types.ts'", resolveDir: process.cwd() },
+    stdin: { contents: "export { useProxyStore } from './src/renderer/src/stores/proxyStore.ts'; export { useSettingsStore, syncThemeAcrossWindows, themeFromPersistedSettings } from './src/renderer/src/stores/settingsStore.ts'; export { DEFAULT_CONFIG } from './src/main/store/types.ts'", resolveDir: process.cwd() },
     outfile: output, bundle: true, platform: 'node', format: 'esm', packages: 'external',
     plugins: [{ name: 'isolate-ui', setup(builder) {
       builder.onResolve({ filter: /^@\/(i18n|hooks\/use-toast)$/ }, args => ({ path: args.path, namespace: 'qa' }))
@@ -104,4 +104,22 @@ test('saving state is not persisted and stale saving flags are ignored on reload
   values.set('dailyworkmate-settings', JSON.stringify({ ...stored, state: { ...stored.state, isSaving: true } }))
   await module.useSettingsStore.persist.rehydrate()
   assert.equal(module.useSettingsStore.getState().isSaving, false)
+})
+
+test('a theme picked in the tray window is adopted live by the main window without resetting config', () => {
+  const listeners = new Map()
+  const target = { addEventListener: (type, listener) => listeners.set(type, listener), removeEventListener: type => listeners.delete(type) }
+  const stop = module.syncThemeAcrossWindows(target)
+  const config = { proxyPort: 1 }
+  module.useSettingsStore.setState({ theme: 'light', config })
+  listeners.get('storage')({ key: 'dailyworkmate-settings', newValue: JSON.stringify({ state: { theme: 'dark' }, version: 0 }) })
+  assert.equal(module.useSettingsStore.getState().theme, 'dark')
+  assert.equal(module.useSettingsStore.getState().config, config)
+  listeners.get('storage')({ key: 'other', newValue: JSON.stringify({ state: { theme: 'light' } }) })
+  listeners.get('storage')({ key: 'dailyworkmate-settings', newValue: '{broken' })
+  listeners.get('storage')({ key: 'dailyworkmate-settings', newValue: JSON.stringify({ state: { theme: 'neon' } }) })
+  assert.equal(module.useSettingsStore.getState().theme, 'dark')
+  stop()
+  assert.equal(listeners.has('storage'), false)
+  assert.equal(module.themeFromPersistedSettings(null), undefined)
 })

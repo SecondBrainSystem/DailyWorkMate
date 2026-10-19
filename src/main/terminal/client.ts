@@ -6,17 +6,34 @@ import type { TerminalManagerAPI, TerminalState } from '../../shared/terminal'
 import type { TerminalContext } from './host'
 
 interface HostInfo { protocol: number; port: number; token: string; pid: number }
-export interface TerminalClientOptions { home: string; entry: string; helper: string; ptyModule: string; executable?: string; context: (models: string[]) => Promise<TerminalContext> }
+export interface TerminalClientOptions {
+  home: string; entry: string; helper: string; ptyModule: string; executable?: string
+  /** Called with no models: the host runs only shells, so it never receives model credentials. */
+  context: (models: string[]) => Promise<TerminalContext>
+  /** Process liveness probe and how long to wait for a live but busy host; replaceable in tests. */
+  alive?: (pid: number) => boolean
+  busyHostWait?: number
+}
+const message = (error: unknown) => error instanceof Error ? error.message : String(error)
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+/** A permission error still means the process exists. */
+export function processAlive(pid: number) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false
+  try { process.kill(pid, 0); return true }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'EPERM' }
+}
 export class TerminalClient {
   private info?: HostInfo
   private lease?: ClientRequest
   private connecting?: Promise<void>
   private cached?: TerminalState
-  private pendingOpenCode = 0
-  private modelConnectionsSupported = false
+  /** Context last sent to this host; an unchanged context needs no sync. */
+  private synced = ''
   private closing = false
   constructor(private readonly options: TerminalClientOptions) {}
-  openCodeBusy() { return this.pendingOpenCode > 0 || !!this.cached?.sessions.some(session => session.kind === 'opencode' && ['starting', 'running'].includes(session.status)) }
+  private alive(pid: number) { return (this.options.alive || processAlive)(pid) }
+  /** OpenCode runs in Work tabs owned by the main process; the host never runs it. Kept for callers. */
+  openCodeBusy() { return false }
   private async readInfo() {
     const raw = await readFile(path.join(this.options.home, 'host.json'), 'utf8')
     if (raw.length > 4096) throw new Error('Invalid terminal host descriptor')
@@ -34,27 +51,57 @@ export class TerminalClient {
         response.setEncoding('utf8'); response.on('data', chunk => { raw += chunk; if (raw.length > 8 * 1024 * 1024) req.destroy(new Error('Terminal response too large')) })
         response.once('error', reject)
         response.once('end', () => {
-          try { const data = JSON.parse(raw); if (response.statusCode !== 200 || data.error) throw new Error(data.error || 'Terminal connection failed'); resolve(data.result) } catch (error) { reject(error) }
+          try {
+            if (response.statusCode === 503) throw Object.assign(new Error('Terminal host is stopping'), { code: 'ESTOPPING' })
+            const data = JSON.parse(raw); if (response.statusCode !== 200 || data.error) throw new Error(data.error || 'Terminal connection failed'); resolve(data.result)
+          } catch (error) { reject(error) }
         })
       })
       req.setTimeout(timeout, () => req.destroy(new Error('Terminal operation timed out')))
       req.once('error', reject); req.end(body)
     })
   }
-  private async context(extraModels: string[] = []) {
-    const state: TerminalState = await this.request({ action: 'state' })
-    const models = [...new Set([...state.sessions.flatMap(session => session.opencode?.model ? [session.opencode.model] : []), ...extraModels])]
-    return this.options.context(models)
+  /**
+   * Rejoin the host named in host.json. Only a host that is gone may be replaced: two live hosts would
+   * both own sessions.json. A busy host gets a bounded retry, then a clear error.
+   */
+  private async attachExisting(): Promise<boolean> {
+    let info: HostInfo
+    try { info = await this.readInfo() }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.info('[Terminal] Replacing unreadable host descriptor:', message(error)); return false }
+    this.info = info
+    const deadline = Date.now() + (this.options.busyHostWait ?? 10000)
+    while (true) {
+      try { await this.request({ action: 'ping' }, 1500); return true }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ECONNREFUSED' || !this.alive(info.pid)) {
+          console.info('[Terminal] Replacing stopped host:', message(error)); this.info = undefined; return false
+        }
+        if (Date.now() > deadline) {
+          this.info = undefined
+          throw new Error(`终端后台进程（PID ${info.pid}）仍在运行但没有响应，请稍后重试或在任务管理器中结束它。 / The terminal host (PID ${info.pid}) is running but not responding. Try again shortly, or end that process in Task Manager.`)
+        }
+        console.warn('[Terminal] Host is not responding yet; retrying:', message(error))
+        await sleep(500)
+      }
+    }
   }
-  private async connect() {
+  /** Sync the host only when the folders or OpenCode installation changed; otherwise read state. */
+  private async refreshState(force: boolean) {
+    const context = await this.options.context([])
+    const fingerprint = JSON.stringify(context)
+    if (!force && fingerprint === this.synced) return this.cached = await this.request({ action: 'state' }) as TerminalState
+    const state: TerminalState = await this.request({ action: 'sync', context })
+    this.synced = fingerprint; this.cached = state
+    return state
+  }
+  /** Resolves true when this call (re)connected, which already synced the host. */
+  private async connect(): Promise<boolean> {
     if (this.closing) throw new Error('The application is closing its terminals')
-    if (this.info && this.lease && !this.lease.destroyed) return
-    if (this.connecting) return this.connecting
+    if (this.info && this.lease && !this.lease.destroyed) return false
+    if (this.connecting) { await this.connecting; return true }
     const connection = (async () => {
-      let existing = false
-      try { this.info = await this.readInfo(); const capabilities = await this.request({ action: 'ping' }, 1500); this.modelConnectionsSupported = capabilities.modelConnections === true; existing = true }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.info('[Terminal] Replacing unavailable host:', error instanceof Error ? error.message : String(error)) }
-      if (!existing) {
+      if (!(await this.attachExisting())) {
         await mkdir(this.options.home, { recursive: true })
         const log = await open(path.join(this.options.home, 'host.log'), 'a', 0o600)
         const child = spawn(this.options.executable || process.execPath, [this.options.entry], { detached: true, windowsHide: true,
@@ -65,8 +112,8 @@ export class TerminalClient {
         const end = Date.now() + 15000
         while (true) {
           if (launchError) throw launchError
-          try { this.info = await this.readInfo(); const capabilities = await this.request({ action: 'ping' }, 1000); this.modelConnectionsSupported = capabilities.modelConnections === true; break }
-          catch (error) { if (Date.now() > end) throw new Error('Unable to start terminal host. See terminal/host.log for details.'); await new Promise(resolve => setTimeout(resolve, 100)) }
+          try { this.info = await this.readInfo(); await this.request({ action: 'ping' }, 1000); break }
+          catch (error) { if (Date.now() > end) throw new Error('Unable to start terminal host. See terminal/host.log for details.'); await sleep(100) }
         }
       }
       const info = this.info!
@@ -77,77 +124,81 @@ export class TerminalClient {
         })
         lease.on('error', error => { reject(error); console.error('[Terminal] Lease:', error.message) }); lease.end(); this.lease = lease
       })
-      this.cached = await this.request({ action: 'sync', context: await this.context() })
+      // A host may have been started or restarted by someone else: always send it the current context.
+      this.synced = ''
+      await this.refreshState(true)
     })()
     this.connecting = connection
     try { await connection } finally { if (this.connecting === connection) this.connecting = undefined }
+    return true
   }
   async command(action: string, values: object = {}) {
     await this.connect()
-    const creatingOpenCode = action === 'create' && (values as { input?: { kind: string } }).input?.kind === 'opencode'
-    if (creatingOpenCode) this.pendingOpenCode++
-    let result: any
-    try {
-      if (creatingOpenCode || action === 'restart') {
-        const model = creatingOpenCode
-          ? (values as { input?: { opencode?: { model: string } } }).input?.opencode?.model
-          : this.cached?.sessions.find(session => session.id === (values as { id?: string }).id)?.opencode?.model
-        if (model && !model.startsWith('opencode-free/') && !this.modelConnectionsSupported) {
-          throw new Error('后台终端仍在使用旧版本。请先结束并关闭保留的终端，再重新启动应用，以启用模型直连；当前任务未被停止。 / The retained terminal host is from an older version. Finish and close its terminals, then restart the application to enable direct model connections. Existing tasks were not stopped.')
-        }
-        this.cached = await this.request({ action: 'sync', context: await this.context(model ? [model] : []) })
-      }
-      result = await this.request({ action, ...values })
-    } finally { if (creatingOpenCode) this.pendingOpenCode-- }
+    const result = await this.request({ action, ...values })
     if (result && Array.isArray(result.sessions)) this.cached = result
-    if (action === 'poll' && result?.session && this.cached) this.cached = { ...this.cached, sessions: this.cached.sessions.map(session => session.id === result.session.id ? result.session : session) }
     return result
   }
-  async synchronize() { await this.connect(); return this.command('sync', { context: await this.context() }) as Promise<TerminalState> }
+  /** Push the current folders to the host, e.g. after authorization changes. */
+  async synchronize(): Promise<TerminalState> { return await this.connect() ? this.cached! : this.refreshState(true) }
+  /** The Terminal panel's periodic refresh: state only, unless the context changed. */
+  async refresh(): Promise<TerminalState> { return await this.connect() ? this.cached! : this.refreshState(false) }
   /**
-   * The host process costs ~60 MB, so startup connects only to rejoin a host kept running in the
-   * background or to restore saved tabs. Otherwise it starts when the Terminal view first needs it.
+   * The host process costs ~60 MB, so startup connects only to restore saved tabs (or to rejoin a host
+   * that has not finished stopping). Otherwise it starts when the Terminal view first needs it.
    */
   async neededAtStartup(): Promise<boolean> {
     try { this.info = await this.readInfo(); await this.request({ action: 'ping' }, 1500); return true }
-    catch { this.info = undefined }
+    catch (error) { this.info = undefined; if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.info('[Terminal] No running host at startup:', message(error)) }
     try {
       const saved = JSON.parse(await readFile(path.join(this.options.home, 'sessions.json'), 'utf8'))
       return saved?.preferences?.restoreOnStartup === true && Array.isArray(saved.sessions) && saved.sessions.length > 0
-    } catch { return false }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.error('[Terminal] Unreadable saved terminals:', message(error))
+      return false
+    }
   }
+  /** Stop the host and its shells. A host that is already gone counts as stopped, so quitting never waits on it. */
   async detach() {
     this.closing = true
     let stopped = false
     try {
-      if (this.connecting) await this.connecting
+      // A failed connection attempt has nothing to stop beyond what host.json names.
+      if (this.connecting) await this.connecting.catch(error => console.warn('[Terminal] Detaching after a failed connection:', message(error)))
       if (!this.info) { stopped = true; return }
-      // Also turn off retention in hosts started by a previous application version.
-      const state: TerminalState | undefined = await this.request({ action: 'state' }).catch(error => {
-        if (error.code === 'ECONNREFUSED') return undefined
-        throw error
-      })
-      if (!state) { stopped = true; return }
-      await this.request({ action: 'preferences', preferences: { ...state.preferences, keepRunningOnExit: false } })
-      await this.request({ action: 'detach' }, 60000)
-      const token = this.info.token
+      const info = this.info
+      const gone = (error: unknown) => {
+        if ((error as NodeJS.ErrnoException).code !== 'ECONNREFUSED' && this.alive(info.pid)) return false
+        console.info('[Terminal] Host already stopped:', message(error)); return true
+      }
+      try {
+        // Also turn off retention in hosts started by a previous application version.
+        const state: TerminalState = await this.request({ action: 'state' }, 15000)
+        await this.request({ action: 'preferences', preferences: { ...state.preferences, keepRunningOnExit: false } }, 15000)
+        await this.request({ action: 'detach' }, 60000)
+      } catch (error) {
+        // A host that is already stopping is awaited below like one that accepted the detach.
+        if ((error as NodeJS.ErrnoException).code !== 'ESTOPPING') { if (gone(error)) { stopped = true; return } throw error }
+      }
       const deadline = Date.now() + 15000
       while (true) {
-        try { if ((await this.readInfo()).token !== token) break }
-        catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') break; throw error }
+        // Windows reports EPERM while host.json is being deleted; keep waiting until it is gone.
+        try { if ((await this.readInfo()).token !== info.token) break }
+        catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') break; if (Date.now() > deadline) throw error }
+        if (!this.alive(info.pid)) break
         if (Date.now() > deadline) throw new Error('Terminal host did not stop')
-        await new Promise(resolve => setTimeout(resolve, 50))
+        await sleep(50)
       }
       stopped = true
     }
     finally {
-      if (stopped) { this.lease?.destroy(); this.lease = undefined; this.info = undefined }
+      if (stopped) { this.lease?.destroy(); this.lease = undefined; this.info = undefined; this.synced = '' }
       this.closing = false
     }
   }
   api(pickDirectory: TerminalManagerAPI['pickDirectory']): TerminalManagerAPI {
-    return { get: () => this.synchronize(), create: input => this.command('create', { input }), select: id => this.command('select', { id }), close: id => this.command('close', { id }),
+    return { get: () => this.refresh(), create: input => this.command('create', { input }), select: id => this.command('select', { id }), close: id => this.command('close', { id }),
       restart: id => this.command('restart', { id }), poll: (id, cursor) => this.command('poll', { id, cursor }), write: (id, data) => this.command('write', { id, data }),
-      resize: (id, cols, rows) => this.command('resize', { id, cols, rows }), savePreferences: preferences => this.command('preferences', { preferences }), pickDirectory }
+      resize: (id, cols, rows) => this.command('resize', { id, cols, rows }), savePreferences: preferences => this.command('preferences', { preferences }),
+      saveLayout: (tabId, layout) => this.command('layout', { tabId, layout }), pickDirectory }
   }
 }

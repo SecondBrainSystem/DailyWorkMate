@@ -2,21 +2,36 @@ import { fork } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import path from 'node:path'
 import type { IPty, IWindowsPtyForkOptions } from 'node-pty'
-import { stopProcessTree } from './processTree.ts'
+import { stopProcessTree, stopProcessTrees } from './processTree.ts'
 
-export type TerminalProcess = Pick<IPty, 'write' | 'resize' | 'kill' | 'onData' | 'onExit'> & { exited?: Promise<void>; close?: () => Promise<void> }
+export type TerminalProcess = Pick<IPty, 'write' | 'resize' | 'kill' | 'onData' | 'onExit'> & {
+  exited?: Promise<void>
+  /** `treeStopped`: the caller already stopped the shell's process tree (see closeTerminalProcesses). */
+  close?: (treeStopped?: boolean) => Promise<void>
+  shellPid?: () => Promise<number | undefined>
+}
 export type TerminalSpawn = (file: string, args: string[], options: IWindowsPtyForkOptions) => TerminalProcess
 const activeProcesses = new Set<TerminalProcess>()
 
-export async function closeTerminalProcess(terminal: TerminalProcess | null | undefined) {
-  if (terminal?.close) await terminal.close()
+export async function closeTerminalProcess(terminal: TerminalProcess | null | undefined, treeStopped = false) {
+  if (terminal?.close) await terminal.close(treeStopped)
   else { terminal?.kill(); await terminal?.exited }
 }
-export async function closeAllTerminalProcesses() {
-  const results = await Promise.allSettled([...activeProcesses].map(closeTerminalProcess))
+/** Close terminals in parallel, stopping all their process trees from a single process snapshot. */
+export async function closeTerminalProcesses(terminals: Array<TerminalProcess | null | undefined>) {
+  const list = terminals.filter((terminal): terminal is TerminalProcess => !!terminal)
+  const pids = (await Promise.all(list.map(terminal => terminal.shellPid?.()))).filter((pid): pid is number => pid !== undefined)
+  let treeStopped = false
+  if (pids.length > 1) {
+    // On failure each terminal falls back to stopping its own tree.
+    try { await stopProcessTrees(pids); treeStopped = true }
+    catch (error) { console.error('[Terminal] Batch process cleanup failed:', error instanceof Error ? error.message : String(error)) }
+  }
+  const results = await Promise.allSettled(list.map(terminal => closeTerminalProcess(terminal, treeStopped)))
   const errors = results.filter(result => result.status === 'rejected')
   if (errors.length) throw new AggregateError(errors.map(result => result.reason), 'Terminal processes did not stop')
 }
+export async function closeAllTerminalProcesses() { await closeTerminalProcesses([...activeProcesses]) }
 
 /** Keep native PTY threads in a child process so both natural exit and disconnect release them. */
 export function terminalSpawner(script = path.resolve('scripts/companion-pty-host.cjs'), module = 'node-pty'): TerminalSpawn {
@@ -52,16 +67,16 @@ export function terminalSpawner(script = path.resolve('scripts/companion-pty-hos
       resolveReady()
     })
     send({ type: 'open', module, file, args, options })
-    const close = () => closing ||= (async () => {
+    const close = (treeStopped = false) => closing ||= (async () => {
       await ready
       if (closed) return
-      if (shellPid) await stopProcessTree(shellPid)
+      if (shellPid && !treeStopped) await stopProcessTree(shellPid)
       if (!closed && child.connected) send({ type: 'close' })
       killer = setTimeout(() => child.kill(), 10000); killer.unref()
       await exited
     })().catch(error => { closing = undefined; throw error })
     handle = {
-      exited, close,
+      exited, close, shellPid: () => ready.then(() => closed ? undefined : shellPid),
       write: data => send({ type: 'write', data }), resize: (cols, rows) => send({ type: 'resize', cols, rows }),
       kill: () => { void close().catch(error => console.error('[Terminal] Process cleanup failed:', error)) },
       onData: listener => { events.on('data', listener); return { dispose: () => events.off('data', listener) } },

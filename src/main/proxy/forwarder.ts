@@ -3,11 +3,10 @@
  * Forwards requests to corresponding API based on provider configuration
  */
 
-import axios, { AxiosRequestConfig, AxiosResponse, AxiosError } from 'axios'
+import axios, { AxiosRequestConfig, AxiosResponse } from 'axios'
 import http2 from 'http2'
 import { createHash } from 'node:crypto'
 import { PassThrough } from 'stream'
-import { setTimeout as delay } from 'node:timers/promises'
 import { Account, Provider } from '../store/types'
 import { ForwardResult, ChatCompletionRequest, ProxyContext, type ChatMessage as ContextChatMessage } from './types'
 import { proxyStatusManager } from './status'
@@ -31,7 +30,9 @@ import { ModelFeatureError, normalizeFeatureRequest, validateProviderFeatures, o
 import { thinkingForModel } from '../../shared/modelFeatures'
 import { readUpstreamErrorBody } from './upstreamError'
 import { createValidatedOpenAIStream } from './ollamaProtocol'
-import { convertUpstreamStream, watchResponseStream } from './responseStream'
+import { afterStream, convertUpstreamStream, watchResponseStream } from './responseStream'
+import { retryAfter, upstreamFailure } from './upstreamFailure'
+import { buildUpstreamUrl } from './upstreamUrl'
 import { isOllamaResponse } from '../ollama/transport'
 import {
   createContextManagementService,
@@ -249,11 +250,9 @@ export class RequestForwarder {
     provider: Provider,
     actualModel: string,
     context: ProxyContext,
-    retryCount?: number,
   ): Promise<ForwardResult> {
     const startTime = Date.now()
     const config = storeManager.getConfig()
-    const maxRetries = retryCount ?? config.retryCount
 
     try {
       const defaults = provider.type === 'builtin' && (provider.id === 'perplexity' || provider.id === 'minimax') ? { ...config.modelFeatureDefaults, thinking: 'auto' as const } : config.modelFeatureDefaults
@@ -264,94 +263,48 @@ export class RequestForwarder {
       throw error
     }
 
-    let lastError: string | undefined
-    let lastStatus: number | undefined
-
-    let processedContext: ChatCompletionRequest | undefined
-    for (let attempt = 0; attempt <= maxRetries; attempt++) {
-      if (context.signal?.aborted) return { success: false, status: 499, error: 'Client cancelled the request' }
-      if (attempt > 0) {
-        try {
-          await delay(proxyStatusManager.getConfig().retryDelay, undefined, { signal: context.signal })
-        } catch {
-          return { success: false, status: 499, error: 'Client cancelled the request' }
-        }
-      }
-
-      let modifiedRequest = processedContext || request
-
-      if (!processedContext && config.contextManagement?.enabled && modifiedRequest.messages && modifiedRequest.messages.length > 0) {
-        try {
-          const summaryGenerator = this.createSummaryGenerator(
-            account,
-            provider,
-            actualModel,
-            context
-          )
-
-          const contextService = createContextManagementService(
-            config.contextManagement || {},
-            summaryGenerator
-          )
-
-          const originalCount = modifiedRequest.messages.length
-          const contextMessages: ContextChatMessage[] = modifiedRequest.messages.map(msg => ({
-            ...msg,
-            role: msg.role as 'user' | 'assistant' | 'system' | 'tool',
-            content: msg.content,
-            timestamp: Date.now(),
-          }))
-
-          const processResult = await contextService.process(contextMessages)
-
-          if (processResult.strategyResults.some(result => result.trimmed)) {
-            console.log(
-              `[Forwarder] Context management applied: ${originalCount} -> ${processResult.finalCount} messages`
-            )
-
-            processResult.strategyResults.forEach(result => {
-              if (result.trimmed) {
-                console.log(
-                  `[Forwarder] Strategy ${result.strategyName}: ${result.originalCount} -> ${result.processedCount} messages`
-                )
-              }
-            })
-
-            modifiedRequest = {
-              ...modifiedRequest,
-              messages: processResult.messages.map(msg => { const { timestamp: _timestamp, ...clean } = msg as typeof msg & { timestamp?: number }; return clean }),
-            }
-          }
-        } catch (error) {
-          console.error('[Forwarder] Context management failed:', error)
-        }
-      }
-
-      processedContext = modifiedRequest
+    if (context.signal?.aborted) return { success: false, status: 499, error: 'Client cancelled the request' }
+    let modifiedRequest = request
+    if (config.contextManagement?.enabled && modifiedRequest.messages && modifiedRequest.messages.length > 0) {
       try {
-        const result = await this.doForward(modifiedRequest, account, provider, actualModel, context)
+        const summaryGenerator = this.createSummaryGenerator(account, provider, actualModel, context)
+        const contextService = createContextManagementService(config.contextManagement || {}, summaryGenerator)
+        const originalCount = modifiedRequest.messages.length
+        const contextMessages: ContextChatMessage[] = modifiedRequest.messages.map(msg => ({
+          ...msg,
+          role: msg.role as 'user' | 'assistant' | 'system' | 'tool',
+          content: msg.content,
+          timestamp: Date.now(),
+        }))
 
-        if (result.success) {
-          if (result.stream) return { ...result, stream: watchResponseStream(result.stream as import('stream').Readable, config.requestTimeout, context.signal) }
-          return result
-        }
+        const processResult = await contextService.process(contextMessages)
 
-        lastError = result.error
-        lastStatus = result.status
+        if (processResult.strategyResults.some(result => result.trimmed)) {
+          console.log(`[Forwarder] Context management applied: ${originalCount} -> ${processResult.finalCount} messages`)
+          processResult.strategyResults.forEach(result => {
+            if (result.trimmed) {
+              console.log(`[Forwarder] Strategy ${result.strategyName}: ${result.originalCount} -> ${result.processedCount} messages`)
+            }
+          })
 
-        if (result.status && result.status < 500 && result.status !== 429) {
-          break
+          modifiedRequest = {
+            ...modifiedRequest,
+            messages: processResult.messages.map(msg => { const { timestamp: _timestamp, ...clean } = msg as typeof msg & { timestamp?: number }; return clean }),
+          }
         }
       } catch (error) {
-        lastError = error instanceof Error ? error.message : 'Unknown error'
+        // The untrimmed request is still valid; the upstream decides whether it fits.
+        console.error('[Forwarder] Context management failed:', error)
       }
     }
 
-    return {
-      success: false,
-      error: lastError || 'Request failed after retries',
-      status: lastStatus,
-      latency: Date.now() - startTime,
+    // One attempt only: dispatch owns the retry budget, Retry-After handling and account failover.
+    try {
+      const result = await this.doForward(modifiedRequest, account, provider, actualModel, context)
+      if (result.success && result.stream) return { ...result, stream: watchResponseStream(result.stream as import('stream').Readable, config.requestTimeout, context.signal) }
+      return result.success ? result : { ...result, error: result.error || 'Request failed', latency: result.latency ?? Date.now() - startTime }
+    } catch (error) {
+      return { success: false, ...upstreamFailure(error, context.signal), latency: Date.now() - startTime }
     }
   }
 
@@ -379,7 +332,7 @@ export class RequestForwarder {
 
     try {
       const chatPath = provider.chatPath || '/chat/completions'
-      const url = this.buildUrl(provider, chatPath)
+      const url = buildUpstreamUrl(provider.apiEndpoint, chatPath)
       const headers = this.buildHeaders(provider, account)
       const body = { ...this.buildRequestBody(request, actualModel, account), ...openAIThinkingFields(request, actualModel, provider.apiEndpoint) }
 
@@ -402,6 +355,7 @@ export class RequestForwarder {
           success: false,
           status: response.status,
           error: await this.extractErrorMessage(response),
+          ...retryAfter(response.headers),
           latency,
         }
       }
@@ -440,20 +394,9 @@ export class RequestForwarder {
 
       if (error instanceof ModelFeatureError) return { success: false, status: 400, error: error.message, latency }
 
-      if (error instanceof AxiosError) {
-        return {
-          success: false,
-          status: context.signal?.aborted || axios.isCancel(error) ? 499
-            : error.response?.status || (['ECONNABORTED', 'ETIMEDOUT'].includes(error.code || '') ? 504 : 502),
-          error: error.message,
-          latency,
-        }
-      }
-
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        status: axios.isAxiosError(error) ? error.response?.status || (error.code === 'ECONNABORTED' ? 504 : 502) : (error as { status?: number })?.status || Number((error instanceof Error ? error.message : '').match(/HTTP (\d{3})/)?.[1]) || 502,
+        ...upstreamFailure(error, context.signal),
         latency,
       }
     }
@@ -529,6 +472,7 @@ export class RequestForwarder {
           success: false,
           status: response.status,
           error: errorMessage,
+          ...retryAfter(response.headers),
           latency,
         }
       }
@@ -548,7 +492,7 @@ export class RequestForwarder {
       const handler = new DeepSeekStreamHandler(
         actualModel,
         sessionId,
-        deleteSessionCallback,
+        request.stream ? undefined : deleteSessionCallback,
         transformedRequest.web_search,
         thinkingForModel(request) ? 'medium' : undefined,
         transformed.plan,
@@ -557,7 +501,8 @@ export class RequestForwarder {
       
       if (request.stream) {
         const transformedStream = await handler.handleStream(response.data)
-        
+        if (deleteSessionCallback) afterStream(transformedStream, 'DeepSeek', deleteSessionCallback)
+
         return {
           success: true,
           status: response.status,
@@ -590,8 +535,7 @@ export class RequestForwarder {
       const latency = Date.now() - startTime
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        status: axios.isAxiosError(error) ? error.response?.status || (error.code === 'ECONNABORTED' ? 504 : 502) : (error as { status?: number })?.status || Number((error instanceof Error ? error.message : '').match(/HTTP (\d{3})/)?.[1]) || 502,
+        ...upstreamFailure(error, request._signal),
         latency,
       }
     }
@@ -648,6 +592,7 @@ export class RequestForwarder {
           success: false,
           status: response.status,
           error: errorMessage,
+          ...retryAfter(response.headers),
           latency,
         }
       }
@@ -659,16 +604,10 @@ export class RequestForwarder {
         
         // If delete session after chat is enabled, we need to handle it after stream ends
         if (shouldDeleteSession()) {
-          const originalEnd = transformedStream.end.bind(transformedStream)
-          transformedStream.end = function(chunk?: any, encoding?: any, callback?: any) {
+          afterStream(transformedStream, 'GLM', () => {
             const convId = handler.getConversationId()
-            if (convId) {
-              adapter.deleteConversation(convId).catch(err => {
-                console.error('[GLM] Failed to delete session:', err)
-              })
-            }
-            return originalEnd(chunk, encoding, callback)
-          }
+            return convId ? adapter.deleteConversation(convId) : undefined
+          })
         }
         
         return {
@@ -705,8 +644,7 @@ export class RequestForwarder {
       const latency = Date.now() - startTime
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        status: axios.isAxiosError(error) ? error.response?.status || (error.code === 'ECONNABORTED' ? 504 : 502) : (error as { status?: number })?.status || Number((error instanceof Error ? error.message : '').match(/HTTP (\d{3})/)?.[1]) || 502,
+        ...upstreamFailure(error, request._signal),
         latency,
       }
     }
@@ -742,6 +680,7 @@ export class RequestForwarder {
           success: false,
           status: response.status,
           error: errorMessage,
+          ...retryAfter(response.headers),
           latency,
         }
       }
@@ -753,16 +692,10 @@ export class RequestForwarder {
         
         // Add delete conversation callback if needed
         if (shouldDeleteSession()) {
-          const originalEnd = transformedStream.end.bind(transformedStream)
-          transformedStream.end = function(chunk?: any, encoding?: any, callback?: any) {
+          afterStream(transformedStream, 'Kimi', () => {
             const realChatId = handler.getConversationId()
-            if (realChatId) {
-              adapter.deleteConversation(realChatId).catch(err => {
-                console.error('[Kimi] Failed to delete conversation:', err)
-              })
-            }
-            return originalEnd(chunk, encoding, callback)
-          }
+            return realChatId ? adapter.deleteConversation(realChatId) : undefined
+          })
         }
         
         return {
@@ -799,8 +732,7 @@ export class RequestForwarder {
       const latency = Date.now() - startTime
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        status: axios.isAxiosError(error) ? error.response?.status || (error.code === 'ECONNABORTED' ? 504 : 502) : (error as { status?: number })?.status || Number((error instanceof Error ? error.message : '').match(/HTTP (\d{3})/)?.[1]) || 502,
+        ...upstreamFailure(error, request._signal),
         latency,
       }
     }
@@ -844,6 +776,7 @@ export class RequestForwarder {
           success: false,
           status: response.status,
           error: errorMessage,
+          ...retryAfter(response.headers),
           latency,
         }
       }
@@ -858,10 +791,14 @@ export class RequestForwarder {
           }
         : undefined
 
-      const handler = new QwenStreamHandler(actualModel, deleteSessionCallback, transformed.plan)
+      const handler = new QwenStreamHandler(actualModel, request.stream ? undefined : deleteSessionCallback, transformed.plan)
 
       if (request.stream) {
         const transformedStream = await handler.handleStream(response.data, response)
+        if (deleteSessionCallback) afterStream(transformedStream, 'Qwen', () => {
+          const sid = handler.getSessionId() || sessionId
+          return sid ? deleteSessionCallback(sid) : undefined
+        })
 
         return {
           success: true,
@@ -895,8 +832,7 @@ export class RequestForwarder {
       const latency = Date.now() - startTime
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        status: axios.isAxiosError(error) ? error.response?.status || (error.code === 'ECONNABORTED' ? 504 : 502) : (error as { status?: number })?.status || Number((error instanceof Error ? error.message : '').match(/HTTP (\d{3})/)?.[1]) || 502,
+        ...upstreamFailure(error, request._signal),
         latency,
       }
     }
@@ -934,6 +870,7 @@ export class RequestForwarder {
           success: false,
           status: response.status,
           error: errorMessage,
+          ...retryAfter(response.headers),
           latency,
         }
       }
@@ -944,15 +881,7 @@ export class RequestForwarder {
       if (request.stream) {
         const transformedStream = await handler.handleStream(response.data)
 
-        if (shouldDeleteSession()) {
-          const originalEnd = transformedStream.end.bind(transformedStream)
-          transformedStream.end = function(chunk?: any, encoding?: any, callback?: any) {
-            adapter.deleteChat(chatId).catch(err => {
-              console.error('[QwenAI] Failed to delete chat:', err)
-            })
-            return originalEnd(chunk, encoding, callback)
-          }
-        }
+        if (shouldDeleteSession()) afterStream(transformedStream, 'QwenAI', () => adapter.deleteChat(chatId))
 
         return {
           success: true,
@@ -985,8 +914,7 @@ export class RequestForwarder {
       const latency = Date.now() - startTime
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        status: axios.isAxiosError(error) ? error.response?.status || (error.code === 'ECONNABORTED' ? 504 : 502) : (error as { status?: number })?.status || Number((error instanceof Error ? error.message : '').match(/HTTP (\d{3})/)?.[1]) || 502,
+        ...upstreamFailure(error, request._signal),
         latency,
       }
     }
@@ -1028,6 +956,7 @@ export class RequestForwarder {
           success: false,
           status: response.status,
           error: errorMessage,
+          ...retryAfter(response.headers),
           latency,
         }
       }
@@ -1042,12 +971,13 @@ export class RequestForwarder {
           }
         : undefined
 
-      const handler = new ZaiStreamHandler(actualModel, deleteChatCallback)
+      const handler = new ZaiStreamHandler(actualModel, request.stream === true ? undefined : deleteChatCallback)
       handler.setChatId(chatId)
-      
+
       if (request.stream === true) {
         const transformedStream = await handler.handleStream(response.data)
-        
+        if (deleteChatCallback) afterStream(transformedStream, 'Z.ai', () => deleteChatCallback(chatId))
+
         return {
           success: true,
           status: response.status,
@@ -1079,8 +1009,7 @@ export class RequestForwarder {
       const latency = Date.now() - startTime
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        status: axios.isAxiosError(error) ? error.response?.status || (error.code === 'ECONNABORTED' ? 504 : 502) : (error as { status?: number })?.status || Number((error instanceof Error ? error.message : '').match(/HTTP (\d{3})/)?.[1]) || 502,
+        ...upstreamFailure(error, request._signal),
         latency,
       }
     }
@@ -1119,6 +1048,7 @@ export class RequestForwarder {
           success: false,
           status: response.status,
           error: errorMessage,
+          ...retryAfter(response.headers),
           latency,
         }
       }
@@ -1136,16 +1066,7 @@ export class RequestForwarder {
       if (request.stream === true && stream) {
         console.log('[forwardMiniMax] Using polling stream')
         
-        if (deleteChatCallback) {
-          const originalStream = stream.stream as unknown as PassThrough
-          const originalEnd = originalStream.end.bind(originalStream)
-          originalStream.end = function(chunk?: any, encoding?: any, callback?: any) {
-            deleteChatCallback(chatId).catch(err => {
-              console.error('[MiniMax] Failed to delete chat:', err)
-            })
-            return originalEnd(chunk, encoding, callback)
-          }
-        }
+        if (deleteChatCallback) afterStream(stream.stream as unknown as PassThrough, 'MiniMax', () => deleteChatCallback(chatId))
         
         return {
           success: true,
@@ -1184,8 +1105,7 @@ export class RequestForwarder {
       const latency = Date.now() - startTime
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        status: axios.isAxiosError(error) ? error.response?.status || (error.code === 'ECONNABORTED' ? 504 : 502) : (error as { status?: number })?.status || Number((error instanceof Error ? error.message : '').match(/HTTP (\d{3})/)?.[1]) || 502,
+        ...upstreamFailure(error, request._signal),
         latency,
       }
     }
@@ -1229,6 +1149,7 @@ export class RequestForwarder {
           success: false,
           status: response.status,
           error: errorMessage,
+          ...retryAfter(response.headers),
           latency,
         }
       }
@@ -1252,19 +1173,20 @@ export class RequestForwarder {
         ;(async () => {
           try {
             for await (const chunk of openAIStream) {
+              if (transformedStream.destroyed) break
               transformedStream.write(chunk)
             }
-            await adapter.generateConversationTitle(
-              conversationId,
-              query,
-              handler.getAssistantContentForTitle()
-            )
-            if (deleteSessionCallback) {
-              await deleteSessionCallback(conversationId)
+            if (!transformedStream.destroyed) {
+              await adapter.generateConversationTitle(
+                conversationId,
+                query,
+                handler.getAssistantContentForTitle()
+              )
             }
-            transformedStream.end()
           } catch (error) {
             console.error('[Mimo] Stream error:', error)
+          } finally {
+            if (deleteSessionCallback) await deleteSessionCallback(conversationId)
             transformedStream.end()
           }
         })()
@@ -1306,8 +1228,7 @@ export class RequestForwarder {
       console.error('[Mimo] Forward error:', error)
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        status: axios.isAxiosError(error) ? error.response?.status || (error.code === 'ECONNABORTED' ? 504 : 502) : (error as { status?: number })?.status || Number((error instanceof Error ? error.message : '').match(/HTTP (\d{3})/)?.[1]) || 502,
+        ...upstreamFailure(error, request._signal),
         latency,
       }
     }
@@ -1351,9 +1272,10 @@ export class RequestForwarder {
             }
           : undefined
 
-        const handler = new PerplexityStreamHandler(actualModel, sessionId, deleteSessionCallback, adapter)
+        const handler = new PerplexityStreamHandler(actualModel, sessionId, undefined, adapter)
         const transformedStream = await handler.handleStream(stream)
-        
+        if (deleteSessionCallback) afterStream(transformedStream, 'Perplexity', deleteSessionCallback)
+
         return {
           success: true,
           status: 200,
@@ -1386,32 +1308,10 @@ export class RequestForwarder {
       const latency = Date.now() - startTime
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        status: axios.isAxiosError(error) ? error.response?.status || (error.code === 'ECONNABORTED' ? 504 : 502) : (error as { status?: number })?.status || Number((error instanceof Error ? error.message : '').match(/HTTP (\d{3})/)?.[1]) || 502,
+        ...upstreamFailure(error, request._signal),
         latency,
       }
     }
-  }
-
-  /**
-   * Build URL
-   */
-  private buildUrl(provider: Provider, path: string): string {
-    let baseUrl = provider.apiEndpoint
-
-    if (baseUrl.endsWith('/')) {
-      baseUrl = baseUrl.slice(0, -1)
-    }
-
-    if (!path.startsWith('/')) {
-      path = '/' + path
-    }
-
-    if (baseUrl.includes('/v1') && path.startsWith('/v1')) {
-      path = path.slice(3)
-    }
-
-    return `${baseUrl}${path}`
   }
 
   /**
@@ -1524,70 +1424,6 @@ export class RequestForwarder {
     }
 
     return `HTTP ${response.status}`
-  }
-
-  /**
-   * Forward Request to Specified URL
-   */
-  async forwardToUrl(
-    url: string,
-    method: string,
-    headers: Record<string, string>,
-    body: any,
-    isStream: boolean = false
-  ): Promise<ForwardResult> {
-    const startTime = Date.now()
-
-    try {
-      const config: AxiosRequestConfig = {
-        method,
-        url,
-        headers,
-        data: body,
-        timeout: proxyStatusManager.getConfig().timeout,
-        responseType: isStream ? 'stream' : 'json',
-        validateStatus: () => true,
-      }
-
-      const response: AxiosResponse = await this.axiosInstance.request(config)
-      const latency = Date.now() - startTime
-
-      if (response.status >= 400) {
-        return {
-          success: false,
-          status: response.status,
-          error: await this.extractErrorMessage(response),
-          latency,
-        }
-      }
-
-      if (isStream) {
-        return {
-          success: true,
-          status: response.status,
-          headers: this.extractHeaders(response.headers),
-          stream: response.data,
-          latency,
-        }
-      }
-
-      return {
-        success: true,
-        status: response.status,
-        headers: this.extractHeaders(response.headers),
-        body: response.data,
-        latency,
-      }
-    } catch (error) {
-      const latency = Date.now() - startTime
-
-      return {
-        success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
-        status: axios.isAxiosError(error) ? error.response?.status || (error.code === 'ECONNABORTED' ? 504 : 502) : (error as { status?: number })?.status || Number((error instanceof Error ? error.message : '').match(/HTTP (\d{3})/)?.[1]) || 502,
-        latency,
-      }
-    }
   }
 }
 

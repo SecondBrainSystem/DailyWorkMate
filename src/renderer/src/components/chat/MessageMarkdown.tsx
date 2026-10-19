@@ -1,9 +1,9 @@
-import { Fragment, createElement, useState, type ReactNode } from 'react'
+import { Fragment, createElement, memo, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next'
 
 function inline(text: string): ReactNode[] {
   return text.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*|\*[^*\n]+\*|~~[^~\n]+~~|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\))/g).map((part, index) => {
-    if (part.startsWith('`') && part.endsWith('`')) return <code key={index} className="rounded bg-black/10 px-1 font-mono">{part.slice(1, -1)}</code>
+    if (part.startsWith('`') && part.endsWith('`')) return <code key={index} className="rounded bg-foreground/10 px-1 font-mono">{part.slice(1, -1)}</code>
     if (part.startsWith('**') && part.endsWith('**')) return <strong key={index}>{part.slice(2, -2)}</strong>
     if (part.startsWith('*') && part.endsWith('*')) return <em key={index}>{part.slice(1, -1)}</em>
     if (part.startsWith('~~') && part.endsWith('~~')) return <del key={index}>{part.slice(2, -2)}</del>
@@ -46,8 +46,8 @@ function prose(part: string): ReactNode[] {
   return result
 }
 
-/** Text-only Markdown rendering: raw HTML is always escaped by React. */
-export function MessageMarkdown({ text }: { text: string }) {
+/** Text-only Markdown rendering: raw HTML is always escaped by React. Memoized: streaming re-renders only the changed message. */
+export const MessageMarkdown = memo(function MessageMarkdown({ text }: { text: string }) {
   const parts = text.split(/(```[^\n]*\n[\s\S]*?(?:```|$))/g)
   return <div className="space-y-3 break-words text-base leading-relaxed">{parts.map((part, index) => {
     if (part.startsWith('```')) {
@@ -57,4 +57,4 @@ export function MessageMarkdown({ text }: { text: string }) {
     }
     return <div key={index} className="whitespace-pre-wrap">{prose(part)}</div>
   })}</div>
-}
+})

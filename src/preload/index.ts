@@ -38,12 +38,12 @@ const proxyAPI = {
   onStatusChanged: (callback: (status: ProxyStatus) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, status: ProxyStatus) => callback(status)
     ipcRenderer.on(IpcChannels.PROXY_STATUS_CHANGED, handler)
-    return () => ipcRenderer.removeListener(IpcChannels.PROXY_STATUS_CHANGED, handler)
+    return () => { ipcRenderer.removeListener(IpcChannels.PROXY_STATUS_CHANGED, handler) }
   },
 }
-// The legacy generic bridge is restricted to channels explicitly declared by this application.
-const allowedChannels = new Set<string>(Object.values(IpcChannels).flatMap(value => typeof value === 'string' ? [value] : Object.values(value)))
-const assertChannel = (channel: string) => { if (!allowedChannels.has(channel)) throw new Error('Unsupported IPC channel') }
+// The legacy generic bridge accepts only channels the renderer still invokes this way; everything
+// else goes through the typed APIs below.
+const genericInvokeChannels = new Set<string>([IpcChannels.PROXY_GET_STATISTICS])
 
 const storeAPI = {
   get: <T>(key: string): Promise<T | undefined> => 
@@ -62,7 +62,7 @@ const storeAPI = {
     const handler = (_event: Electron.IpcRendererEvent, error: { message: string | null }) => callback(error)
     ipcRenderer.on(IpcChannels.STORE_INIT_ERROR, handler)
     void ipcRenderer.invoke(IpcChannels.STORE_INIT_ERROR).then(callback).catch(error => callback({ message: String(error) }))
-    return () => ipcRenderer.removeListener(IpcChannels.STORE_INIT_ERROR, handler)
+    return () => { ipcRenderer.removeListener(IpcChannels.STORE_INIT_ERROR, handler) }
   },
   
   retryInit: (): Promise<{ success: boolean; error?: string }> => 
@@ -77,7 +77,9 @@ const providersAPI = {
     ipcRenderer.invoke(IpcChannels.PROVIDERS_GET_BUILTIN),
   
   add: (data: {
+    id?: string
     name: string
+    type?: 'builtin' | 'custom'
     authType: AuthType
     apiEndpoint: string
     headers?: Record<string, string>
@@ -274,16 +276,10 @@ const oauthAPI = {
   isInAppLoginOpen: (): Promise<boolean> =>
     ipcRenderer.invoke(IpcChannels.OAUTH_IN_APP_LOGIN_STATUS),
   
-  onCallback: (callback: (result: OAuthResult) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, result: OAuthResult) => callback(result)
-    ipcRenderer.on(IpcChannels.OAUTH_CALLBACK, handler)
-    return () => ipcRenderer.removeListener(IpcChannels.OAUTH_CALLBACK, handler)
-  },
-  
   onProgress: (callback: (event: OAuthProgressEvent) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, event: OAuthProgressEvent) => callback(event)
     ipcRenderer.on(IpcChannels.OAUTH_PROGRESS, handler)
-    return () => ipcRenderer.removeListener(IpcChannels.OAUTH_PROGRESS, handler)
+    return () => { ipcRenderer.removeListener(IpcChannels.OAUTH_PROGRESS, handler) }
   },
 }
 
@@ -338,7 +334,7 @@ const logsAPI = {
   onNewLog: (callback: (log: LogEntry) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, log: LogEntry) => callback(log)
     ipcRenderer.on(IpcChannels.LOGS_NEW_LOG, handler)
-    return () => ipcRenderer.removeListener(IpcChannels.LOGS_NEW_LOG, handler)
+    return () => { ipcRenderer.removeListener(IpcChannels.LOGS_NEW_LOG, handler) }
   },
 }
 
@@ -413,7 +409,7 @@ const requestLogsAPI = {
   onNewLog: (callback: (log: RequestLogEntry) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, log: RequestLogEntry) => callback(log)
     ipcRenderer.on(IpcChannels.REQUEST_LOGS_NEW, handler)
-    return () => ipcRenderer.removeListener(IpcChannels.REQUEST_LOGS_NEW, handler)
+    return () => { ipcRenderer.removeListener(IpcChannels.REQUEST_LOGS_NEW, handler) }
   },
 }
 
@@ -520,37 +516,37 @@ const appAPI = {
   onUpdateChecking: (callback: () => void) => {
     const listener = (_event: Electron.IpcRendererEvent) => callback()
     ipcRenderer.on(IpcChannels.APP_UPDATE_CHECKING, listener)
-    return () => ipcRenderer.removeListener(IpcChannels.APP_UPDATE_CHECKING, listener)
+    return () => { ipcRenderer.removeListener(IpcChannels.APP_UPDATE_CHECKING, listener) }
   },
 
   onUpdateAvailable: (callback: (info: any) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, info: any) => callback(info)
     ipcRenderer.on(IpcChannels.APP_UPDATE_AVAILABLE, listener)
-    return () => ipcRenderer.removeListener(IpcChannels.APP_UPDATE_AVAILABLE, listener)
+    return () => { ipcRenderer.removeListener(IpcChannels.APP_UPDATE_AVAILABLE, listener) }
   },
 
   onUpdateNotAvailable: (callback: (info: any) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, info: any) => callback(info)
     ipcRenderer.on(IpcChannels.APP_UPDATE_NOT_AVAILABLE, listener)
-    return () => ipcRenderer.removeListener(IpcChannels.APP_UPDATE_NOT_AVAILABLE, listener)
+    return () => { ipcRenderer.removeListener(IpcChannels.APP_UPDATE_NOT_AVAILABLE, listener) }
   },
 
   onUpdateProgress: (callback: (progress: UpdateProgressInfo) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, progress: UpdateProgressInfo) => callback(progress)
     ipcRenderer.on(IpcChannels.APP_UPDATE_PROGRESS, listener)
-    return () => ipcRenderer.removeListener(IpcChannels.APP_UPDATE_PROGRESS, listener)
+    return () => { ipcRenderer.removeListener(IpcChannels.APP_UPDATE_PROGRESS, listener) }
   },
 
   onUpdateDownloaded: (callback: (info: any) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, info: any) => callback(info)
     ipcRenderer.on(IpcChannels.APP_UPDATE_DOWNLOADED, listener)
-    return () => ipcRenderer.removeListener(IpcChannels.APP_UPDATE_DOWNLOADED, listener)
+    return () => { ipcRenderer.removeListener(IpcChannels.APP_UPDATE_DOWNLOADED, listener) }
   },
 
   onUpdateError: (callback: (error: { message?: string } | string) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, error: { message?: string } | string) => callback(error)
     ipcRenderer.on(IpcChannels.APP_UPDATE_ERROR, listener)
-    return () => ipcRenderer.removeListener(IpcChannels.APP_UPDATE_ERROR, listener)
+    return () => { ipcRenderer.removeListener(IpcChannels.APP_UPDATE_ERROR, listener) }
   },
 }
 
@@ -564,7 +560,7 @@ const configAPI = {
   onConfigChanged: (callback: (config: AppConfig) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, config: AppConfig) => callback(config)
     ipcRenderer.on(IpcChannels.CONFIG_CHANGED, handler)
-    return () => ipcRenderer.removeListener(IpcChannels.CONFIG_CHANGED, handler)
+    return () => { ipcRenderer.removeListener(IpcChannels.CONFIG_CHANGED, handler) }
   },
 }
 
@@ -750,7 +746,7 @@ const inferenceAPI: InternalInferenceAPI = {
   onData: callback => {
     const handler = (_event: Electron.IpcRendererEvent, value: Parameters<typeof callback>[0]) => callback(value)
     ipcRenderer.on(IpcChannels.INFERENCE.data, handler)
-    return () => ipcRenderer.removeListener(IpcChannels.INFERENCE.data, handler)
+    return () => { ipcRenderer.removeListener(IpcChannels.INFERENCE.data, handler) }
   },
 }
 
@@ -777,20 +773,13 @@ const electronAPI = {
   toolCalling: toolCallingAPI,
   tray: trayAPI,
   
-  on: (channel: string, callback: (...args: unknown[]) => void) => {
-    assertChannel(channel)
-    const subscription = (_event: Electron.IpcRendererEvent, ...args: unknown[]) => callback(...args)
-    ipcRenderer.on(channel, subscription)
-    return () => ipcRenderer.removeListener(channel, subscription)
-  },
-  
   send: (channel: string, ...args: unknown[]) => {
     if (!['tray:set-height', 'tray:resize', 'tray:open-dashboard', 'tray:quit-app'].includes(channel)) throw new Error('Unsupported IPC send channel')
     ipcRenderer.send(channel, ...args)
   },
   
   invoke: (channel: string, ...args: unknown[]) => {
-    assertChannel(channel)
+    if (!genericInvokeChannels.has(channel)) throw new Error('Unsupported IPC channel')
     return ipcRenderer.invoke(channel, ...args)
   },
 }

@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
+import i18n from 'i18next'
 import type { CompanionSettings, SpeechAudio } from '@shared/companion'
 import type { CompanionCopy } from './copy'
 import { playbackSpeechChunks, speechText, speechExcerpt, summarizeForSpeech } from '@/lib/companionSpeech'
 import { recordingWave } from '@/lib/localSpeechAudio'
+import { createVoiceLevel } from '@/lib/voiceLevel'
 
 // IPC cancellation is global to the speech worker. A replacement request must wait for it,
 // including cancellation from a previous Hook instance or StrictMode cleanup.
@@ -17,7 +19,9 @@ export function useVoice(settings: CompanionSettings, copy: CompanionCopy, onTra
   const [recording, setRecording] = useState(false)
   const [transcribing, setTranscribing] = useState(false)
   const [speaking, setSpeaking] = useState(false)
-  const [level, setLevel] = useState(0)
+  // A meter, not state: see lib/voiceLevel.
+  const [level] = useState(createVoiceLevel)
+  const setLevel = level.set
   const [notice, setNotice] = useState('')
   const recorder = useRef<MediaRecorder | null>(null)
   const media = useRef<MediaStream | null>(null)
@@ -123,7 +127,9 @@ export function useVoice(settings: CompanionSettings, copy: CompanionCopy, onTra
         if (!model) throw new Error(copy.noModels)
         if (model.startsWith('opencode-free/')) {
           text = speechExcerpt(text)
-          addNotice(settings.language.startsWith('zh') ? '此模型的简略朗读使用原文摘读（开头与结尾），不是模型生成的摘要。' : 'This model reads an excerpt from the beginning and ending, rather than a generated summary.')
+          // Follows the speech language, not the UI language.
+          addNotice(i18n.getFixedT(settings.language.startsWith('zh') ? 'zh-CN' : 'en-US')('companion.speech.excerptNotice'))
+
         } else {
           text = await summarizeForSpeech(text, model, await window.electronAPI.config.get(), request.signal, {
             chunkMode: settings.ttsMode,

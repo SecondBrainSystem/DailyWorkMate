@@ -2,7 +2,7 @@ export const IpcChannels = {
   INFERENCE: { request: 'inference:request', cancel: 'inference:cancel', data: 'inference:data' },
   TERMINAL: {
     get: 'terminal:get', create: 'terminal:create', select: 'terminal:select', close: 'terminal:close', restart: 'terminal:restart',
-    poll: 'terminal:poll', write: 'terminal:write', resize: 'terminal:resize', savePreferences: 'terminal:savePreferences', pickDirectory: 'terminal:pickDirectory',
+    poll: 'terminal:poll', write: 'terminal:write', resize: 'terminal:resize', savePreferences: 'terminal:savePreferences', pickDirectory: 'terminal:pickDirectory', saveLayout: 'terminal:saveLayout',
   },
   COMPANION: {
     inspectFolders: 'companion:inspectFolders', importWorkspaces: 'companion:importWorkspaces',
@@ -28,7 +28,6 @@ export const IpcChannels = {
   PROXY_GET_MODELS: 'proxy:getModels',
   PROXY_STATUS_CHANGED: 'proxy:statusChanged',
   PROXY_GET_STATISTICS: 'proxy:getStatistics',
-  PROXY_RESET_STATISTICS: 'proxy:resetStatistics',
 
   CONFIG_GET: 'config:get',
   CONFIG_UPDATE: 'config:update',
@@ -51,7 +50,6 @@ export const IpcChannels = {
   PROVIDERS_DUPLICATE: 'providers:duplicate',
   PROVIDERS_EXPORT: 'providers:export',
   PROVIDERS_IMPORT: 'providers:import',
-  PROVIDERS_SYNC_MODELS: 'providers:syncModels',
   PROVIDERS_UPDATE_MODELS: 'providers:updateModels',
   PROVIDERS_GET_EFFECTIVE_MODELS: 'providers:getEffectiveModels',
   PROVIDERS_ADD_CUSTOM_MODEL: 'providers:addCustomModel',
@@ -84,7 +82,6 @@ export const IpcChannels = {
 
   OAUTH_START_LOGIN: 'oauth:startLogin',
   OAUTH_CANCEL_LOGIN: 'oauth:cancelLogin',
-  OAUTH_CALLBACK: 'oauth:callback',
   OAUTH_LOGIN_WITH_TOKEN: 'oauth:loginWithToken',
   OAUTH_VALIDATE_TOKEN: 'oauth:validateToken',
   OAUTH_REFRESH_TOKEN: 'oauth:refreshToken',

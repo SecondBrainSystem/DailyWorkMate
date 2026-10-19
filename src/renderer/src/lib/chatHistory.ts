@@ -1,4 +1,4 @@
-import { normalizeChatWorkspace, type PersistedChatState } from './chatWorkspace.ts'
+import { normalizeChatWorkspace, restoreOmittedImages, type PersistedChatState } from './chatWorkspace.ts'
 
 export const CHAT_HISTORY_DB = 'dailyworkmate.chat.history.v1'
 
@@ -144,13 +144,13 @@ export class ChatHistoryStorage {
       if (active) {
         // Recover the last synchronous backup only for the same conversation, never revive a deleted one.
         if (legacy.conversationId === active.conversationId && (legacy.savedAt || 0) > active.savedAt) {
-          const recovered = createConversation(legacy, legacy.savedAt)
+          const recovered = createConversation(restoreOmittedImages(legacy, active), legacy.savedAt)
           await this.commit([recovered], recovered.conversationId)
           return recovered
         }
         return active
       }
-      const entry = createConversation(activeId ? normalizeChatWorkspace(undefined) : legacy)
+      const entry = createConversation(activeId ? normalizeChatWorkspace(undefined) : restoreOmittedImages(legacy, undefined))
       await this.commit([...(activeId ? [] : additionalLegacy.map(state => createConversation(state))), entry], entry.conversationId)
       return entry
     })

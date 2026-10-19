@@ -12,6 +12,7 @@ const defaults = {
 }
 let config = JSON.parse(localStorage.getItem('settings-qa-config') || 'null') || { ...defaults }
 contextBridge.exposeInMainWorld('electronAPI', {
+  app:{ getStartupOptions:async () => ({ gpuCompositing:true }), setStartupOptions:async () => {}, relaunch:async () => {} },
   config:{
     get:async () => config,
     update:async updates => {

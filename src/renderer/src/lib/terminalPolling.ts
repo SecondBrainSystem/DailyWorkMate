@@ -6,13 +6,15 @@ export function pollWorkTerminal(options: {
   poll: (id: string, cursor: number) => Promise<TerminalSnapshot>
   accept: (snapshot: TerminalSnapshot) => Promise<void>
   onError: (error: unknown, terminalEnded: boolean) => void
+  /** Delay between successful polls; hidden tabs can poll less often. Defaults to 80 ms. */
+  interval?: () => number
 }) {
   let current = options.initial
   let cancelled = false
   let timer: ReturnType<typeof setTimeout> | undefined
   const poll = async () => {
     if (cancelled || (!current.running && !current.starting)) return
-    let delay = 80
+    let delay = options.interval?.() ?? 80
     try {
       const next = await options.poll(current.id, current.cursor)
       if (cancelled) return

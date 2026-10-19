@@ -42,16 +42,24 @@ function contact(session: PsmuxSession, command?: 'kill-session'): Promise<boole
 }
 
 export const defaultPsmuxDirectories = () => [...new Set([path.join(os.homedir(), '.psmux'), ...(process.env.PSMUX_DATA_DIR ? [process.env.PSMUX_DATA_DIR] : [])])]
+/**
+ * Sessions that answered authentication. Discovery runs inside the quit confirmation, so an unreadable registry
+ * entry or a port held by another program counts as "not alive" (and is logged) instead of blocking the exit.
+ * closePsmux stays strict for the sessions the user confirmed.
+ */
 export async function discoverPsmux(directories = defaultPsmuxDirectories()): Promise<PsmuxSession[]> {
   if (process.platform !== 'win32') return []
   const sessions: PsmuxSession[] = []
   for (const directory of [...new Set(directories)]) {
-    if (!path.isAbsolute(directory)) throw new Error('Invalid psmux data directory')
+    if (!path.isAbsolute(directory)) { console.error('[psmux] Skipped relative data directory:', directory); continue }
     let files: string[]
     try { files = await readdir(directory) }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.error('[psmux] Unable to read ' + directory + ':', error instanceof Error ? error.message : String(error))
+      continue
+    }
     const candidates = files.filter(file => file.endsWith('.port'))
-    if (candidates.length > 256) throw new Error('Too many psmux sessions to check safely')
+    if (candidates.length > 256) { console.error('[psmux] Skipped ' + directory + ': too many sessions to check safely (' + candidates.length + ')'); continue }
     const found = await Promise.all(candidates.map(async file => {
       const name = file.slice(0, -5)
       try {
@@ -61,8 +69,9 @@ export async function discoverPsmux(directories = defaultPsmuxDirectories()): Pr
         const session = { name, directory, port, key, identity }
         return await contact(session) ? session : undefined
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined // Session ended during the scan.
-        throw error
+        // ENOENT: the session ended during the scan.
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.warn('[psmux] Treating ' + path.join(directory, name) + ' as not running:', error instanceof Error ? error.message : String(error))
+        return undefined
       }
     }))
     sessions.push(...found.filter((session): session is PsmuxSession => !!session))

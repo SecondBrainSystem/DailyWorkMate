@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
@@ -10,17 +11,7 @@ import { Power, Globe, Gauge } from 'lucide-react'
 
 export function GeneralSettings() {
   const { t } = useTranslation()
-  const {
-    autoStart,
-    setAutoStart,
-    autoStartProxy,
-    setAutoStartProxy,
-    minimizeToTray,
-    setMinimizeToTray,
-    oauthProxyMode,
-    setOauthProxyMode,
-    isSaving,
-  } = useSettingsStore()
+  const { autoStart, setAutoStart, autoStartProxy, setAutoStartProxy, minimizeToTray, setMinimizeToTray, oauthProxyMode, setOauthProxyMode, isSaving } = useSettingsStore(useShallow(state => ({ autoStart: state.autoStart, setAutoStart: state.setAutoStart, autoStartProxy: state.autoStartProxy, setAutoStartProxy: state.setAutoStartProxy, minimizeToTray: state.minimizeToTray, setMinimizeToTray: state.setMinimizeToTray, oauthProxyMode: state.oauthProxyMode, setOauthProxyMode: state.setOauthProxyMode, isSaving: state.isSaving })))
   // Chromium switches apply at launch, so this setting lives outside the store and needs a restart.
   const [gpuCompositing, setGpuCompositing] = useState<boolean | null>(null)
   const [launchedWith, setLaunchedWith] = useState<boolean | null>(null)

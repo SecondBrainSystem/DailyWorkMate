@@ -7,7 +7,6 @@ import { toast } from '@/hooks/use-toast'
 type Entry = Awaited<ReturnType<typeof window.electronAPI.logs.get>>[number]
 export function ApplicationLogs() {
   const { t, i18n } = useTranslation()
-  const zh = i18n.language.startsWith('zh')
   const [entries, setEntries] = useState<Entry[]>([])
   const [keyword, setKeyword] = useState('')
   const [page, setPage] = useState(0)
@@ -38,16 +37,16 @@ export function ApplicationLogs() {
     <div className="flex flex-wrap gap-2">
       <Input className="w-60" value={keyword} onChange={event => setKeyword(event.target.value)} aria-label={t('common.search')} placeholder={t('common.search')} />
       <Button variant="outline" onClick={() => setRevision(value => value + 1)}>{t('dashboard.refresh')}</Button>
-      <Button variant="outline" onClick={() => void exportLogs()}>{zh ? '导出' : 'Export'}</Button>
+      <Button variant="outline" onClick={() => void exportLogs()}>{t('logs.export')}</Button>
       <Button variant="outline" onClick={async () => {
-        if (!window.confirm(zh ? '清空应用运行日志？统计数据将保留。' : 'Clear application logs? Statistics will be kept.')) return
+        if (!window.confirm(t('logs.app.clearConfirm'))) return
         try { await window.electronAPI.logs.clear(); setRevision(value => value + 1) }
         catch (failure) { toast({ title: t('common.error'), description: String(failure), variant: 'destructive' }) }
       }}>{t('logs.clearLogs')}</Button>
     </div>
     {error && <p role="alert" className="text-destructive">{error}</p>}
     <div className="max-h-[60vh] space-y-2 overflow-auto">
-      {entries.length === 0 && <p className="p-4 text-muted-foreground">{zh ? '没有运行日志' : 'No application logs'}</p>}
+      {entries.length === 0 && <p className="p-4 text-muted-foreground">{t('logs.app.empty')}</p>}
       {entries.map(entry => <details key={entry.id} className="rounded-lg border p-3 text-sm">
         <summary className="cursor-pointer break-words"><span className="mr-2 font-mono text-muted-foreground">{new Date(entry.timestamp).toLocaleString(i18n.language)} [{entry.level}]</span>{entry.message}</summary>
         {entry.data && <pre className="mt-3 whitespace-pre-wrap break-all text-xs">{JSON.stringify(entry.data, null, 2)}</pre>}

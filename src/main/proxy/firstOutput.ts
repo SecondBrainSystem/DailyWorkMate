@@ -6,13 +6,18 @@ export type FirstOutputFailure = 'stream_error' | 'upstream_error' | 'timeout' |
 
 export type FirstOutputResult =
   | { ok: true; stream: PassThrough }
-  | { ok: false; reason: FirstOutputFailure; error: Error }
+  /** `finished`: the node completed normally but produced nothing (an empty answer), so it is reachable. */
+  | { ok: false; reason: FirstOutputFailure; error: Error; finished?: boolean }
 
 const MAX_PREFETCH_BYTES = 8 * 1024 * 1024
 const ignore = () => {}
 
-/** True when an OpenAI-style SSE event carries something the client would show or act on. */
-function isOutputEvent(payload: string): boolean | 'error' {
+/**
+ * True when an OpenAI-style SSE event carries something the client would show or act on.
+ * A bare finish_reason is not output: nodes that answer with nothing are failed over (an
+ * empty reply is never what the user asked for), but they are reported as `finished`.
+ */
+function isOutputEvent(payload: string): boolean | 'error' | 'finish' {
   if (payload === '[DONE]') return false
   let event: any
   try { event = JSON.parse(payload) } catch { return false }
@@ -20,12 +25,13 @@ function isOutputEvent(payload: string): boolean | 'error' {
   const choice = event?.choices?.[0]
   if (!choice) return false
   const delta = choice.delta || {}
-  return Boolean(delta.content || delta.reasoning_content || delta.tool_calls?.length)
+  if (delta.content || delta.reasoning_content || delta.tool_calls?.length) return true
+  return choice.finish_reason ? 'finish' : false
 }
 
 /**
  * Holds back a converted upstream stream until its first real output (text,
- * reasoning, a tool call or a finish), so a node that closes the response
+ * reasoning or a tool call), so a node that closes the response
  * before producing anything becomes an ordinary request failure that can be
  * retried or failed over, instead of an HTTP 200 the client sees break.
  * Everything received before that point is replayed unchanged.
@@ -37,6 +43,7 @@ export function awaitFirstOutput(stream: Readable, timeoutMs: number, signal?: A
     let bufferedBytes = 0
     let pending = ''
     let settled = false
+    let finished = false
 
     const cleanup = () => {
       clearTimeout(timer)
@@ -53,7 +60,7 @@ export function awaitFirstOutput(stream: Readable, timeoutMs: number, signal?: A
       // Late errors from the abandoned attempt have no reader any more.
       stream.on('error', ignore)
       if (!stream.destroyed) stream.destroy()
-      resolve({ ok: false, reason, error })
+      resolve({ ok: false, reason, error, ...(finished ? { finished } : {}) })
     }
     const ready = () => {
       if (settled) return
@@ -88,6 +95,7 @@ export function awaitFirstOutput(stream: Readable, timeoutMs: number, signal?: A
           fail('upstream_error', new Error(String(message)))
           return
         }
+        if (verdict === 'finish') { finished = true; continue }
         if (verdict) { ready(); return }
       }
       if (bufferedBytes > MAX_PREFETCH_BYTES) fail('stream_error', new Error('Upstream sent too much data without producing output'))

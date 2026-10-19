@@ -1,4 +1,6 @@
-// A detached, user-local terminal owner. Electron can reconnect without replacing a live shell.
+// A detached, user-local terminal owner: native PTY handles stay out of Electron, and a briefly lost lease
+// can reconnect without replacing a live shell. It never outlives the application: once the last lease
+// closes, every shell stops and the host exits (tabs are saved for "restore on startup").
 import { createServer } from 'node:http'
 import { mkdir, writeFile, rename, readFile, unlink } from 'node:fs/promises'
 import path from 'node:path'
@@ -14,16 +16,11 @@ async function run() {
   await host.initialize()
   const token = randomBytes(32).toString('hex')
   const clients = new Set<import('node:http').ServerResponse>()
-  let closing = false, draining = false, hasClient = false, idle: ReturnType<typeof setTimeout> | undefined
-  const refresh = setInterval(() => {
-    if (closing) return
-    try { host.refreshNative(); if (hasClient && !clients.size && !host.state().sessions.some(session => ['running', 'starting'].includes(session.status))) void detached() }
-    catch (error) { console.error('[Terminal host] Refresh failed:', error instanceof Error ? error.message : String(error)) }
-  }, 2000)
+  let closing = false, draining = false, idle: ReturnType<typeof setTimeout> | undefined
   const infoFile = path.join(home, 'host.json')
   const stop = async () => {
     if (closing) return
-    closing = true; clearTimeout(idle); clearInterval(refresh)
+    closing = true; clearTimeout(idle)
     try {
       await host.shutdown()
       const info = JSON.parse(await readFile(infoFile, 'utf8'))
@@ -32,11 +29,7 @@ async function run() {
     for (const client of clients) client.end()
     server.close(); process.exit(0)
   }
-  const detached = async () => {
-    if (clients.size || closing) return
-    try { if (!(await host.detach())) await stop() }
-    catch (error) { console.error('[Terminal host] Detach failed:', error instanceof Error ? error.message : String(error)); await stop() }
-  }
+  const detached = async () => { if (!clients.size && !closing) await stop() }
   const server = createServer(async (request, response) => {
     try {
       const supplied = request.headers.authorization || ''
@@ -44,7 +37,7 @@ async function run() {
       if (request.headers.origin || supplied.length !== expected.length || !timingSafeEqual(Buffer.from(supplied), Buffer.from(expected))) { response.writeHead(403).end(); return }
       if (closing || draining) { response.writeHead(503).end(); return }
       if (request.method === 'GET' && request.url === '/lease') {
-        clearTimeout(idle); hasClient = true; clients.add(response)
+        clearTimeout(idle); clients.add(response)
         response.writeHead(200, { 'Content-Type': 'text/plain' }); response.write('attached\n')
         const heartbeat = setInterval(() => response.write('alive\n'), 10000)
         response.on('close', () => { clearInterval(heartbeat); clients.delete(response); if (!clients.size) idle = setTimeout(() => void detached(), 1000) })
@@ -67,8 +60,10 @@ async function run() {
         case 'poll': result = host.poll(value.id, value.cursor); break
         case 'write': host.write(value.id, value.data); result = null; break
         case 'resize': host.resize(value.id, value.cols, value.rows); result = null; break
+        case 'layout': result = host.saveLayout(value.tabId, value.layout); break
         case 'preferences': result = await host.setPreferences(value.preferences as TerminalPreferences); break
-        case 'detach': result = await host.detach(); if (!result) { draining = true; idle = setTimeout(() => void stop(), 500) } break
+        // `false` tells clients from older versions that nothing is retained.
+        case 'detach': await host.detach(); result = false; draining = true; idle = setTimeout(() => void stop(), 500); break
         default: throw new Error('Unknown terminal operation')
       }
       response.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }).end(JSON.stringify({ result }))

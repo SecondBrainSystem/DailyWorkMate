@@ -5,6 +5,7 @@ import type { ChatCompletionRequest, ForwardResult } from '../types.ts'
 import { ModelFeatureError } from '../modelFeatures.ts'
 import { claudeToOpenAIResponse, createClaudeToOpenAIStream, openAIToClaudeRequest } from '../ollamaProtocol.ts'
 import { readUpstreamErrorBody } from '../upstreamError.ts'
+import { retryAfter, upstreamFailure } from '../upstreamFailure.ts'
 import { ANTHROPIC_VERSION } from '../../providers/apiProviders.ts'
 
 /** OpenAI clients often omit max_tokens; the Messages API requires it, so use a size that does not cut answers short. */
@@ -37,7 +38,7 @@ export async function forwardAnthropicApi(request: ChatCompletionRequest, accoun
     if (response.status >= 400) {
       const data = await readUpstreamErrorBody(response.data) as { error?: { message?: string }; message?: string } | string | undefined
       const message = (typeof data === 'string' ? data : data?.error?.message || data?.message) || 'HTTP ' + response.status
-      return { success: false, status: response.status, error: 'Claude API: ' + String(message).slice(0, 2000), latency }
+      return { success: false, status: response.status, error: 'Claude API: ' + String(message).slice(0, 2000), ...retryAfter(response.headers), latency }
     }
     if (request.stream) return { success: true, status: response.status, stream: convertUpstreamStream(response.data, createClaudeToOpenAIStream(model)), skipTransform: true, latency }
     if (!Array.isArray(response.data?.content)) return { success: false, status: 502, error: 'Claude API returned an invalid message', latency }
@@ -45,8 +46,6 @@ export async function forwardAnthropicApi(request: ChatCompletionRequest, accoun
   } catch (error) {
     const latency = Date.now() - started
     if (error instanceof ModelFeatureError) return { success: false, status: 400, error: error.message, latency }
-    const status = signal?.aborted || axios.isCancel(error) ? 499
-      : axios.isAxiosError(error) && ['ECONNABORTED', 'ETIMEDOUT'].includes(error.code || '') ? 504 : 502
-    return { success: false, status, error: 'Claude API request failed: ' + (error instanceof Error ? error.message : String(error)), latency }
+    return { success: false, ...upstreamFailure(error, signal), error: 'Claude API request failed: ' + (error instanceof Error ? error.message : String(error)), latency }
   }
 }

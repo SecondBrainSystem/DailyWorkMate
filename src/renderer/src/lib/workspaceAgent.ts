@@ -1,3 +1,4 @@
+import i18n from 'i18next'
 import type { AgentEngine, AgentInput, AgentSnapshot, CompanionAPI, CompanionSnapshot } from '../../../shared/companion'
 import type { PersistedChatState } from './chatWorkspace'
 
@@ -19,9 +20,9 @@ export function chatWorkspaceIdentity(snapshot: Pick<CompanionSnapshot, 'workspa
   const engineField = engine === 'claude' ? { engine } : {}
   if (!selection.workspaceId) return JSON.stringify({ workspaceId: '', model, systemPrompt, grants: [], ...engineField })
   const selected = snapshot.workspaces.find(folder => folder.id === selection.workspaceId)
-  if (!selected) throw new Error('工作区授权已撤销，请重新选择文件夹。 / Workspace access was removed. Select an authorized folder.')
+  if (!selected) throw new Error(i18n.t('workspaceAgent.accessRemoved'))
   const group = selection.groupId ? snapshot.groups.find(group => group.id === selection.groupId) : undefined
-  if (selection.groupId && (!group || !group.workspaceIds.includes(selected.id))) throw new Error('工作区分组已变化，请重新选择。 / The workspace group changed. Select the workspace again.')
+  if (selection.groupId && (!group || !group.workspaceIds.includes(selected.id))) throw new Error(i18n.t('workspaceAgent.groupChanged'))
   const grants = snapshot.workspaces.filter(folder => group ? group.workspaceIds.includes(folder.id) : folder.id === selected.id)
     .map(folder => [folder.id, folder.path, folder.writable]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)))
   return JSON.stringify({ ...selection, model, systemPrompt, grants, ...engineField })
@@ -36,12 +37,19 @@ export interface WorkspaceAgentOptions { signal?: AbortSignal; onUpdate?: (snaps
 interface Task {
   controller: AbortController
   ready: Promise<AgentSnapshot>
+  /** startAgent has answered; before that a stop request cancels the startup itself. */
+  settled: boolean
   sessionId: string
   running: boolean
   stopped?: Promise<void>
 }
 let owner: WorkspaceAgentRunner | null = null
 const cancelled = () => new DOMException('Workspace task cancelled', 'AbortError')
+const POLL_INTERVAL = 250
+/** Skip renders when a poll brings nothing new (the main process refreshes remote state less often). */
+const unchanged = (previous: AgentSnapshot | null, next: AgentSnapshot) => !!previous && previous.sessionId === next.sessionId
+  && previous.running === next.running && previous.phase === next.phase && previous.error === next.error && previous.text === next.text
+  && JSON.stringify(previous.tools) === JSON.stringify(next.tools) && JSON.stringify(previous.permissions) === JSON.stringify(next.permissions)
 
 /** One owner for the main-process agent prevents route changes from cancelling another page's task. */
 export class WorkspaceAgentRunner {
@@ -51,36 +59,39 @@ export class WorkspaceAgentRunner {
   constructor(api: AgentAPI) { this.api = api }
 
   async execute(input: AgentInput, options: WorkspaceAgentOptions = {}): Promise<AgentSnapshot> {
-    if (this.task || owner) throw new Error('工作区任务正在运行或停止，请稍后重试。 / A workspace task is running or stopping. Try again shortly.')
+    if (this.task || owner) throw new Error(i18n.t('workspaceAgent.busy'))
     if (options.signal?.aborted) throw cancelled()
     owner = this
-    const task: Task = { controller: new AbortController(), ready: Promise.resolve(null as unknown as AgentSnapshot), sessionId: '', running: false }
+    const task: Task = { controller: new AbortController(), ready: Promise.resolve(null as unknown as AgentSnapshot), settled: false, sessionId: '', running: false }
     this.task = task
+    this.snapshot = null
     const abort = () => { void this.cancel().catch(error => console.error('[Workspace] Could not stop task:', error)) }
     options.signal?.addEventListener('abort', abort, { once: true })
     try {
       task.ready = this.api.startAgent({ ...input, sessionId: input.sessionId || '' })
+      task.ready.then(() => { task.settled = true }, () => { task.settled = true })
       let state = await task.ready
       task.sessionId = state.sessionId
       task.running = state.running
       if (!state.sessionId) throw new Error('OpenCode did not return a workspace session')
       if (task.controller.signal.aborted) { await this.stopTask(task); throw cancelled() }
       const publish = (next: AgentSnapshot) => {
-        this.snapshot = next
         task.running = next.running
+        if (unchanged(this.snapshot, next)) return
+        this.snapshot = next
         options.onUpdate?.(next)
       }
       publish(state)
       while (state.running) {
         await new Promise<void>(resolve => {
           const finish = () => { clearTimeout(timer); task.controller.signal.removeEventListener('abort', finish); resolve() }
-          const timer = setTimeout(finish, 250)
+          const timer = setTimeout(finish, POLL_INTERVAL)
           task.controller.signal.addEventListener('abort', finish, { once: true })
         })
         if (task.controller.signal.aborted) { await this.stopTask(task); throw cancelled() }
         state = await this.api.pollAgent()
         if (task.controller.signal.aborted) { await this.stopTask(task); throw cancelled() }
-        if (state.sessionId !== task.sessionId) throw new Error('工作区会话已变化，请重试。 / The active workspace session changed. Retry the request.')
+        if (state.sessionId !== task.sessionId) throw new Error(i18n.t('workspaceAgent.sessionChanged'))
         publish(state)
       }
       if (state.error) throw new Error(state.error)
@@ -100,6 +111,12 @@ export class WorkspaceAgentRunner {
   private stopTask(task: Task): Promise<void> {
     if (task.stopped) return task.stopped
     task.stopped = (async () => {
+      if (!task.settled && owner === this) {
+        // Startup can take tens of seconds; the main process cancels it and its server right away.
+        try { await this.api.stopAgent() }
+        catch (error) { console.error('[Workspace] Could not cancel the starting task:', error) }
+      }
+      // If the start won the race anyway, the running task is stopped below.
       const started = await task.ready.catch(() => null)
       if (!started || owner !== this || !started.running) return
       try {

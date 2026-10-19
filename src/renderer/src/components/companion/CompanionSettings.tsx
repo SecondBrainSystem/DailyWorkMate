@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
+import { useTranslation } from 'react-i18next'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
 import { Button } from '@/components/ui/button'
 import { renameCompanion, validateSettings } from '../../../../shared/companion'
-import { errorText } from '@/lib/errors'
+import { useErrorText } from '@/lib/errors'
 import type { CompanionSettings as Settings } from '@shared/companion'
 import type { CompanionCopy } from './copy'
 import { LOCAL_SPEECH_VOICES, type LocalSpeechStatus } from '../../../../shared/localSpeech'
@@ -15,7 +16,9 @@ export function CompanionSettings({ settings, home, copy, onClose, onSave }: {
   const [previewing, setPreviewing] = useState(false)
   const audio = useRef<HTMLAudioElement>()
   const previewUrl = useRef('')
-  const chinese = settings.language.startsWith('zh')
+  // Labels follow the UI language, not the assistant's speech language.
+  const { t } = useTranslation()
+  const errorText = useErrorText()
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [localStatus, setLocalStatus] = useState<LocalSpeechStatus>()
@@ -25,7 +28,7 @@ export function CompanionSettings({ settings, home, copy, onClose, onSave }: {
     update()
     void window.electronAPI.companion.localSpeechStatus().then(setLocalStatus).catch(error => setError(error instanceof Error ? error.message : String(error)))
     window.speechSynthesis?.addEventListener('voiceschanged', update)
-    const refresh = setInterval(() => { void window.electronAPI.companion.localSpeechStatus().then(setLocalStatus).catch(error => setError(errorText(error, chinese))) }, 5000)
+    const refresh = setInterval(() => { void window.electronAPI.companion.localSpeechStatus().then(setLocalStatus).catch(error => setError(errorText(error))) }, 5000)
     return () => { clearInterval(refresh); audio.current?.pause(); if (previewUrl.current) URL.revokeObjectURL(previewUrl.current); window.speechSynthesis?.removeEventListener('voiceschanged', update) }
   }, [])
   const field = (key: 'name' | 'language' | 'voice', label: string) => <label className="companion-field">{label}<input aria-label={label} maxLength={key === 'name' ? 80 : undefined} value={draft[key]} onChange={event => setDraft(key === 'name' ? renameCompanion(draft, event.target.value) : { ...draft, [key]: event.target.value })} /></label>
@@ -66,9 +69,10 @@ export function CompanionSettings({ settings, home, copy, onClose, onSave }: {
       </>}
       <p className="text-xs text-[var(--text-muted)] break-all">{copy.storage}: {home}</p>
       {error && <p role="alert" className="text-sm text-danger">{error}</p>}
-      <div className="flex justify-end gap-2"><Button variant="outline" disabled={previewing || saving} onClick={async () => { setPreviewing(true); setError(''); try { audio.current?.pause(); if (previewUrl.current) URL.revokeObjectURL(previewUrl.current); const result = await window.electronAPI.companion.synthesize(chinese ? '你好，这是当前语音的试听。' : 'Hello, this is a preview of the selected voice.', validateSettings(draft)); previewUrl.current = URL.createObjectURL(new Blob([new Uint8Array(result.audio)], { type: result.mime })); audio.current = new Audio(previewUrl.current); audio.current.volume = draft.speechVolume; await audio.current.play() } catch (error) { setError(errorText(error, chinese)) } finally { setPreviewing(false) } }}>{previewing ? '…' : chinese ? '试听' : 'Preview voice'}</Button><Button variant="outline" onClick={onClose} disabled={saving}>{copy.cancel}</Button><Button disabled={saving} onClick={async () => {
+      <div className="flex justify-end gap-2"><Button variant="outline" disabled={previewing || saving} onClick={async () => { setPreviewing(true); setError(''); try { audio.current?.pause(); if (previewUrl.current) URL.revokeObjectURL(previewUrl.current); const result = await window.electronAPI.companion.synthesize(t('companion.speech.previewText'), validateSettings(draft))
+; previewUrl.current = URL.createObjectURL(new Blob([new Uint8Array(result.audio)], { type: result.mime })); audio.current = new Audio(previewUrl.current); audio.current.volume = draft.speechVolume; await audio.current.play() } catch (error) { setError(errorText(error)) } finally { setPreviewing(false) } }}>{previewing ? '…' : t('companion.speech.preview')}</Button><Button variant="outline" onClick={onClose} disabled={saving}>{copy.cancel}</Button><Button disabled={saving} onClick={async () => {
         setSaving(true); setError('')
-        try { await onSave(validateSettings(draft)); onClose() } catch (error) { setError(errorText(error, chinese)) } finally { setSaving(false) }
+        try { await onSave(validateSettings(draft)); onClose() } catch (error) { setError(errorText(error)) } finally { setSaving(false) }
       }}>{saving ? '…' : copy.save}</Button></div>
     </div>
   </DialogContent></Dialog>

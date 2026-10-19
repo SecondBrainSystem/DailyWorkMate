@@ -1,8 +1,11 @@
-import test from 'node:test'
+import test, { before } from 'node:test'
 import assert from 'node:assert/strict'
 import { WorkspaceAgentRunner, chatWorkspaceIdentity, workspaceSelectionFromState, workspaceStateFields } from '../../src/renderer/src/lib/workspaceAgent.ts'
 import { normalizeChatWorkspace } from '../../src/renderer/src/lib/chatWorkspace.ts'
 import type { AgentInput, AgentSnapshot, CompanionAPI } from '../../src/shared/companion.ts'
+import { i18nReady } from './i18nSetup.ts'
+
+before(() => i18nReady)
 
 const input: AgentInput = { workspaceId: 'folder', model: 'model-a', prompt: 'Read README.md' }
 const state = (extra: Partial<AgentSnapshot> = {}): AgentSnapshot => ({ sessionId: 'v2:s123:session', running: false, text: 'Done', error: '', tools: [], permissions: [], ...extra })
@@ -25,8 +28,8 @@ test('model, persona, permissions and group membership invalidate a restored wor
   assert.notEqual(chatWorkspaceIdentity(snapshot, selection, 'model-a', 'changed'), identity)
   assert.notEqual(chatWorkspaceIdentity({ ...snapshot, workspaces: snapshot.workspaces.map(folder => ({ ...folder, writable: false })) }, selection, 'model-a', 'persona'), identity)
   assert.notEqual(chatWorkspaceIdentity({ ...snapshot, groups: [{ ...snapshot.groups[0], workspaceIds: ['folder'] }] }, selection, 'model-a', 'persona'), identity)
-  assert.throws(() => chatWorkspaceIdentity({ ...snapshot, workspaces: [] }, selection, 'model-a'), /授权已撤销/)
-  assert.throws(() => chatWorkspaceIdentity({ ...snapshot, groups: [] }, selection, 'model-a'), /分组已变化/)
+  assert.throws(() => chatWorkspaceIdentity({ ...snapshot, workspaces: [] }, selection, 'model-a'), /access was removed/)
+  assert.throws(() => chatWorkspaceIdentity({ ...snapshot, groups: [] }, selection, 'model-a'), /group changed/)
 })
 
 test('new chats explicitly pass an empty session instead of inheriting another page task', async () => {
@@ -60,11 +63,31 @@ test('pending startup cancellation blocks another page until the owned session i
   const rejected = assert.rejects(running, { name: 'AbortError' })
   const stopping = first.cancel()
   await assert.rejects(second.execute(input), /running or stopping/)
+  assert.equal(stops, 1, 'a pending startup is cancelled in main without waiting for it to finish')
   release(state({ running: true }))
   await stopping
   await rejected
-  assert.equal(stops, 1)
+  assert.equal(stops, 2, 'a start that still won the race is stopped as well')
   assert.equal((await second.execute(input)).text, 'Done')
+})
+
+test('a startup cancelled in main rejects without a second stop request', async () => {
+  let reject!: (error: Error) => void
+  let stops = 0
+  const runner = new WorkspaceAgentRunner(api({ startAgent: () => new Promise((_resolve, fail) => { reject = fail }), stopAgent: async () => { stops++; reject(new Error('Agent task cancelled')) } }))
+  const running = runner.execute(input)
+  await runner.cancel()
+  await assert.rejects(running, { name: 'AbortError' })
+  assert.equal(stops, 1)
+})
+
+test('polls that bring nothing new do not publish duplicate updates', async () => {
+  let polls = 0
+  const runner = new WorkspaceAgentRunner(api({ startAgent: async () => state({ running: true, text: 'Partial' }),
+    pollAgent: async () => ++polls < 3 ? state({ running: true, text: 'Partial' }) : state({ text: 'Done' }) }))
+  const updates: string[] = []
+  await runner.execute(input, { onUpdate: snapshot => updates.push(snapshot.text + ':' + snapshot.running) })
+  assert.deepEqual(updates, ['Partial:true', 'Done:false'])
 })
 
 test('cancellation never stops a different session after ownership changes in main', async () => {
@@ -77,7 +100,7 @@ test('cancellation never stops a different session after ownership changes in ma
   release(state({ running: true }))
   await stopping
   await rejected
-  assert.equal(stops, 0)
+  assert.equal(stops, 1, 'only the pending startup is cancelled, never the other session')
 })
 
 test('permission approval belongs to the active workspace session and tool results survive completion', async () => {

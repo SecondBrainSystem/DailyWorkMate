@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Badge } from '@/components/ui/badge'
+import { useShallow } from 'zustand/react/shallow'
 import { useProxyStore } from '@/stores/proxyStore'
 import {
   getProxyListeners, listenerKey, listenerUrl, normalizeListenerHost,
@@ -15,7 +16,10 @@ import {
 
 export function ProxyListeners() {
   const { t } = useTranslation()
-  const { appConfig, proxyConfig, proxyStatus, saveAppConfig, startProxy, stopProxy, isLoading } = useProxyStore()
+  const { appConfig, proxyConfig, proxyStatus, saveAppConfig, startProxy, stopProxy, isLoading } = useProxyStore(useShallow(state => ({
+    appConfig: state.appConfig, proxyConfig: state.proxyConfig, proxyStatus: state.proxyStatus, saveAppConfig: state.saveAppConfig,
+    startProxy: state.startProxy, stopProxy: state.stopProxy, isLoading: state.isLoading,
+  })))
   const [host, setHost] = useState('127.0.0.1')
   const [port, setPort] = useState('11434')
   const [busy, setBusy] = useState(false)

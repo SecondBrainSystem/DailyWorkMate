@@ -55,7 +55,9 @@ export default defineConfig({
     plugins: [react()],
     resolve: {
       alias: {
-        '@': resolve(__dirname, 'src/renderer/src')
+        '@': resolve(__dirname, 'src/renderer/src'),
+        // Matches tsconfig paths; needed once shared modules are imported as values, not just types.
+        '@shared': resolve(__dirname, 'src/shared')
       }
     },
     server: {

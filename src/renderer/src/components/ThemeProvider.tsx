@@ -1,5 +1,5 @@
 import { useEffect, ReactNode } from 'react'
-import { useSettingsStore } from '@/stores/settingsStore'
+import { syncThemeAcrossWindows, useSettingsStore } from '@/stores/settingsStore'
 
 interface ThemeProviderProps {
   children: ReactNode
@@ -7,6 +7,8 @@ interface ThemeProviderProps {
 
 export function ThemeProvider({ children }: ThemeProviderProps) {
   const theme = useSettingsStore((state) => state.theme)
+
+  useEffect(() => syncThemeAcrossWindows(), [])
 
   useEffect(() => {
     const root = window.document.documentElement

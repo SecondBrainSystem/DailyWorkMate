@@ -7,13 +7,25 @@ import { internalProxyKey, isInternalProxyKey } from '../proxy/internalAuth'
 import { closeHttpServer } from '../proxy/serverLifecycle'
 import { storeManager } from '../store/store'
 
+/**
+ * Preferred, stable ports: terminals run in a detached host that survives app restarts, and their
+ * CLIs keep the bridge URL they were started with. A stable port lets them reconnect.
+ */
 export const INTERNAL_INFERENCE_PORTS = [11435, 11436, 11437, 11438, 11439] as const
+
+/** Ports the public proxy uses or may use; the bridge must never take one of them. */
+export function reservedProxyPorts(): ReadonlySet<number> {
+  const config = storeManager.getConfig()
+  return new Set([11434, config.proxyPort, ...(config.additionalProxyListeners || []).map(listener => listener.port)]
+    .filter(port => Number.isInteger(port)))
+}
 
 /** Compatibility transport for native CLIs only. Independent of the public API server. */
 export class InternalInferenceBridge {
   private server?: Server
   private starting?: Promise<{ baseURL: string; apiKey: string }>
-  private connections = new Set<Socket>()
+  /** Owned by the bridge server alone; sockets add and remove themselves. */
+  private readonly connections = new Set<Socket>()
 
   connection(): Promise<{ baseURL: string; apiKey: string }> {
     if (this.starting) return this.starting
@@ -48,7 +60,8 @@ export class InternalInferenceBridge {
     app.use(bodyParser({ jsonLimit: '50mb', formLimit: '50mb', textLimit: '50mb' }))
     for (const router of routes) app.use(router.routes()).use(router.allowedMethods())
     // OS allocation is the fallback when Windows reserves the entire preferred range.
-    for (const port of [...INTERNAL_INFERENCE_PORTS, 0, 0, 0]) {
+    const reserved = reservedProxyPorts()
+    for (const port of [...INTERNAL_INFERENCE_PORTS.filter(candidate => !reserved.has(candidate)), 0, 0, 0]) {
       const server = createServer(app.callback())
       try {
         await new Promise<void>((resolve, reject) => {
@@ -59,14 +72,14 @@ export class InternalInferenceBridge {
         if (port && ['EACCES', 'EADDRINUSE'].includes((error as NodeJS.ErrnoException).code || '')) continue
         throw error
       }
-      if ((server.address() as AddressInfo).port === 11434) {
+      if (reserved.has((server.address() as AddressInfo).port)) {
         await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
         continue
       }
       server.on('error', error => storeManager.addLog('error', 'Internal inference bridge server error', { error: error.message }))
       server.on('connection', socket => {
-        this.connections = new Set([...this.connections, socket])
-        socket.once('close', () => { this.connections = new Set([...this.connections].filter(connection => connection !== socket)) })
+        this.connections.add(socket)
+        socket.once('close', () => this.connections.delete(socket))
       })
       this.server = server
       const connection = this.address(server)
@@ -77,7 +90,9 @@ export class InternalInferenceBridge {
   }
 
   async stop(): Promise<void> {
-    if (this.starting) await this.starting
+    // A failed start was already reported to whoever asked for the connection; it must not
+    // abort shutdown, and there is no server to close in that case.
+    if (this.starting) await this.starting.catch(error => storeManager.addLog('debug', 'Internal inference bridge was not running at shutdown', { error: String(error) }))
     const server = this.server
     this.server = undefined
     if (server?.listening) await closeHttpServer(server, this.connections)

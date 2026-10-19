@@ -1,6 +1,7 @@
 import { validateHeaderName, validateHeaderValue } from 'node:http'
 import { buildOllamaHeaders } from '../ollama/transport'
 import { normalizeOllamaUrl } from '../ollama/urls'
+import { buildUpstreamUrl } from '../proxy/upstreamUrl'
 import type { AccountSelection } from '../proxy/types'
 import type { ModelConnection, ModelConsumer } from '../../shared/modelConnection'
 
@@ -14,7 +15,11 @@ function connectionHeaders(headers: Record<string, string>): Record<string, stri
   }))
 }
 
-/** Return null only when an adapter is needed to speak the upstream's protocol. */
+/**
+ * Return null only when an adapter is needed to speak the upstream's protocol.
+ * A direct connection talks to the upstream itself: it bypasses proxy failover, retries,
+ * daily quotas and usage statistics. Account selection still honours quotas at prepare time.
+ */
 export function directModelConnection(selection: AccountSelection, consumer: ModelConsumer): ModelConnection | null {
   const { provider, account, actualModel } = selection
   if (provider.upstreamKind !== 'api' && provider.upstreamKind !== 'ollama') return null
@@ -27,10 +32,8 @@ export function directModelConnection(selection: AccountSelection, consumer: Mod
   if (provider.upstreamKind === 'ollama') baseURL = `${base}/v1`
   else {
     const expectedSuffix = protocol === 'anthropic' ? '/messages' : '/chat/completions'
-    let chatPath = provider.chatPath || (protocol === 'anthropic' ? '/v1/messages' : '/chat/completions')
-    if (!chatPath.startsWith('/')) chatPath = `/${chatPath}`
-    if (base.endsWith('/v1') && chatPath.startsWith('/v1/')) chatPath = chatPath.slice(3)
-    const target = `${base}${chatPath}`
+    // Same URL rule as the proxy forwarder, so a direct client reaches the same upstream.
+    const target = buildUpstreamUrl(base, provider.chatPath || (protocol === 'anthropic' ? '/v1/messages' : '/chat/completions'))
     if (!target.endsWith(expectedSuffix)) return null
     baseURL = target.slice(0, -expectedSuffix.length)
     // Claude Code always adds /v1/messages itself.

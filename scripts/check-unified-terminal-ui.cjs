@@ -21,6 +21,7 @@ let window, manager, workAgent, workTerminals
 const errors = []
 const openedFolders = [], openedWorkTerminals = [], closedWorkTerminals = []
 const terminalWrites = []
+const terminalResizes = []
 let failNextWorkPoll = false
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const js = async code => { try { return await window.webContents.executeJavaScript(code, true) } catch (error) { throw new Error(error.message + '\nRenderer command: ' + code.slice(0, 200)) } }
@@ -69,10 +70,19 @@ async function checkFocusMode(kind) {
   await click(enter)
   await wait(`!!document.querySelector('.is-focus-mode')`, kind + ' reenter fullscreen')
   await sleep(200)
+  // Inside a terminal Esc belongs to the shell/TUI when the keyboard lock is available; otherwise
+  // Electron itself leaves HTML fullscreen. Either way it must be one or the other, never both.
   const writesBeforeEscape = terminalWrites.length
   window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
-  await wait(`!document.fullscreenElement && !document.querySelector('.is-focus-mode')`, kind + ' Escape exits fullscreen')
-  assert.equal(terminalWrites.slice(writesBeforeEscape).includes('\x1b'), false, 'fullscreen Escape is not sent to PowerShell')
+  await sleep(400)
+  const escapeExited = await js(`!document.fullscreenElement && !document.querySelector('.is-focus-mode')`)
+  const escapeSent = terminalWrites.slice(writesBeforeEscape).some(value => value.includes('\x1b'))
+  if (kind === 'terminal') assert.notEqual(escapeExited, escapeSent, 'terminal Escape either reaches the shell or exits fullscreen, not both')
+  console.log('Escape in ' + kind + ' focus mode: ' + (escapeExited ? 'exited fullscreen' : 'kept fullscreen' + (escapeSent ? ', sent to terminal' : '')))
+  if (!escapeExited) {
+    window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'F11' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'F11' })
+    await wait(`!document.fullscreenElement && !document.querySelector('.is-focus-mode')`, kind + ' F11 exits fullscreen')
+  }
   assert.equal(await js(`window.__focusTerminal === document.querySelector('${host} .xterm')`), true, 'exiting never replaces the terminal')
 }
 const server = http.createServer((req, res) => {
@@ -100,7 +110,7 @@ app.whenReady().then(async () => {
     ipcMain.removeHandler('qa:' + name); ipcMain.handle('qa:' + name, (_event, ...args) => operation(...args))
   }
   const operations = manager.api(async () => workspace)
-  for (const [name, operation] of Object.entries(operations)) ipcMain.handle('qa:terminal:' + name, async (_event, ...args) => { if (name === 'write') terminalWrites.push(args[1]); return operation(...args) })
+  for (const [name, operation] of Object.entries(operations)) ipcMain.handle('qa:terminal:' + name, async (_event, ...args) => { if (name === 'write') terminalWrites.push(args[1]); if (name === 'resize') terminalResizes.push(args.slice(1)); return operation(...args) })
   ipcMain.handle('qa:folder:openTerminalDirectory', async (_event, id) => {
     // Mirror the production handler: resolve the ID against host state at click time.
     const state = await manager.command('state')
@@ -117,11 +127,11 @@ app.whenReady().then(async () => {
   await click(button('Terminal'))
   await wait(`!!document.querySelector('[aria-label="Shell"]') && !${button('Open terminal')}.disabled`, 'terminal form')
   await click(button('Open terminal'))
-  await wait(`!!document.querySelector('.unified-terminal-host .xterm-helper-textarea') && document.querySelector('.unified-terminal-footer')?.textContent.includes('Running')`, 'PowerShell terminal')
+  await wait(`!!document.querySelector('.unified-terminal-view:not(.is-inactive) .xterm-helper-textarea') && document.querySelector('.unified-terminal-footer')?.textContent.includes('Running')`, 'PowerShell terminal')
   // Tabs are named after the terminal's current folder, with the shell as a small badge.
   assert.deepEqual(await js(`[...document.querySelectorAll('.unified-terminal-tab')].map(el => el.querySelector('.terminal-task').textContent + '|' + el.querySelector('.terminal-kind').textContent)`), ['workspace|PS'])
   await sleep(1300)
-  await js(`(() => { const el=document.querySelector('.unified-terminal-host .xterm-helper-textarea');el.focus();el.value="Write-Output 'UI中文输入成功' # token";el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:el.value})); })()`)
+  await js(`(() => { const el=document.querySelector('.unified-terminal-view:not(.is-inactive) .xterm-helper-textarea');el.focus();el.value="Write-Output 'UI中文输入成功' # token";el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:el.value})); })()`)
   await sleep(250); window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
   let state = await manager.command('state'); const psId = state.activeId
   await click(`document.querySelector('.unified-terminal-tabs .terminal-current-folder')`)
@@ -144,24 +154,153 @@ app.whenReady().then(async () => {
   assert.deepEqual(openedFolders.at(-1), { id: cmdId, directory: workspace }, 'folder button follows the selected terminal')
   await click(`document.querySelector('[role="tab"][id="terminal-tab-${psId}"]')`)
   await sleep(600)
-  await js(`(() => { const el=document.querySelector('.unified-terminal-host .xterm-helper-textarea');el.focus();el.value="Write-Output 'AFTER_SWITCH_VALID' # token";el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:el.value})); })()`)
+  await js(`(() => { const el=document.querySelector('.unified-terminal-view:not(.is-inactive) .xterm-helper-textarea');el.focus();el.value="Write-Output 'AFTER_SWITCH_VALID' # token";el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:el.value})); })()`)
   await sleep(200); window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
   const switchEnd = Date.now() + 15000
   while (!/\r?\nAFTER_SWITCH_VALID\r?\n/.test((await manager.command('poll', { id: psId, cursor: 0 })).data.replace(/\x1b\[[0-9;]*m/g, ''))) { if (Date.now() > switchEnd) throw new Error('Historical terminal probes corrupted the shell prompt on tab switch'); await sleep(150) }
-  await js(`(() => { const el=document.querySelector('.unified-terminal-host .xterm-helper-textarea');el.focus();el.value="Set-Location api-sub # token";el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:el.value})); })()`)
+  await js(`(() => { const el=document.querySelector('.unified-terminal-view:not(.is-inactive) .xterm-helper-textarea');el.focus();el.value="Set-Location api-sub # token";el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:el.value})); })()`)
   await sleep(200); window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
   await wait(`document.querySelector('[id="terminal-tab-${psId}"] .terminal-task')?.textContent === 'api-sub'`, 'tab name follows cd', 15000)
   assert.match(await js(`document.querySelector('[id="terminal-tab-${psId}"]').title`), /api-sub$/)
   await click(`document.querySelector('.unified-terminal-tabs .terminal-current-folder')`)
   assert.deepEqual(openedFolders.at(-1), { id: psId, directory: path.join(workspace, 'api-sub') }, 'folder button opens the latest shell cwd after cd')
-  // The startup/exit options are folded away by default.
-  await js(`document.querySelector('.unified-terminal-options-toggle[aria-expanded="false"]')?.click(); void 0`); await sleep(150)
+  // Redraw nudges the PTY one row and back so ConPTY and the running program repaint everything.
+  await sleep(400); const resizesBeforeRedraw = terminalResizes.length
+  await click(`document.querySelector('.unified-terminal-view:not(.is-inactive) .terminal-redraw')`)
+  await wait(`true`, 'redraw click'); await sleep(500)
+  const redrawSizes = terminalResizes.slice(resizesBeforeRedraw)
+  assert.equal(redrawSizes.length, 2, 'redraw sends two PTY sizes: ' + JSON.stringify(redrawSizes))
+  assert.equal(redrawSizes[0][1], redrawSizes[1][1] - 1, 'first one row shorter'); assert.equal(redrawSizes[0][0], redrawSizes[1][0])
+  assert.equal(await js(`document.activeElement?.classList.contains('xterm-helper-textarea')`), true, 'redraw returns focus to the terminal')
+  // A long command shows the tab's activity indicator until the next prompt (OSC 7) arrives.
+  assert.equal(await js(`!!document.querySelector('[id="terminal-tab-${psId}"] .terminal-activity')`), false, 'idle shell shows no activity')
+  await js(`(() => { const el=document.querySelector('.unified-terminal-view:not(.is-inactive) .xterm-helper-textarea');el.focus();el.value="Start-Sleep -Seconds 5 # token";el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:el.value})); })()`)
+  await sleep(200); window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
+  await wait(`!!document.querySelector('[id="terminal-tab-${psId}"] .terminal-activity')`, 'a command still running after two seconds shows activity', 4500)
+  await screenshot('terminal-activity')
+  await wait(`!document.querySelector('[id="terminal-tab-${psId}"] .terminal-activity')`, 'activity indicator clears at the next prompt', 8000)
+  const tab = `document.querySelector('[id="terminal-tab-${psId}"]')`, topTab = `[...document.querySelectorAll('.companion-tabs [role="tab"]')].find(el => el.textContent.includes('Terminal'))`
+  await wait(`!!${tab}.querySelector('.terminal-done')`, 'a finished command shows done', 3000)
+  assert.equal(await js(`!!${topTab}.querySelector('.terminal-done')`), true, 'the Terminal tab above shows the finished run too')
+  await screenshot('terminal-done')
+  const typeHere = text => js(`(() => { const el=document.querySelector('.unified-terminal-view:not(.is-inactive) .terminal-pane.is-focused .xterm-helper-textarea, .unified-terminal-view:not(.is-inactive) .xterm-helper-textarea');el.focus();el.value=${JSON.stringify(text)};el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:el.value})); })()`)
+  await typeHere('#'); await wait(`!${tab}.querySelector('.terminal-done')`, 'typing in the pane clears done', 3000)
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
+  // An interactive program that is only open (bracketed paste on, waiting for input) is never active.
+  await typeHere('Write-Host -NoNewline "$([char]27)[?2004h"; Start-Sleep -Seconds 4; Write-Host -NoNewline "$([char]27)[?2004l" # token'); await sleep(200)
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
+  for (let index = 0; index < 8; index++) { await sleep(400); assert.equal(await js(`!!${tab}.querySelector('.terminal-activity, .terminal-done')`), false, 'an open, idle interactive program shows no activity') }
+  await sleep(1200)
+  // An agent TUI announces itself: Claude Code spins ◐/◑ in the title while working and shows ✳ when waiting.
+  // Opening it is not "working"; its turn is, and the end of the turn shows done although the TUI keeps running.
+  const agentScript = "Write-Host -NoNewline \"$([char]27)]0;$([char]0x2733) Claude Code$([char]7)\"; Start-Sleep -Milliseconds 1500; Write-Host -NoNewline \"$([char]27)]0;$([char]0x25D0) Fix tests$([char]7)\"; Start-Sleep -Seconds 3; Write-Host -NoNewline \"$([char]27)]0;$([char]0x2733) Fix tests$([char]7)\"; Start-Sleep -Seconds 4 # token"
+  await typeHere(agentScript); await sleep(200)
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
+  await sleep(1000)
+  assert.equal(await js(`!!${tab}.querySelector('.terminal-activity')`), false, 'an agent waiting for its first prompt is not working')
+  await wait(`!!${tab}.querySelector('.terminal-activity')`, 'the agent turn shows working', 4000)
+  await wait(`!!${tab}.querySelector('.terminal-done')`, 'the end of the agent turn shows done while the agent keeps running', 6000)
+  assert.equal(await js(`${tab}.title.includes('Finished')`), true, 'the tab tooltip says it finished')
+  await wait(`!${tab}.querySelector('.terminal-activity')`, 'the agent exiting does not restart the indicator', 6000)
+  await typeHere('#'); await wait(`!${tab}.querySelector('.terminal-done')`, 'typing clears done after the agent run', 3000)
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Backspace' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Backspace' })
+  // Compact header: Work and Terminal can fold the page title row; the one control row (tabs, model, tips, options) stays.
+  const headerToggle = `document.querySelector('.companion-header-toggle')`
+  const hostHeight = () => js(`document.querySelector('.unified-terminal-view:not(.is-inactive) .unified-terminal-host').getBoundingClientRect().height`)
+  const fullHostHeight = await hostHeight()
+  const expandedOverflow = await js(`(() => { const el = document.querySelector('.app-content'); return el.scrollHeight - el.clientHeight })()`)
+  console.log('Expanded Terminal page overflow: ' + expandedOverflow + 'px')
+  await click(headerToggle)
+  await wait(`!!document.querySelector('.companion-page.is-header-collapsed')`, 'the header collapses')
+  assert.equal(await js(`${headerToggle}.getAttribute('aria-expanded')`), 'false')
+  assert.equal(await js(`document.querySelector('.companion-page > .page-header')?.getClientRects().length ?? 0`), 0, 'the page title row folds away')
+  assert.equal(await js(`[...document.querySelectorAll('.companion-model-select, [data-companion-hints] > button, .companion-chat-header [data-terminal-options] > button')].every(el => el.getClientRects().length > 0)`), true, 'the model picker, tips and terminal options stay in the one control row')
+  assert.equal(await js(`document.querySelector('.companion-tabs').getClientRects().length > 0 && document.querySelector('.companion-focus-toggle').getClientRects().length > 0`), true, 'view tabs and focus mode stay')
+  await sleep(400); assert.ok(await hostHeight() > fullHostHeight + 50, 'the terminal gains the folded space: ' + fullHostHeight + ' -> ' + await hostHeight())
+  const overflow = await js(`(() => { const el = document.querySelector('.app-content'); return el.scrollHeight - el.clientHeight })()`)
+  assert.ok(overflow <= 1, 'the compact layout fits the window without page scrolling (overflow ' + overflow + 'px)')
+  await screenshot('compact-header-terminal')
+  await click(button('Work')); await sleep(400)
+  assert.equal(await js(`!!document.querySelector('.companion-page.is-header-collapsed')`), true, 'Work uses the compact header too')
+  assert.ok(await js(`(() => { const el = document.querySelector('.app-content'); return el.scrollHeight - el.clientHeight <= 1 && el.scrollTop === 0 })()`), 'Work fits without page scrolling too')
+  await screenshot('compact-header-work')
+  await click(button('Chat')); await sleep(300)
+  assert.equal(await js(`!document.querySelector('.companion-page.is-header-collapsed') && document.querySelector('.companion-page > .page-header').getClientRects().length > 0`), true, 'Chat always shows the full header')
+  await click(button('Terminal')); await sleep(300)
+  await window.reload()
+  await wait(`!!document.querySelector('.companion-page.is-header-collapsed') && document.querySelectorAll('.unified-terminal-tab').length === 2`, 'the compact header is remembered after reload', 20000)
+  await click(headerToggle); await wait(`!document.querySelector('.companion-page.is-header-collapsed')`, 'the header expands again')
+  assert.equal(await js(`document.querySelector('.companion-page > .page-header').getClientRects().length > 0 && document.querySelector('.companion-session-controls').getClientRects().length > 0`), true, 'expanding restores every row')
+  // Split panes: one tab holds independent shells side by side and stacked, each with its own input and lifecycle.
+  const pane = id => `document.querySelector('[data-terminal-id="${id}"]')`
+  const typeInPane = async (id, text) => {
+    await js(`(() => { const el=${pane(id)}.querySelector('.xterm-helper-textarea');el.focus();el.value=${JSON.stringify(text)};el.dispatchEvent(new InputEvent('input',{bubbles:true,inputType:'insertText',data:el.value})); })()`)
+    await sleep(200); window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
+  }
+  const paneOutput = async (id, pattern, label) => { const end = Date.now() + 15000; while (!pattern.test((await manager.command('poll', { id, cursor: 0 })).data.replace(/\x1b\[[0-9;?]*[a-zA-Z]/g, ''))) { if (Date.now() > end) throw new Error('Timed out: ' + label); await sleep(150) } }
+  const shortcut = (id, key, code) => js(`${pane(id)}.querySelector('.xterm-helper-textarea').dispatchEvent(new KeyboardEvent('keydown',{key:${JSON.stringify(key)},code:${JSON.stringify(code)},altKey:true,shiftKey:${code === 'Minus' || code === 'Equal'},bubbles:true,cancelable:true}))`)
+  const activeIs = async (id, label) => { const end = Date.now() + 5000; while ((await manager.command('state')).activeId !== id) { if (Date.now() > end) throw new Error('Timed out: ' + label); await sleep(100) } }
+  await click(`document.querySelector('[aria-label="Split right"]')`)
+  await wait(`document.querySelectorAll('.unified-terminal-view:not(.is-inactive) .terminal-pane').length === 2 && [...document.querySelectorAll('.unified-terminal-view:not(.is-inactive) .unified-terminal-footer')].every(el => el.textContent.includes('Running'))`, 'split pane running')
+  state = await manager.command('state')
+  const rightId = state.activeId
+  assert.notEqual(rightId, psId)
+  assert.deepEqual(state.tabs.find(tab => tab.id === psId).layout, { split: 'row', ratio: 0.5, first: { pane: psId }, second: { pane: rightId } })
+  assert.equal(state.sessions.find(item => item.id === rightId).directory, path.join(workspace, 'api-sub'), 'a split starts in the focused pane folder')
+  assert.equal(await js(`document.querySelectorAll('.unified-terminal-tab').length`), 2, 'splitting adds no tab')
+  await wait(`document.activeElement === ${pane(rightId)}.querySelector('.xterm-helper-textarea') && ${pane(rightId)}.classList.contains('is-focused')`, 'the new pane has focus')
+  await sleep(1000)
+  await typeInPane(rightId, "Write-Output 'PANE_RIGHT_OK' # token"); await paneOutput(rightId, /\nPANE_RIGHT_OK/, 'right pane input')
+  await typeInPane(psId, "Write-Output 'PANE_LEFT_OK' # token"); await paneOutput(psId, /\nPANE_LEFT_OK/, 'left pane input')
+  await activeIs(psId, 'typing in a pane focuses it')
+  assert.equal(/PANE_LEFT_OK/.test((await manager.command('poll', { id: rightId, cursor: 0 })).data), false, 'input reaches only its own pane')
+  assert.equal(await js(`document.querySelector('[id="terminal-tab-${psId}"] .terminal-task').textContent`), 'api-sub', 'tab label follows the focused pane')
+  // Alt+Shift+- splits the focused pane down; Alt+Arrow moves focus without reaching the shell.
+  const writesBeforeShortcut = terminalWrites.length
+  await shortcut(psId, '_', 'Minus')
+  await wait(`document.querySelectorAll('.unified-terminal-view:not(.is-inactive) .terminal-pane').length === 3`, 'Alt+Shift+- split down')
+  state = await manager.command('state'); const downId = state.activeId
+  assert.deepEqual(state.tabs.find(tab => tab.id === psId).layout, { split: 'row', ratio: 0.5, first: { split: 'column', ratio: 0.5, first: { pane: psId }, second: { pane: downId } }, second: { pane: rightId } })
+  await wait(`${pane(downId)}.querySelector('.unified-terminal-footer').textContent.includes('Running')`, 'stacked pane running')
+  await shortcut(downId, 'ArrowUp', 'ArrowUp'); await activeIs(psId, 'Alt+ArrowUp')
+  await shortcut(psId, 'ArrowRight', 'ArrowRight'); await activeIs(rightId, 'Alt+ArrowRight')
+  // The new pane's shell may answer terminal probes meanwhile; only Alt key sequences would be a leak.
+  const afterShortcut = terminalWrites.slice(writesBeforeShortcut)
+  console.log('Writes during pane shortcuts: ' + JSON.stringify(afterShortcut))
+  assert.equal(afterShortcut.some(value => /\x1b(?:[_=+-]|\[1;[34][ABCD])/.test(value)), false, 'pane shortcuts are not sent to the shells')
+  await wait(`document.activeElement === ${pane(rightId)}.querySelector('.xterm-helper-textarea')`, 'Alt+Arrow moves keyboard focus')
+  // The divider is a keyboard-operable separator; its position is saved in the host.
+  await js(`document.querySelector('.unified-terminal-view:not(.is-inactive) .terminal-divider[aria-orientation="vertical"]').focus()`)
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Right' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Right' })
+  await wait(`document.querySelector('.unified-terminal-view:not(.is-inactive) .terminal-divider[aria-orientation="vertical"]').getAttribute('aria-valuenow') === '55'`, 'keyboard divider move')
+  const ratioEnd = Date.now() + 5000
+  while ((await manager.command('state')).tabs.find(tab => tab.id === psId).layout.ratio !== 0.55) { if (Date.now() > ratioEnd) throw new Error('Divider ratio was not saved'); await sleep(100) }
+  await screenshot('terminal-split')
+  // Closing a pane ends only that shell; the remaining panes take over its area.
+  await js('window.confirm = () => true; void 0')
+  await click(`${pane(downId)}.querySelector('.terminal-pane-close')`)
+  await wait(`document.querySelectorAll('.unified-terminal-view:not(.is-inactive) .terminal-pane').length === 2`, 'pane closed')
+  state = await manager.command('state')
+  assert.equal(state.sessions.some(item => item.id === downId), false)
+  assert.deepEqual(state.tabs.find(tab => tab.id === psId).layout, { split: 'row', ratio: 0.55, first: { pane: psId }, second: { pane: rightId } })
+  // Terminal options open from a button in the control row and float over the terminal; they take no row.
+  const optionsButton = `document.querySelector('.companion-chat-header [data-terminal-options] > button')`
+  assert.equal(await js(`${optionsButton}.getAttribute('aria-expanded')`), 'false', 'terminal options start closed')
+  assert.equal(await js(`!!document.querySelector('.unified-terminal > [data-terminal-options], .unified-terminal-options')`), false, 'no options row above the terminal')
+  await click(optionsButton)
+  assert.equal(await js(`!!document.querySelector('[data-terminal-options] [role=dialog]:not([hidden]) [aria-label="Restore open terminals on startup"]') && !!document.querySelector('[data-terminal-options] [aria-label="History lines"]')`), true, 'the options panel opens with its settings')
   assert.equal(await js(`!!document.querySelector('[aria-label="Keep terminals running after exit"]')`), false)
+  await screenshot('terminal-options-open')
+  await js(`document.querySelector('[data-terminal-options] [role=dialog] input').focus()`)
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+  await wait(`${optionsButton}.getAttribute('aria-expanded') === 'false' && document.activeElement === ${optionsButton}`, 'Esc closes the options and returns focus to their button', 3000)
   await screenshot('desktop-light')
-  await click(button('Chat')); assert.equal((await manager.command('state')).sessions.length, 2)
+  await click(button('Chat')); assert.equal((await manager.command('state')).sessions.length, 3, 'two panes in the first tab and the CMD tab keep running')
   await click(button('Terminal')); assert.equal((await manager.command('state')).sessions.find(item => item.id === psId).status, 'running')
   await window.reload(); await wait(`!!document.querySelector('.companion-tabs [role="tab"][aria-selected="true"]') && document.querySelector('.companion-tabs [role="tab"][aria-selected="true"]').textContent.includes('Terminal')`, 'Terminal view restored after reload')
   await wait(`document.querySelectorAll('.unified-terminal-tab').length === 2`, 'both terminals restored')
+  await wait(`document.querySelectorAll('[id="terminal-panel-${psId}"] .terminal-pane').length === 2 && !!document.querySelector('[id="terminal-panel-${psId}"] .terminal-divider[aria-valuenow="55"]')`, 'split panes and divider restored after reload')
+  await paneOutput(rightId, /PANE_RIGHT_OK/, 'right pane keeps its shell across reload')
   assert.equal((await manager.command('state')).preferences.keepRunningOnExit, false)
   await js('document.documentElement.classList.add("dark");document.documentElement.dataset.theme="dark"'); await screenshot('desktop-dark')
   window.setSize(540, 900); await sleep(350); await screenshot('mobile-dark')
@@ -210,24 +349,25 @@ app.whenReady().then(async () => {
         })
         assert.equal(await js(`!!document.querySelector('${view === 'Work' ? '.work-sessions' : '.unified-terminal'} .companion-terminal-error')`), false, 'no invalid-size error while switching or resizing')
         await screenshot('aligned-' + view.toLowerCase() + '-' + width + '-' + (dark ? 'dark' : 'light'))
-        assert.equal(await js(`document.querySelector('[data-companion-hints]').open`), false, 'Work and Terminal help defaults to collapsed')
-        assert.ok(await js(`document.querySelector('[data-companion-hints]').getBoundingClientRect().height <= 40`))
+        assert.equal(await js(`document.querySelector('[data-companion-hints] > button').getAttribute('aria-expanded')`), 'false', 'Work and Terminal help defaults to closed')
+        assert.ok(await js(`!!document.querySelector('[data-companion-hints]').closest('.companion-chat-header')`), 'help sits in the control row, not on a row of its own')
         if (view === 'Work') {
           await js(`localStorage.setItem('companion-qa-free-error', 'stale'); window.__hintTerminal = document.querySelector('.companion-terminal:not([hidden]) .xterm')`)
           await click(`document.querySelector('button[aria-label="Refresh models"]')`)
-          await wait(`document.querySelector('[data-companion-hints]>summary').textContent.includes('Free model list unavailable')`, 'compact catalogue error summary')
-          assert.equal(await js(`document.querySelector('[data-companion-hints]').open`), false, 'a refresh error never expands help automatically')
+          await wait(`document.querySelector('[data-companion-hints] > button').title.includes('Free model list unavailable') && !!document.querySelector('[data-companion-hints] .header-popover-badge')`, 'catalogue error shown as a dot and tooltip')
+          assert.equal(await js(`document.querySelector('[data-companion-hints] > button').getAttribute('aria-expanded')`), 'false', 'a refresh error never opens help automatically')
           await screenshot('hints-folded-' + width + '-' + (dark ? 'dark' : 'light'))
-          await js(`document.querySelector('[data-companion-hints]>summary').focus()`)
-          assert.equal(await js(`document.activeElement === document.querySelector('[data-companion-hints]>summary')`), true)
+          await js(`document.querySelector('[data-companion-hints] > button').focus()`)
+          assert.equal(await js(`document.activeElement === document.querySelector('[data-companion-hints] > button')`), true)
           window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Return' })
           window.webContents.sendInputEvent({ type: 'char', keyCode: '\r' })
           window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Return' })
-          await wait(`document.querySelector('[data-companion-hints]').open`, 'keyboard expands details', 3000)
-          assert.ok(await js(`document.querySelector('[data-companion-hints]').innerText.includes('QA_FREE_CATALOGUE_UNAVAILABLE') && document.querySelector('[data-companion-hints]').innerText.includes('Drag folders')`))
+          await wait(`document.querySelector('[data-companion-hints] > button').getAttribute('aria-expanded') === 'true'`, 'keyboard opens help', 3000)
+          assert.ok(await js(`(() => { const panel = document.querySelector('[data-companion-hints] [role=dialog]'); return !panel.hidden && panel.innerText.includes('QA_FREE_CATALOGUE_UNAVAILABLE') && panel.innerText.includes('Drag folders') })()`))
           assert.equal(await js(`document.documentElement.scrollWidth > innerWidth + 1`), false)
           await screenshot('hints-expanded-' + width + '-' + (dark ? 'dark' : 'light'))
-          await click(`document.querySelector('[data-companion-hints]>summary')`)
+          window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' }); window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Escape' })
+          await wait(`document.querySelector('[data-companion-hints] > button').getAttribute('aria-expanded') === 'false' && document.activeElement === document.querySelector('[data-companion-hints] > button')`, 'Esc closes help and returns focus', 3000)
           assert.equal(await js(`window.__hintTerminal === document.querySelector('.companion-terminal:not([hidden]) .xterm')`), true, 'folding help preserves the live terminal')
           await js(`localStorage.removeItem('companion-qa-free-error')`)
           await click(`document.querySelector('button[aria-label="Refresh models"]')`)
@@ -274,7 +414,7 @@ app.whenReady().then(async () => {
   const saved = await manager.command('state'); assert.equal(saved.preferences.restoreOnStartup, false)
   assert.equal(errors.filter(message => message.includes('QA_FULLSCREEN_DENIED')).length, 1, 'expected fullscreen rejection is logged once')
   assert.deepEqual(errors.filter(message => !message.includes('QA_FULLSCREEN_DENIED')), [])
-  fs.writeFileSync(path.join(scratch, 'report.json'), JSON.stringify({ passed: true, checks: ['third Terminal tab', 'Terminal tabs show the current folder name', 'top-left folder button follows active terminal and cd', 'OpenCode opens a folder-bound Work session', 'temporary Work polling failures reconnect to the same running native process', 'PowerShell keyboard Unicode input', 'CMD second tab', 'tab selection', 'history replay leaves shell input clean', 'chat navigation retains processes', 'startup restore persists and background retention is removed', 'Work and Terminal outer geometry matches in both themes and widths', 'terminal grid fits without clipping or invalid resize errors', 'real OpenCode server death can restart a responsive TUI', 'renderer reload resumes tabs', 'explicit close', 'OpenCode native TUI', 'Chinese labels', 'desktop/mobile light/dark', 'Terminal and Work native fullscreen with unchanged terminal DOM and native sessions', 'fullscreen button and Escape exits restore keyboard focus', 'fullscreen Escape is not forwarded to PowerShell', 'Work dialogs remain usable in fullscreen', 'Work/Terminal switching retains fullscreen; Chat exits', 'fullscreen rejection remains usable and can retry', 'Chinese focus controls and external fullscreen exit', 'no page overflow or unexpected renderer errors'] }, null, 2))
+  fs.writeFileSync(path.join(scratch, 'report.json'), JSON.stringify({ passed: true, checks: ['third Terminal tab', 'Terminal tabs show the current folder name', 'top-left folder button follows active terminal and cd', 'OpenCode opens a folder-bound Work session', 'temporary Work polling failures reconnect to the same running native process', 'PowerShell keyboard Unicode input', 'CMD second tab', 'tab selection', 'history replay leaves shell input clean', 'chat navigation retains processes', 'startup restore persists and background retention is removed', 'Work and Terminal outer geometry matches in both themes and widths', 'terminal grid fits without clipping or invalid resize errors', 'real OpenCode server death can restart a responsive TUI', 'renderer reload resumes tabs', 'split right/down panes with independent input, Alt+Arrow focus, keyboard divider, pane close and layout restore after reload', 'explicit close', 'OpenCode native TUI', 'Chinese labels', 'desktop/mobile light/dark', 'Terminal and Work native fullscreen with unchanged terminal DOM and native sessions', 'fullscreen button and Escape exits restore keyboard focus', 'fullscreen Escape is not forwarded to PowerShell', 'Work dialogs remain usable in fullscreen', 'Work/Terminal switching retains fullscreen; Chat exits', 'fullscreen rejection remains usable and can retry', 'Chinese focus controls and external fullscreen exit', 'no page overflow or unexpected renderer errors'] }, null, 2))
   console.log('PASS: unified Terminal UI, real shell input, focus mode, tab lifecycle, settings persistence and responsive themes')
 }).catch(async error => { console.error(error); if (window) await screenshot('failure'); fs.writeFileSync(path.join(scratch, 'failure.json'), JSON.stringify({ error: error.message, rendererErrors: errors }, null, 2)); process.exitCode = 1 }).finally(async () => {
   if (manager) { try { const state = await manager.command('state'); for (const session of state.sessions) await manager.command('close', { id: session.id }); await manager.command('preferences', { preferences: { restoreOnStartup: true, keepRunningOnExit: false } }); await manager.detach() } catch (error) { console.error('Cleanup:', error.message) } }

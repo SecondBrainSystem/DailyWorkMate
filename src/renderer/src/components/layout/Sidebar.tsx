@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow'
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useTranslation } from 'react-i18next'
@@ -22,7 +23,7 @@ function Tooltip({ label, children }: { label: string; children: React.ReactNode
 
 export function Sidebar() {
   const { t } = useTranslation()
-  const { sidebarCollapsed, toggleSidebar } = useSettingsStore()
+  const { sidebarCollapsed, toggleSidebar } = useSettingsStore(useShallow(state => ({ sidebarCollapsed: state.sidebarCollapsed, toggleSidebar: state.toggleSidebar })))
   const [narrow, setNarrow] = useState(() => window.matchMedia('(max-width: 767px)').matches)
   useEffect(() => {
     const query = window.matchMedia('(max-width: 767px)')

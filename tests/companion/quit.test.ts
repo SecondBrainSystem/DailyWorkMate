@@ -14,11 +14,41 @@ test('repeated quit requests wait for cleanup and commit once', async () => {
   quit(event); assert.equal(prevented, 2)
 })
 
-test('cancel leaves processes intact and cleanup failure permits a later retry', async () => {
-  let accept = false, fail = true, cleaned = 0, committed = 0, cancellations = 0
-  const quit = createQuitController({ confirm: async () => accept, cleanup: async () => { cleaned++; if (fail) throw new Error('still running') }, commit: () => { committed++ }, cancel: () => { cancellations++ } })
+test('declining keeps every service running and only a confirmed quit is marked as quitting', async () => {
+  let accept = false, cleaned = 0, committed = 0, cancellations = 0, begun = 0
+  const quit = createQuitController({ confirm: async () => { assert.equal(begun, 0, 'quitting is not announced while the user decides'); return accept },
+    begin: () => { begun++ }, cleanup: async () => { cleaned++ }, commit: () => { committed++ }, cancel: () => { cancellations++ } })
   const event = { preventDefault: () => {} }
-  quit(event); await tick(); assert.equal(cleaned, 0)
-  accept = true; quit(event); await tick(); assert.equal(committed, 0); assert.equal(cancellations, 2)
-  fail = false; quit(event); await tick(); assert.equal(committed, 1); assert.equal(cleaned, 2)
+  quit(event); await tick()
+  assert.equal(cleaned, 0); assert.equal(begun, 0); assert.equal(cancellations, 1)
+  accept = true; quit(event); await tick()
+  assert.equal(begun, 1); assert.equal(cleaned, 1); assert.equal(committed, 1)
+})
+
+test('cleanup failure is reported but the confirmed quit still finishes', async () => {
+  const failures: unknown[] = []
+  let committed = 0, cancelled = 0
+  const quit = createQuitController({ confirm: async () => true, cleanup: async () => { throw new Error('still running') },
+    cleanupFailed: error => { failures.push(error) }, commit: () => { committed++ }, cancel: () => { cancelled++ } })
+  quit({ preventDefault: () => {} }); await tick()
+  assert.equal(committed, 1); assert.equal(cancelled, 0)
+  assert.match(String(failures[0]), /still running/)
+})
+
+test('a confirmation error cancels before cleanup', async () => {
+  let cleaned = 0
+  const errors: unknown[] = []
+  const quit = createQuitController({ confirm: async () => { throw new Error('dialog failed') }, cleanup: async () => { cleaned++ }, commit: () => assert.fail('unexpected commit'), cancel: error => { errors.push(error) } })
+  quit({ preventDefault: () => {} }); await tick()
+  assert.equal(cleaned, 0); assert.match(String(errors[0]), /dialog failed/)
+})
+
+test('a committed quit that is blocked elsewhere ends the process instead of staying open without services', async () => {
+  let exits = 0, prevented = 0
+  const quit = createQuitController({ confirm: async () => true, cleanup: async () => {}, commit: () => {}, cancel: () => assert.fail('unexpected cancellation'), exit: () => { exits++ }, exitDelay: 5 })
+  quit({ preventDefault: () => { prevented++ } }); await tick()
+  quit({ preventDefault: () => { prevented++ } })
+  assert.equal(prevented, 1, 'after commit the quit is no longer intercepted')
+  await new Promise(resolve => setTimeout(resolve, 20))
+  assert.equal(exits, 1)
 })

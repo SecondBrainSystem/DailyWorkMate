@@ -32,7 +32,7 @@ before(async () => {
             getConfig:()=>({...DEFAULT_CONFIG,proxyPort:11434,proxyHost:'127.0.0.1',retryCount:0,autoStartProxy:false,ollamaRouting:{...DEFAULT_CONFIG.ollamaRouting,forceModel:true,model:'public-only-model',providerId:'unavailable-public-node',autoSelectUrl:false}}),getSessionConfig:()=>DEFAULT_CONFIG.sessionConfig,
             getProviders:()=>state.providers,getProviderById:id=>state.providers.find(value=>value.id===id),getEffectiveModels:id=>(state.providers.find(value=>value.id===id)?.supportedModels||[]).map(model=>({displayName:model,actualModelId:model})),
             getAccountsByProviderId:id=>state.accounts.filter(value=>value.providerId===id),getAccountById:id=>state.accounts.find(value=>value.id===id),updateAccount:(id,updates)=>{state.accounts=state.accounts.map(value=>value.id===id?{...value,...updates}:value)},
-            addLog:(...args)=>state.logs.push(args),recordRequestInStats:(...args)=>state.stats.push(args),recordTokenUsage:(...args)=>state.tokens.push(args),
+            addLog:(...args)=>state.logs.push(args),recordRequestInStats:(...args)=>state.stats.push(args),recordAccountUsage:id=>{state.accounts=state.accounts.map(value=>value.id===id?{...value,requestCount:(value.requestCount||0)+1,lastUsed:Date.now()}:value)},updateProvider:()=>null,recordTokenUsage:(...args)=>state.tokens.push(args),
             addRequestLog:log=>{const entry={...log,id:String(state.requests.length)};state.requests.push(entry);return entry},updateRequestLog:(id,updates)=>{state.requests=state.requests.map(value=>value.id===id?{...value,...updates}:value)},
           };` }))
     } }],

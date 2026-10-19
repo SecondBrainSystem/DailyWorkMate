@@ -10,6 +10,7 @@ import { closeAllTerminalProcesses, terminalSpawner } from './terminalProcess'
 import { shouldCloseWorkTerminalsForNavigation } from './terminalLifecycle'
 import { TerminalClient } from '../terminal/client'
 import { managedRuntimeExecutable } from './runtimeUpdates'
+import { startReapingStaleProcesses } from './processRegistry'
 import { OpenCodeRuntimeUpdates } from './runtimeUpdates'
 import { configureOpenCodeFreeModelCache, getOpenCodeFreeModels } from './opencodeModels'
 import { SpeechService } from './speech'
@@ -17,7 +18,7 @@ import { storeManager } from '../store/store'
 import { resolveModelConnection } from '../inference/modelConnection'
 import { listWorkspaceFiles, readWorkspaceFile, resolveWorkspacePath } from './workspaces'
 import { openLocalDirectory } from './folders'
-import type { CompanionAPI, CompanionSettings, CompanionMessage, AgentInput } from '../../shared/companion'
+import type { CompanionAPI, CompanionSettings, CompanionMessage, AgentInput, CompanionGetOptions } from '../../shared/companion'
 import { agentEngine, boundedText, validateSettings, type AgentEngine } from '../../shared/companion'
 import { terminalId, validateTerminalCreate, type TerminalState } from '../../shared/terminal'
 
@@ -42,6 +43,8 @@ export async function companionPsmuxDirectories() {
 export function registerCompanionHandlers(window: BrowserWindow) {
   const storage = new CompanionStorage()
   companionHome = storage.home
+  // Helpers left by a crashed run are stopped before any new one starts (launches wait for this).
+  void startReapingStaleProcesses(storage.home)
   const bundledExecutable = app.isPackaged ? path.join(process.resourcesPath, 'companion-runtime', 'opencode.exe') : runtimeExecutable(storage.home)
   const agent = new OpenCodeService(storage, () => storeManager.getConfig(), bundledExecutable, model => resolveModelConnection(model, 'opencode'))
   const claudeAgent = new ClaudeCodeAgent(storage, () => storeManager.getConfig(), undefined, model => resolveModelConnection(model, 'claude'))
@@ -103,13 +106,16 @@ export function registerCompanionHandlers(window: BrowserWindow) {
   let installing = false
   const stopUpdates = updates.startPeriodicChecks()
   const speech = new SpeechService()
+  /** Avatar images (up to ~27 MB encoded) and legacy messages are sent only when asked for. */
   const snapshot = async (includeAssets = true) => {
     let avatarModelUrl = '', avatarModelError = ''
     try { if (includeAssets) avatarModelUrl = await storage.avatarModelUrl() }
     catch (error) { avatarModelError = error instanceof Error ? error.message : 'Cannot load the saved 3D avatar'; console.error('[Companion] 3D avatar:', avatarModelError) }
     let avatarUrl = ''
-    try { if (includeAssets) avatarUrl = await storage.avatarUrl() } catch (error) { avatarModelError ||= error instanceof Error ? error.message : 'Cannot load the saved avatar' }
-    return { ...(await storage.get()), home: storage.home, avatarUrl, avatarModelUrl, assetsIncluded: includeAssets, warnings: [...storage.warnings],
+    try { if (includeAssets) avatarUrl = await storage.avatarUrl() }
+    catch (error) { avatarModelError ||= error instanceof Error ? error.message : 'Cannot load the saved avatar'; console.error('[Companion] Avatar:', avatarModelError) }
+    const saved = await storage.get()
+    return { ...saved, messages: includeAssets ? saved.messages : [], home: storage.home, avatarUrl, avatarModelUrl, assetsIncluded: includeAssets, warnings: [...storage.warnings],
       ...(avatarModelError ? { avatarModelError } : {}), runtimeAvailable: agent.available(), claudeCode: claudeAgent.status(), accessibilitySupportEnabled: app.isAccessibilitySupportEnabled() }
   }
   const operations: CompanionAPI = {
@@ -147,7 +153,10 @@ export function registerCompanionHandlers(window: BrowserWindow) {
       if (typeof forceRefresh !== 'boolean') throw new Error('Invalid model refresh request')
       return getOpenCodeFreeModels(forceRefresh)
     },
-    get: snapshot,
+    get: async (options?: CompanionGetOptions) => {
+      if (options !== undefined && (!options || typeof options !== 'object' || (options.assets !== undefined && typeof options.assets !== 'boolean'))) throw new Error('Invalid companion request')
+      return snapshot(options?.assets ?? true)
+    },
     saveSettings: async (settings: CompanionSettings) => { await storage.saveSettings(settings); return snapshot(false) },
     saveMessages: (messages: CompanionMessage[]) => storage.saveMessages(messages),
     pickAvatar: async () => {
@@ -165,7 +174,7 @@ export function registerCompanionHandlers(window: BrowserWindow) {
     addWorkspace: async () => {
       const result = await dialog.showOpenDialog(window, { properties: ['openDirectory'] })
       if (!result.canceled && result.filePaths[0]) { await storage.addWorkspace(result.filePaths[0]); await refreshAccess(); await manager.synchronize() }
-      return snapshot()
+      return snapshot(false)
     },
     inspectFolders: paths => storage.inspectFolders(paths),
     importWorkspaces: async input => { await storage.importWorkspaces(input); await refreshAccess(); await manager.synchronize(); return snapshot(false) },
@@ -178,9 +187,9 @@ export function registerCompanionHandlers(window: BrowserWindow) {
       await openLocalDirectory(session.directory, directory => shell.openPath(directory))
     },
     // Only Work tabs whose folder permissions changed reconnect; the rest keep running.
-    updateWorkspace: async (id: string, writable: boolean | null) => { await storage.updateWorkspace(id, writable); await refreshAccess(); await manager.synchronize(); return snapshot() },
-    saveWorkspaceGroup: async input => { await storage.saveWorkspaceGroup(input); await refreshAccess(); await manager.synchronize(); return snapshot() },
-    deleteWorkspaceGroup: async id => { await storage.deleteWorkspaceGroup(id); await refreshAccess(); await manager.synchronize(); return snapshot() },
+    updateWorkspace: async (id: string, writable: boolean | null) => { await storage.updateWorkspace(id, writable); await refreshAccess(); await manager.synchronize(); return snapshot(false) },
+    saveWorkspaceGroup: async input => { await storage.saveWorkspaceGroup(input); await refreshAccess(); await manager.synchronize(); return snapshot(false) },
+    deleteWorkspaceGroup: async id => { await storage.deleteWorkspaceGroup(id); await refreshAccess(); await manager.synchronize(); return snapshot(false) },
     listFiles: async (id: string, relativePath: string) => listWorkspaceFiles(await storage.grant(id), relativePath),
     readFile: async (id: string, relativePath: string) => readWorkspaceFile(await storage.grant(id), relativePath),
     transcribe: async (audio: Uint8Array, mime: string) => speech.transcribe((await storage.get()).settings, audio, mime),
@@ -196,10 +205,10 @@ export function registerCompanionHandlers(window: BrowserWindow) {
       if (input.systemPrompt !== undefined) boundedText(input.systemPrompt, 'system prompt', 100000)
       const engine = agentEngine(input.engine)
       // One chat task at a time across engines; OpenCode's attached Work tabs do not count.
-      if (engine === 'claude' ? (await agent.poll()).running : claudeAgent.isBusy()) throw new Error('An agent task is already running or stopping')
-      const started = engine === 'claude' ? await claudeAgent.start(input) : await agent.start(input)
+      if (agent.agentBusy() || claudeAgent.isBusy()) throw new Error('An agent task is already running or stopping')
+      // Route stop requests to this engine while it is still starting, so startup can be cancelled.
       activeEngine = engine
-      return started
+      return engine === 'claude' ? claudeAgent.start(input) : agent.start(input)
     },
     pollAgent: () => activeEngine === 'claude' ? claudeAgent.poll() : agent.poll(),
     stopAgent: () => activeEngine === 'claude' ? claudeAgent.stop() : agent.stop(),
@@ -221,9 +230,10 @@ export function registerCompanionHandlers(window: BrowserWindow) {
     })
   }
   let cleaning: Promise<void> | undefined
+  // Runs once the quit is committed (or the window is gone); every step runs even if another fails.
   const cleanup = () => cleaning ||= (async () => {
-    stopUpdates(); speech.dispose()
-    const results = await Promise.allSettled([terminal.close(), claudeTerminal.close(), claudeAgent.stop(), manager.detach(), closeAllTerminalProcesses()])
+    const results = await Promise.allSettled([(async () => stopUpdates())(), (async () => speech.dispose())(),
+      terminal.close(), claudeTerminal.close(), claudeAgent.stop(), manager.detach(), closeAllTerminalProcesses()])
     const failures = results.filter(result => result.status === 'rejected')
     if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'Unable to stop all companion processes')
   })().catch(error => { cleaning = undefined; throw error })

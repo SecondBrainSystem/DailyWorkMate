@@ -10,6 +10,7 @@ import { proxyConnection, type ProxyConnection } from './opencodeConfig.ts'
 import type { ModelConnection } from '../../shared/modelConnection'
 import { workspaceAccess } from './workspaceGroups.ts'
 import { closeTerminalProcess, type TerminalProcess, type TerminalSpawn } from './terminalProcess.ts'
+import { staleProcessesReaped, trackProcess } from './processRegistry.ts'
 
 /** How to start Claude Code: a native executable, or npm's script run by this app's own Node runtime. */
 export interface ClaudeCodeLaunch { file: string; prefix: string[]; display: string; env?: Record<string, string> }
@@ -253,9 +254,13 @@ export class ClaudeCodeAgent {
     await prepareClaudeConfig(this.configDir)
     const connection = this.resolveConnection ? await this.resolveConnection(model) : this.getProxyConfig()
     const selectedModel = 'model' in connection ? connection.model : model
+    await staleProcessesReaped(this.storage.home)
     if (attempt !== this.attempt) throw new Error('Agent task cancelled')
     const args = claudeCodeArgs({ model: selectedModel, scope, sessionId, resume, print: true, systemPrompt: [persona, workspaceInstructions(scope, plainChat, group?.name)].filter(Boolean).join('\n\n') })
+    const spawnedAfter = Date.now()
     const child = spawn(launch.file, [...launch.prefix, ...args], { cwd: scope.directory, env: claudeCodeEnvironment(process.env, connection, model, this.configDir, launch), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
+    // The session ID is on the command line, so a leftover from a crash is recognized at the next start.
+    trackProcess(this.storage.home, child, { kind: 'claude-code', executable: launch.file, marker: sessionId, spawnedAfter, spawnedBefore: Date.now(), group: false })
     this.child = child
     const state = new ClaudeStreamState()
     const publicId = sessionPrefix(sessionScope) + sessionId

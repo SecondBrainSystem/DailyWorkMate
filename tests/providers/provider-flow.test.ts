@@ -99,8 +99,8 @@ test('DeepSeek persisted model overrides are migrated away from old built-in ali
 
   assert.match(storeSource, /p\.id === 'deepseek'/)
   assert.match(storeSource, /sanitizeDeepSeekModelOverrides/)
-  assert.match(storeSource, /supportedModels: builtinConfig\.supportedModels/)
-  assert.match(storeSource, /modelMappings: builtinConfig\.modelMappings/)
+  // Builtin fields (including models) are refreshed by the single conversion in providers/builtin/index.ts.
+  assert.match(storeSource, /refreshBuiltinProvider\(p, builtinConfig\)/)
 })
 
 test('DeepSeek feature aliases are seeded as global model mappings', () => {
@@ -521,8 +521,8 @@ test('built-in model reset restores source defaults instead of stale persisted p
   )
 
   assert.doesNotMatch(source, /shouldUseBuiltinModels/)
-  assert.match(source, /supportedModels: builtinConfig\.supportedModels/)
-  assert.match(source, /modelMappings: builtinConfig\.modelMappings/)
+  // Reset asks the shared conversion for the definition's models (resetModels = true).
+  assert.match(source, /refreshBuiltinProvider\(provider, builtinConfig, true\)/)
   assert.match(source, /resetModels\(providerId: string\): EffectiveModel\[\][\s\S]*BUILTIN_PROVIDERS\.find/)
   assert.match(source, /resetModels\(providerId: string\): EffectiveModel\[\][\s\S]*this\.store!\.set\('providers', providers\)/)
 })
@@ -579,7 +579,9 @@ test('built-in provider sync keeps credential field updates on existing provider
     'utf8',
   )
 
-  assert.match(source, /credentialFields: builtinConfig\.credentialFields/)
+  assert.match(source, /refreshBuiltinProvider\(p, builtinConfig\)/)
+  const builtinSource = readFileSync(join(root, 'src/main/providers/builtin/index.ts'), 'utf8')
+  assert.match(builtinSource, /credentialFields: definition\.credentialFields/)
 })
 
 test('DeepSeek forwarder preserves requested model aliases for response parsing semantics', () => {

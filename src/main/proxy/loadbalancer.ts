@@ -5,10 +5,38 @@ import { isOllamaModelUsable } from '../../shared/ollamaAvailability'
  * Implements Round Robin and Fill First strategies
  */
 
-import { Account, Provider, LoadBalanceStrategy, UpstreamKind } from '../store/types'
+import { Account, AppConfig, EffectiveModel, Provider, LoadBalanceStrategy, UpstreamKind } from '../store/types'
 import { AccountSelection } from './types'
 import { storeManager } from '../store/store'
 import { findModelMapping } from '../../shared/modelMapping'
+
+/**
+ * One consistent read of routing state. Selecting an account touches every provider, its models
+ * and its accounts; reading each from the store per candidate cost O(models x providers^2) copies
+ * and decrypted credentials repeatedly. A snapshot reads each piece at most once.
+ */
+export interface RoutingSnapshot {
+  readonly providers: readonly Provider[]
+  readonly config: AppConfig
+  models(providerId: string): readonly EffectiveModel[]
+  accounts(providerId: string, includeCredentials: boolean): readonly Account[]
+}
+
+export function createRoutingSnapshot(): RoutingSnapshot {
+  const models = new Map<string, readonly EffectiveModel[]>()
+  const accounts = new Map<string, readonly Account[]>()
+  const memo = <T>(cache: Map<string, T>, key: string, read: () => T): T => {
+    if (!cache.has(key)) cache.set(key, read())
+    return cache.get(key) as T
+  }
+  return {
+    providers: storeManager.getProviders(),
+    config: storeManager.getConfig(),
+    models: providerId => memo(models, providerId, () => storeManager.getEffectiveModels(providerId)),
+    accounts: (providerId, includeCredentials) => memo(accounts, `${includeCredentials}:${providerId}`,
+      () => storeManager.getAccountsByProviderId(providerId, includeCredentials)),
+  }
+}
 
 /**
  * Load Balancer
@@ -68,7 +96,9 @@ export class LoadBalancer {
     excludedAccountIds: readonly string[] = [],
     advance = true,
   ): AccountSelection | null {
-    const available = this.getAvailableAccounts(model, preferredProviderId, strategy === 'failover', upstreamKind)
+    // Quarantined accounts are not pre-excluded: when every account is quarantined, the
+    // least-failed one is still tried instead of failing the request outright.
+    const available = this.getAvailableAccounts(createRoutingSnapshot(), model, preferredProviderId, false, upstreamKind, true)
       .filter(candidate => !excludedAccountIds.includes(candidate.account.id))
     const healthy = available.filter(candidate => !this.isAccountInFailure(candidate.account.id))
     // Prefer healthy nodes in every strategy. If there is only one node, allow an
@@ -101,54 +131,40 @@ export class LoadBalancer {
    * Get available accounts list
    */
   private getAvailableAccounts(
+    snapshot: RoutingSnapshot,
     model: string,
     preferredProviderId?: string,
     excludeFailed: boolean = false,
     upstreamKind?: UpstreamKind,
+    includeCredentials = false,
   ): AccountSelection[] {
-    const providers = storeManager.getProviders().filter(p =>
-      p.enabled && (!upstreamKind || p.upstreamKind === upstreamKind)
-    )
-    const candidates: AccountSelection[] = []
-
-    for (const provider of providers) {
-      if (preferredProviderId && provider.id !== preferredProviderId) {
-        continue
-      }
-
-      if (!this.providerSupportsModel(provider, model)) {
-        continue
-      }
-
-      const accounts = storeManager.getAccountsByProviderId(provider.id, true)
-        .filter(account => this.isAccountAvailable(account) || (provider.upstreamKind === 'ollama' && account.status === 'error' && Boolean(provider.supportedModels?.length) && Date.now() - (provider.lastStatusCheck || 0) >= 60000))
-        .filter(account => !excludeFailed || !this.isAccountInFailure(account.id))
-
-
-      for (const account of accounts) {
-        candidates.push({
-          account,
-          provider,
-          actualModel: this.mapModel(model, provider),
-        })
-      }
-    }
-
-    return candidates
+    return snapshot.providers
+      .filter(provider => provider.enabled && (!upstreamKind || provider.upstreamKind === upstreamKind)
+        && (!preferredProviderId || provider.id === preferredProviderId)
+        && this.providerSupportsModel(snapshot, provider, model))
+      .flatMap(provider => {
+        const accounts = snapshot.accounts(provider.id, includeCredentials)
+          .filter(account => this.isAccountAvailable(account) || (provider.upstreamKind === 'ollama' && account.status === 'error' && Boolean(provider.supportedModels?.length) && Date.now() - (provider.lastStatusCheck || 0) >= 60000))
+          .filter(account => !excludeFailed || !this.isAccountInFailure(account.id))
+        if (!accounts.length) return []
+        // The mapping depends only on the provider, not on the account.
+        const actualModel = this.mapModel(snapshot, model, provider)
+        return accounts.map(account => ({ account, provider, actualModel }))
+      })
   }
 
   /**
    * Check if provider supports model
    */
-  private providerSupportsModel(provider: Provider, model: string): boolean {
-    const effectiveModels = storeManager.getEffectiveModels(provider.id)
+  private providerSupportsModel(snapshot: RoutingSnapshot, provider: Provider, model: string): boolean {
+    const effectiveModels = snapshot.models(provider.id)
     if (effectiveModels.length === 0) {
       // An empty Ollama catalog also represents unscanned or fully disabled nodes.
       return provider.upstreamKind !== 'ollama' && !provider.supportedModels?.length
     }
 
     if (provider.upstreamKind === 'ollama') {
-      const mapping = findModelMapping(model, storeManager.getConfig().modelMappings)
+      const mapping = findModelMapping(model, snapshot.config.modelMappings)
       if (mapping?.preferredProviderId && mapping.preferredProviderId !== provider.id) return false
       const requested = model.toLowerCase()
       const actual = (mapping?.actualModel || model).toLowerCase()
@@ -171,8 +187,7 @@ export class LoadBalancer {
       return true
     }
 
-    const config = storeManager.getConfig()
-    const globalMapping = findModelMapping(model, config.modelMappings)
+    const globalMapping = findModelMapping(model, snapshot.config.modelMappings)
     if (globalMapping) {
       if (globalMapping.preferredProviderId) {
         if (globalMapping.preferredProviderId === provider.id) {
@@ -217,9 +232,8 @@ export class LoadBalancer {
   /**
    * Map model name
    */
-  private mapModel(model: string, provider: Provider): string {
-    
-    const effectiveModels = storeManager.getEffectiveModels(provider.id)
+  private mapModel(snapshot: RoutingSnapshot, model: string, provider: Provider): string {
+    const effectiveModels = snapshot.models(provider.id)
     const effectiveModel = effectiveModels.find(m => 
       m.displayName.toLowerCase() === model.toLowerCase()
     )
@@ -228,8 +242,7 @@ export class LoadBalancer {
       return effectiveModel.actualModelId
     }
 
-    const config = storeManager.getConfig()
-    const mapping = findModelMapping(model, config.modelMappings)
+    const mapping = findModelMapping(model, snapshot.config.modelMappings)
 
     if (mapping && (!mapping.preferredProviderId || mapping.preferredProviderId === provider.id)) {
       const actualModel = mapping.actualModel
@@ -311,28 +324,18 @@ export class LoadBalancer {
   /**
    * Get available account count
    */
-  getAvailableAccountCount(model: string, providerId?: string, excludeFailed = false): number {
-    return this.getAvailableAccounts(model, providerId, excludeFailed).length
+  getAvailableAccountCount(model: string, providerId?: string, excludeFailed = false, snapshot = createRoutingSnapshot()): number {
+    return this.getAvailableAccounts(snapshot, model, providerId, excludeFailed).length
   }
 
   /**
    * Get all available models
    */
   getAvailableModels(): string[] {
-    const providers = storeManager.getProviders().filter(p => p.enabled)
-    const models = new Set<string>()
-
-    for (const provider of providers) {
-      const accounts = storeManager.getAccountsByProviderId(provider.id)
-        .filter(account => this.isAccountAvailable(account))
-
-      if (accounts.length > 0) {
-        const effectiveModels = storeManager.getEffectiveModels(provider.id)
-        effectiveModels.forEach(m => models.add(m.displayName))
-      }
-    }
-
-    return [...models]
+    const snapshot = createRoutingSnapshot()
+    return [...new Set(snapshot.providers
+      .filter(provider => provider.enabled && snapshot.accounts(provider.id, false).some(account => this.isAccountAvailable(account)))
+      .flatMap(provider => snapshot.models(provider.id).map(model => model.displayName)))]
   }
 }
 

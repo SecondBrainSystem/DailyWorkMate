@@ -1,6 +1,9 @@
-import test from 'node:test'
+import test, { before } from 'node:test'
 import assert from 'node:assert/strict'
 import { readChatCompletionStream } from '../../src/renderer/src/lib/chatClient.ts'
+import { i18nReady } from './i18nSetup.ts'
+
+before(() => i18nReady)
 
 test('chat accepts multiline SSE and CR framing split across UTF-8 bytes', async () => {
   const encoded = new TextEncoder().encode('\uFEFF:keep-alive\rdata: {"choices":\rdata: [{"delta":{"content":"你好"},"finish_reason":"stop"}]}\r\rdata: [DONE]\r\r')

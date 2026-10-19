@@ -125,8 +125,7 @@ function formatBytes(bytes: number): string {
 
 
 export function Chat() {
-  const { t, i18n } = useTranslation()
-  const chinese = i18n.language.startsWith('zh')
+  const { t } = useTranslation()
   const [restoredState] = useState(() => loadPersistedChatState())
   const [workspaceSnapshot, setWorkspaceSnapshot] = useState<CompanionSnapshot | null>(null)
   const [agentState, setAgentState] = useState(() => ({ selection: workspaceSelectionFromState(restoredState), sessionId: restoredState.agentSessionId || '', access: restoredState.agentWorkspaceAccess || '' }))
@@ -236,6 +235,11 @@ export function Chat() {
     } catch (loadError) {
       console.warn('[Chat] History initialization failed:', loadError)
       if (mountedRef.current && initializeVersionRef.current === version) {
+        // The local backup has no image data. Saving it under its own id means it can never
+        // overwrite the complete copy that history may still hold.
+        if (restoredState.omittedImageIds?.length && snapshotRef.current.conversationId === restoredState.conversationId) {
+          applyConversation(createConversation({ ...restoredState, conversationId: undefined, createdAt: undefined, omittedImageIds: undefined }))
+        }
         setHistoryError(t('chat.history.loadFailed')); setStorageWarning(true)
         historyReadyRef.current = true; setHistoryReady(true)
       }
@@ -361,7 +365,7 @@ export function Chat() {
   const generateAssistant = async (history: ChatMessage[], forceNewSession = false) => {
     if (!canVerifyModel || !historyReadyRef.current || historyBusyRef.current || abortControllerRef.current || fileReadRef.current) return
     if (agentState.selection.workspaceId && history[history.length - 1]?.attachments?.some(file => file.kind === 'image')) {
-      setError(chinese ? '工作区聊天暂不支持图片附件。请移除图片，或选择“不访问工作区”后发送。' : 'Workspace chat does not support image attachments yet. Remove the images or select “No workspace access”.')
+      setError(t('chat.workspace.imagesUnsupported'))
       return
     }
 
@@ -399,7 +403,7 @@ export function Chat() {
       setVerifyingModel(false)
       if (agentState.selection.workspaceId) {
         window.clearTimeout(timeout)
-        const grants = await window.electronAPI.companion.get()
+        const grants = await window.electronAPI.companion.get({ assets: false })
         if (controller.signal.aborted) return
         setWorkspaceSnapshot(grants)
         const access = chatWorkspaceIdentity(grants, agentState.selection, activeModel, requestSystemPrompt)
@@ -475,7 +479,7 @@ export function Chat() {
     const content = input.trim() || (attachments.length > 0 ? t('chat.defaultAttachmentPrompt') : '')
     if (!content || !canVerifyModel || !historyReadyRef.current || historyBusyRef.current || isLoadingModels || abortControllerRef.current || fileReadRef.current) return
     if (agentState.selection.workspaceId && attachments.some(file => file.kind === 'image')) {
-      setError(chinese ? '工作区聊天暂不支持图片附件。请移除图片，或选择“不访问工作区”后发送。' : 'Workspace chat does not support image attachments yet. Remove the images or select “No workspace access”.')
+      setError(t('chat.workspace.imagesUnsupported'))
       return
     }
 
@@ -717,10 +721,10 @@ export function Chat() {
           <ModelCheckBadge state={preverify} onRecheck={preverify.recheck} />
           </div>
           <div className="hidden h-6 w-px bg-border sm:block" aria-hidden="true" />
-          <div title={agentState.selection.workspaceId ? chinese ? '工作区聊天使用模型的默认能力。' : 'Workspace chat uses the model’s default capabilities.' : t('modelFeatures.chatHint') + (!visionEnabled ? ' ' + t('chat.visionOffHint') : '')}>
+          <div title={agentState.selection.workspaceId ? t('chat.workspace.defaultCapabilities') : t('modelFeatures.chatHint') + (!visionEnabled ? ' ' + t('chat.visionOffHint') : '')}>
             <ModelFeatureControls compact value={features} onChange={setFeatures} disabled={!historyReady || historyBusy || isSending || !!agentState.selection.workspaceId} />
           </div>
-          <ChatWorkspaceAccess collapsible inline chinese={chinese} selection={agentState.selection} disabled={!historyReady || historyBusy || isSending || workspaceAgent.running} snapshot={workspaceSnapshot || undefined} onSnapshot={setWorkspaceSnapshot} onChange={(selection: ChatWorkspaceSelection) => { setAgentState({ selection, sessionId: '', access: '' }); workspaceAgent.reset(); setError('') }} />
+          <ChatWorkspaceAccess collapsible inline selection={agentState.selection} disabled={!historyReady || historyBusy || isSending || workspaceAgent.running} snapshot={workspaceSnapshot || undefined} onSnapshot={setWorkspaceSnapshot} onChange={(selection: ChatWorkspaceSelection) => { setAgentState({ selection, sessionId: '', access: '' }); workspaceAgent.reset(); setError('') }} />
         </div>
       </div>
 
@@ -728,7 +732,7 @@ export function Chat() {
         <Card className={cn('hidden min-h-0 flex-col overflow-hidden', !tasksCollapsed && 'lg:flex')}>
           <div className="flex items-center gap-2 border-b px-4 py-3 font-semibold" title={t('chat.tasksHint')}>
             <Sparkles className="h-4 w-4 text-primary" />{t('chat.tasks')}
-            <Button variant="ghost" size="icon" className="ml-auto h-7 w-7" onClick={() => toggleTasks(true)} title={chinese ? '收起任务栏' : 'Collapse tasks'} aria-label={chinese ? '收起任务栏' : 'Collapse tasks'}><PanelLeftClose className="h-4 w-4" /></Button>
+            <Button variant="ghost" size="icon" className="ml-auto h-7 w-7" onClick={() => toggleTasks(true)} title={t('chat.collapseTasks')} aria-label={t('chat.collapseTasks')}><PanelLeftClose className="h-4 w-4" /></Button>
           </div>
           <div className="flex-1 space-y-2 overflow-y-auto p-3">
             <button
@@ -769,14 +773,14 @@ export function Chat() {
         <Card className="flex min-h-0 flex-col overflow-hidden">
           <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
-              {tasksCollapsed && <Button variant="ghost" size="icon" className="hidden h-8 w-8 lg:inline-flex" onClick={() => toggleTasks(false)} title={chinese ? '展开任务栏' : 'Show tasks'} aria-label={chinese ? '展开任务栏' : 'Show tasks'}><PanelLeftOpen className="h-4 w-4" /></Button>}
+              {tasksCollapsed && <Button variant="ghost" size="icon" className="hidden h-8 w-8 lg:inline-flex" onClick={() => toggleTasks(false)} title={t('chat.showTasks')} aria-label={t('chat.showTasks')}><PanelLeftOpen className="h-4 w-4" /></Button>}
               <Badge variant={selectedPrompt ? 'default' : 'secondary'} className="max-w-[320px] truncate">
                 {selectedPrompt ? `${selectedPrompt.emoji || '✨'} ${selectedPrompt.name}` : effectiveSystemPrompt ? t('chat.history.savedPrompt') : `💬 ${t('chat.freeChat')}`}
               </Badge>
               {isTranslation && <Select value={translationTarget} onValueChange={value => { const target = value as TranslationTarget; setTranslationTarget(target); rememberTranslationTarget(target); setAgentState(current => ({ ...current, sessionId: '' })) }} disabled={!historyReady || historyBusy || isSending}>
-                <SelectTrigger className="h-8 w-[180px]" aria-label={chinese ? '翻译目标语言' : 'Translation target language'}><Languages className="mr-1 h-3.5 w-3.5 shrink-0" /><SelectValue /></SelectTrigger>
+                <SelectTrigger className="h-8 w-[180px]" aria-label={t('chat.translationTarget')}><Languages className="mr-1 h-3.5 w-3.5 shrink-0" /><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {TRANSLATION_TARGETS.map(target => <SelectItem key={target.id} value={target.id}>{target.id === 'auto' ? chinese ? '自动（中文 ↔ 英文）' : 'Auto (Chinese ↔ English)' : target.label}</SelectItem>)}
+                  {TRANSLATION_TARGETS.map(target => <SelectItem key={target.id} value={target.id}>{target.id === 'auto' ? t('chat.translationAuto') : target.label}</SelectItem>)}
                 </SelectContent>
               </Select>}
             </div>
@@ -812,7 +816,7 @@ export function Chat() {
                           {message.attachments.map(item => item.kind === 'image' ? (
                             <img key={item.id} src={item.content} alt={item.name} className="max-h-48 max-w-full rounded-lg object-contain sm:max-w-[260px]" />
                           ) : (
-                            <div key={item.id} className="flex items-center gap-2 rounded-md bg-black/10 px-2 py-1 text-xs"><FileText className="h-3.5 w-3.5" />{item.name}</div>
+                            <div key={item.id} className="flex items-center gap-2 rounded-md bg-primary-foreground/15 px-2 py-1 text-xs"><FileText className="h-3.5 w-3.5" />{item.name}</div>
                           ))}
                         </div>
                       )}
@@ -824,7 +828,7 @@ export function Chat() {
                       )}
                       {message.content ? <MessageMarkdown text={message.content} /> : message.status ? (message.status === 'stopped' ? <span className="text-muted-foreground">{t('chat.stopped')}</span> : null) : isSending && index === messages.length - 1 ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <span className="text-muted-foreground">{t('chat.emptyResponse')}</span>}
                       {message.status === 'error' && <p role="alert" className="mt-2 whitespace-pre-wrap break-words text-sm text-destructive">{<ErrorText error={message.error || t('chat.failedMessage')} />}</p>}
-                      {!!message.tools?.length && <WorkspaceAgentStatus chinese={chinese} snapshot={{ sessionId: '', running: isSending && index === messages.length - 1, text: message.content, error: '', tools: message.tools, permissions: [] }} />}
+                      {!!message.tools?.length && <WorkspaceAgentStatus snapshot={{ sessionId: '', running: isSending && index === messages.length - 1, text: message.content, error: '', tools: message.tools, permissions: [] }} />}
                       {(message.content || message.status || message.reasoning) && !isSending && (
                         <div className={cn('mt-2 flex items-center gap-3 text-xs', message.role === 'assistant' ? 'text-muted-foreground' : 'text-primary-foreground/75')}>
                           {message.role === 'assistant' ? (
@@ -863,7 +867,7 @@ export function Chat() {
           >
             {verifyingModel && <div role="status" className="mb-3 flex items-center gap-2 text-sm text-muted-foreground"><LoaderCircle className="h-4 w-4 animate-spin" />{t('chat.verify.inProgress')}</div>}
             {modelNotice && <div role="status" className="mb-3 rounded-md bg-muted px-3 py-2 text-sm">{modelNotice}</div>}
-            {isSending && <WorkspaceAgentStatus chinese={chinese} snapshot={workspaceAgent.snapshot} showTools={false} onReply={workspaceAgent.reply} />}
+            {isSending && <WorkspaceAgentStatus snapshot={workspaceAgent.snapshot} showTools={false} onReply={workspaceAgent.reply} />}
             {workspaceAgent.error && isSending && <p role="alert" className="mb-2 text-destructive"><ErrorText error={workspaceAgent.error} /></p>}
             {error && <div role="alert" className="mb-3 flex items-start gap-2 rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" /><ErrorText error={error} /></div>}
             {storageWarning && <p role="status" className="mb-2 text-xs text-destructive">{t('chat.storageWarning')}</p>}

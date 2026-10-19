@@ -21,7 +21,8 @@ type ProxyTab = typeof TABS[number]
 
 export function ProxySettings() {
   const { t } = useTranslation()
-  const { fetchAppConfig, fetchProxyStatus } = useProxyStore()
+  const fetchAppConfig = useProxyStore(state => state.fetchAppConfig)
+  const fetchProxyStatus = useProxyStore(state => state.fetchProxyStatus)
   const [searchParams, setSearchParams] = useSearchParams()
   const requested = searchParams.get('tab')
   const activeTab: ProxyTab = TABS.includes(requested as ProxyTab) ? requested as ProxyTab : 'basic'

@@ -1,3 +1,4 @@
+import { useShallow } from 'zustand/react/shallow'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { SlidersHorizontal } from 'lucide-react'
@@ -10,7 +11,7 @@ import { normalizeModelFeatureDefaults } from '../../../../shared/modelFeatures'
 
 export function ModelFeatureConfig() {
   const { t } = useTranslation()
-  const { appConfig, setAppConfig } = useProxyStore()
+  const { appConfig, setAppConfig } = useProxyStore(useShallow(state => ({ appConfig: state.appConfig, setAppConfig: state.setAppConfig })))
   const [value, setValue] = useState(() => normalizeModelFeatureDefaults(appConfig?.modelFeatureDefaults))
   const [saving, setSaving] = useState(false)
   const [status, setStatus] = useState<{ text: string; ok: boolean } | null>(null)

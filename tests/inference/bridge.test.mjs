@@ -17,12 +17,12 @@ before(async () => {
       builder.onResolve({ filter: /^(?:electron|node:http|bridge-test-state)$/ }, args => ({ path: args.path, namespace: 'qa' }))
       builder.onResolve({ filter: /(?:\/store\/store$|(?:\/proxy)?\/routes(?:\/management)?$)/ }, args => ({ path: args.path.includes('/store/') ? 'store' : args.path.endsWith('/management') ? 'management' : 'routes', namespace: 'qa' }))
       builder.onLoad({ filter: /.*/, namespace: 'qa' }, args => ({ resolveDir: process.cwd(), contents: {
-        'bridge-test-state': `export let state; export const reset = () => {state = {attempts:[], logs:[], explicit:undefined, stream:undefined}}; reset();`,
+        'bridge-test-state': `export let state; export const reset = () => {state = {attempts:[], logs:[], explicit:undefined, stream:undefined, config:{}}}; reset();`,
         electron: `export const app = {getVersion: () => 'test'}; export const BrowserWindow = {getAllWindows: () => []};`,
         'node:http': `import {createServer as actualCreateServer} from 'http'; import {state} from 'bridge-test-state';
           export const createServer = (...args) => {const server=actualCreateServer(...args),listen=server.listen.bind(server);
             server.listen=(port,host,callback)=>{state.attempts.push(port); if(port) {queueMicrotask(()=>server.emit('error',Object.assign(new Error('Synthetic reserved/busy preferred port'),{code:port%2?'EACCES':'EADDRINUSE'}))); return server} return listen(port,host,callback)}; return server};`,
-        store: `import {state} from 'bridge-test-state'; export const storeManager = {getConfig:()=>({proxyPort:11434,proxyHost:'127.0.0.1',enableApiKey:false,apiKeys:[],requestTimeout:120000,retryCount:0,managementApi:{enableManagementApi:true,managementApiSecret:'test-only'}}),addLog:(...args)=>state.logs.push(args),addRequestLog:()=>({id:'test-log'})};`,
+        store: `import {state} from 'bridge-test-state'; export const storeManager = {getConfig:()=>({...state.config,proxyPort:state.config.proxyPort??11434,proxyHost:'127.0.0.1',enableApiKey:false,apiKeys:[],requestTimeout:120000,retryCount:0,managementApi:{enableManagementApi:true,managementApiSecret:'test-only'}}),addLog:(...args)=>state.logs.push(args),addRequestLog:()=>({id:'test-log'})};`,
         management: `import Router from '@koa/router'; const router=new Router(); router.get('/v0/management/config',ctx=>{ctx.body={privateManagement:true}}); export default [router];`,
         routes: `import Router from '@koa/router'; import {PassThrough} from 'node:stream'; import {state} from 'bridge-test-state';
           const router=new Router(); router.get('/v1/models',ctx=>{state.explicit=ctx.get('x-dailyworkmate-model-selection');ctx.body={object:'list',data:[{id:'remote-model'}]}});
@@ -55,6 +55,24 @@ test('busy or Windows-reserved 11435–11439 fall back to OS allocation without 
     assert.deepEqual(await bridge.connection(), connection)
     assert.equal(module.state.attempts.length, 6)
   } finally { await bridge.stop() }
+})
+
+test('the bridge never takes a port configured for the proxy or an additional listener', async () => {
+  module.state.config = { proxyPort: 11436, additionalProxyListeners: [{ port: 11438, host: '0.0.0.0' }] }
+  const bridge = new module.InternalInferenceBridge()
+  try {
+    await bridge.connection()
+    assert.deepEqual(module.state.attempts, [11435, 11437, 11439, 0])
+  } finally { await bridge.stop() }
+})
+
+test('stopping a bridge whose start failed does not interrupt shutdown', async () => {
+  const bridge = new module.InternalInferenceBridge()
+  bridge.start = () => Promise.reject(new Error('no port'))
+  await assert.rejects(bridge.connection(), /no port/)
+  const failing = bridge.connection()
+  await assert.doesNotReject(bridge.stop())
+  await assert.rejects(failing, /no port/)
 })
 
 test('native bridge accepts its ephemeral Bearer or x-api-key and preserves explicit model selection', async () => {

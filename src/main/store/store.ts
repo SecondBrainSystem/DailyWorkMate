@@ -1,6 +1,6 @@
 import { normalizeModelFeatureDefaults } from '../../shared/modelFeatures'
 import { normalizeTypography, validateTypography } from '../../shared/typography'
-import { normalizeAccountDailyUsage } from './accountUsage'
+import { accountUsageDate, normalizeAccountDailyUsage } from './accountUsage'
 import { isOllamaModelUsable } from '../../shared/ollamaAvailability'
 
 /**
@@ -52,10 +52,33 @@ import { normalizeRequestLogConfig } from '../requestLogs/types'
 import { normalizeToolCallingConfig } from '../../shared/toolCalling'
 import { AppLogManager } from '../appLogs/manager'
 import type { AppLogFilter } from '../appLogs/types'
+import { networkExposureError } from '../../shared/proxyListeners'
 import { cachedStore } from './cachedStore'
+import { providerFromBuiltin, refreshBuiltinProvider } from '../providers/builtin/index.ts'
 
 // Dynamically import electron-store (ESM module)
 let Store: any = null
+
+interface PendingAccountUsage {
+  readonly requests: number
+  readonly lastUsed: number
+  /** Local date the requests count toward (accountUsageDate). */
+  readonly usageDate: string
+  readonly reactivate: boolean
+}
+
+/** Client-chosen model names must not grow statistics without bound. */
+const MAX_STAT_MODEL_KEYS = 200
+const OTHER_MODELS_KEY = 'other'
+
+function statModelKey(usage: Record<string, number>, model: string): string {
+  const key = model.slice(0, 200)
+  return key in usage || Object.keys(usage).length < MAX_STAT_MODEL_KEYS ? key : OTHER_MODELS_KEY
+}
+
+function emptyDailyStatistics(date: string): DailyStatistics {
+  return { date, totalRequests: 0, successRequests: 0, failedRequests: 0, totalLatency: 0, modelUsage: {}, totalTokens: 0, modelTokenUsage: {}, providerUsage: {} }
+}
 
 /**
  * Storage Instance Type Definition
@@ -75,6 +98,18 @@ export class StoreManager {
   private appLogManager: AppLogManager | null = null
   private keyUsage = new Map<string, { count: number; lastUsedAt: number }>()
   private keyUsageTimer?: NodeJS.Timeout
+  // Every store write re-encrypts (PBKDF2) and rewrites the whole file on the main thread, so
+  // per-request counters live in memory and reach disk in one write at most every USAGE_FLUSH_MS.
+  private pendingAccountUsage: ReadonlyMap<string, PendingAccountUsage> = new Map()
+  private pendingStatistics?: PersistentStatistics
+  private usageTimer?: NodeJS.Timeout
+  private static readonly USAGE_FLUSH_MS = 2000
+  private configMemo?: { version: number; config: AppConfig }
+  private effectiveModelsMemo?: { version: number; models: ReadonlyMap<string, readonly EffectiveModel[]> }
+  // safeStorage decryption is a synchronous OS call; ciphertexts are unique per encryption, so the
+  // ciphertext is a safe cache key that changes whenever a credential is rewritten.
+  private decryptedValues: ReadonlyMap<string, string> = new Map()
+  private static readonly MAX_DECRYPTED_VALUES = 1024
   recordApiKeyUsage(id: string) {
     const previous = this.keyUsage.get(id)
     this.keyUsage = new Map([...this.keyUsage, [id, { count: (previous?.count || 0) + 1, lastUsedAt: Date.now() }]])
@@ -85,6 +120,98 @@ export class StoreManager {
     if (!this.store || !this.keyUsage.size) return
     const config = this.getConfig(); this.keyUsage = new Map()
     this.store.set('config', config)
+  }
+
+  /** Store version for memoization; undefined for plain stores (tests) so nothing is memoized. */
+  private storeVersion(): number | undefined {
+    const version = this.store?.version
+    return typeof version === 'number' ? version : undefined
+  }
+
+  /** Read without copying when the cache supports it. The result is shared: never mutate it. */
+  private peek<T>(key: string): T | undefined {
+    return typeof this.store?.peek === 'function' ? this.store.peek(key) as T | undefined : this.store?.get(key) as T | undefined
+  }
+
+  /** Normalized config shared by every reader of one store version. Never mutate the result. */
+  private storedConfig(): AppConfig {
+    const version = this.storeVersion()
+    if (version !== undefined && this.configMemo?.version === version) return this.configMemo.config
+    const config = this.normalizeConfig(this.store!.get('config') || DEFAULT_CONFIG)
+    if (version !== undefined) this.configMemo = { version, config }
+    return config
+  }
+
+  private applyPendingUsage(account: Account, pending = this.pendingAccountUsage.get(account.id)): Account {
+    if (!pending) return account
+    return {
+      ...account,
+      ...(pending.reactivate ? { status: 'active' as const, errorMessage: undefined } : {}),
+      lastUsed: Math.max(account.lastUsed || 0, pending.lastUsed),
+      requestCount: (account.requestCount || 0) + pending.requests,
+      todayUsed: (account.todayUsed || 0) + (account.dailyUsageDate === pending.usageDate ? pending.requests : 0),
+    }
+  }
+
+  /** Accounts as callers should see them: daily quota normalized and unflushed usage applied. */
+  private readAccounts(): Account[] {
+    const now = Date.now()
+    return (this.peek<Account[]>('accounts') || []).map(account => this.applyPendingUsage(normalizeAccountDailyUsage(account, now)))
+  }
+
+  private withCredentials(account: Account, includeCredentials: boolean): Account {
+    return { ...account, credentials: includeCredentials ? this.decryptCredentials(account.credentials || {}) : { ...(account.credentials || {}) } }
+  }
+
+  private scheduleUsageFlush(): void {
+    if (this.usageTimer) return
+    this.usageTimer = setTimeout(() => {
+      this.usageTimer = undefined
+      try { this.flushUsage() } catch (error) {
+        console.error('[Store] Failed to save usage counters:', error)
+      }
+    }, StoreManager.USAGE_FLUSH_MS)
+    this.usageTimer.unref?.()
+  }
+
+  /** Persist buffered account counters and statistics in at most two writes. */
+  flushUsage(): void {
+    clearTimeout(this.usageTimer); this.usageTimer = undefined
+    if (!this.store) return
+    if (this.pendingAccountUsage.size) {
+      const pending = this.pendingAccountUsage
+      this.pendingAccountUsage = new Map()
+      const now = Date.now()
+      const accounts = (this.store.get('accounts') as Account[] | undefined) || []
+      this.store.set('accounts', accounts.map(account => pending.has(account.id)
+        ? { ...this.applyPendingUsage(normalizeAccountDailyUsage(account, now), pending.get(account.id)), updatedAt: now }
+        : account))
+    }
+    if (this.pendingStatistics) {
+      const statistics = this.withoutExpiredDailyStats(this.pendingStatistics)
+      this.pendingStatistics = undefined
+      this.store.set('statistics', statistics)
+    }
+  }
+
+  /**
+   * Count one completed request for an account without a synchronous store write.
+   * `reactivate` restores an Ollama node account that a successful request proved healthy.
+   */
+  recordAccountUsage(accountId: string, options: { reactivate?: boolean } = {}): void {
+    this.ensureInitialized()
+    const usageDate = accountUsageDate()
+    const previous = this.pendingAccountUsage.get(accountId)
+    // Counters for an earlier day must land on that day before today's start.
+    if (previous && previous.usageDate !== usageDate) this.flushUsage()
+    const base = this.pendingAccountUsage.get(accountId)
+    this.pendingAccountUsage = new Map([...this.pendingAccountUsage, [accountId, {
+      requests: (base?.requests || 0) + 1,
+      lastUsed: Date.now(),
+      usageDate,
+      reactivate: Boolean(base?.reactivate || options.reactivate),
+    }]])
+    this.scheduleUsageFlush()
   }
 
   setMainWindow(window: BrowserWindow | null): void {
@@ -208,11 +335,22 @@ export class StoreManager {
     }
   }
 
+  private requestLogListeners: ReadonlySet<(entry: RequestLogEntry) => void> = new Set()
+
+  /** Subscribe to added or updated request logs (bodies omitted); works before initialization. */
+  onRequestLogChanged(listener: (entry: RequestLogEntry) => void): () => void {
+    this.requestLogListeners = new Set([...this.requestLogListeners, listener])
+    return () => { this.requestLogListeners = new Set([...this.requestLogListeners].filter(item => item !== listener)) }
+  }
+
   private async initializeRequestLogManager(storagePath: string): Promise<void> {
     const config = this.normalizeConfig(this.store?.get('config') || DEFAULT_CONFIG)
     this.requestLogManager = new RequestLogManager({
       storageDir: join(storagePath, 'request-logs'),
       config: config.requestLogConfig,
+    })
+    this.requestLogManager.onLogChanged(entry => {
+      for (const listener of this.requestLogListeners) listener(entry)
     })
     this.requestLogManager.setRetentionDays(config.logRetentionDays)
     await this.requestLogManager.initialize()
@@ -315,17 +453,7 @@ export class StoreManager {
             }
           }
 
-          return { 
-            ...p, 
-            apiEndpoint: builtinConfig.apiEndpoint,
-            chatPath: builtinConfig.chatPath,
-            supportedModels: p.modelsUpdatedAt ? p.supportedModels : builtinConfig.supportedModels,
-            modelMappings: p.modelsUpdatedAt ? p.modelMappings : builtinConfig.modelMappings,
-            modelsApiEndpoint: builtinConfig.modelsApiEndpoint,
-            headers: builtinConfig.headers,
-            credentialFields: builtinConfig.credentialFields,
-            description: builtinConfig.description,
-          }
+          return refreshBuiltinProvider(p, builtinConfig)
         }
       }
       return p
@@ -348,24 +476,7 @@ export class StoreManager {
     if (!exists) {
       const builtinConfig = BUILTIN_PROVIDERS.find(bp => bp.id === providerId)
       if (builtinConfig) {
-        const now = Date.now()
-        const newProvider: Provider = {
-          id: builtinConfig.id,
-          name: builtinConfig.name,
-          type: 'builtin',
-          authType: builtinConfig.authType,
-          apiEndpoint: builtinConfig.apiEndpoint,
-          chatPath: builtinConfig.chatPath,
-          headers: builtinConfig.headers,
-          enabled: true,
-          createdAt: now,
-          updatedAt: now,
-          description: builtinConfig.description,
-          supportedModels: builtinConfig.supportedModels,
-          modelMappings: builtinConfig.modelMappings,
-        }
-        providers.push(newProvider)
-        this.store!.set('providers', providers)
+        this.store!.set('providers', [...providers, providerFromBuiltin(builtinConfig)])
         console.log('[Store] Created missing provider:', providerId)
       }
     }
@@ -399,7 +510,7 @@ export class StoreManager {
   }
 
   private shouldRecordLog(level: LogLevel): boolean {
-    const config = this.normalizeConfig(this.store!.get('config') || DEFAULT_CONFIG)
+    const config = this.storedConfig()
     return this.getLogPriority(level) >= this.getLogPriority(config.logLevel)
   }
 
@@ -409,6 +520,7 @@ export class StoreManager {
 
   flushPendingWrites(): void {
     this.flushApiKeyUsage()
+    this.flushUsage()
     this.appLogManager?.flushSync()
     this.requestLogManager?.flushSync()
   }
@@ -436,10 +548,15 @@ export class StoreManager {
    * @returns Decrypted string
    */
   decryptData(encryptedData: string): string {
+    const cached = this.decryptedValues.get(encryptedData)
+    if (cached !== undefined) return cached
     try {
       if (safeStorage.isEncryptionAvailable()) {
         const buffer = Buffer.from(encryptedData, 'base64')
-        return safeStorage.decryptString(buffer)
+        const decrypted = safeStorage.decryptString(buffer)
+        const retained = this.decryptedValues.size >= StoreManager.MAX_DECRYPTED_VALUES ? [] : [...this.decryptedValues]
+        this.decryptedValues = new Map([...retained, [encryptedData, decrypted]])
+        return decrypted
       }
     } catch (error) {
       console.error('Failed to decrypt data:', error)
@@ -492,8 +609,9 @@ export class StoreManager {
    */
   getProviderById(id: string): Provider | undefined {
     this.ensureInitialized()
-    const providers = this.store!.get('providers') as Provider[] || []
-    return providers.find((p: Provider) => p.id === id)
+    // Copy only the requested provider; Ollama catalogs make the full list large.
+    const provider = (this.peek<Provider[]>('providers') || []).find((p: Provider) => p.id === id)
+    return provider ? structuredClone(provider) : undefined
   }
 
   /**
@@ -502,8 +620,7 @@ export class StoreManager {
   addProvider(provider: Provider): void {
     this.ensureInitialized()
     const providers = this.store!.get('providers') as Provider[] || []
-    providers.push(provider)
-    this.store!.set('providers', providers)
+    this.store!.set('providers', [...providers, provider])
   }
 
   /**
@@ -518,14 +635,14 @@ export class StoreManager {
       return null
     }
     
-    providers[index] = {
+    const updated: Provider = {
       ...providers[index],
       ...updates,
       updatedAt: Date.now(),
     }
-    
-    this.store!.set('providers', providers)
-    return providers[index]
+
+    this.store!.set('providers', providers.map((provider, position) => position === index ? updated : provider))
+    return updated
   }
 
   /**
@@ -540,12 +657,12 @@ export class StoreManager {
       return false
     }
     
-    providers.splice(index, 1)
-    this.store!.set('providers', providers)
-    
+    this.store!.set('providers', providers.filter((provider: Provider) => provider.id !== id))
+
     const accounts = this.store!.get('accounts') as Account[] || []
-    const filteredAccounts = accounts.filter((a: Account) => a.providerId !== id)
-    this.store!.set('accounts', filteredAccounts)
+    const removed = new Set(accounts.filter((a: Account) => a.providerId === id).map(account => account.id))
+    this.pendingAccountUsage = new Map([...this.pendingAccountUsage].filter(([accountId]) => !removed.has(accountId)))
+    this.store!.set('accounts', accounts.filter((a: Account) => a.providerId !== id))
     
     return true
   }
@@ -584,16 +701,7 @@ export class StoreManager {
    */
   getAccounts(includeCredentials: boolean = false): Account[] {
     this.ensureInitialized()
-    const accounts = ((this.store!.get('accounts') as Account[]) || []).map(account => normalizeAccountDailyUsage(account))
-    
-    if (includeCredentials) {
-      return accounts.map((account: Account) => ({
-        ...account,
-        credentials: this.decryptCredentials(account.credentials),
-      }))
-    }
-    
-    return accounts
+    return this.readAccounts().map(account => this.withCredentials(account, includeCredentials))
   }
 
   /**
@@ -602,17 +710,8 @@ export class StoreManager {
    */
   getAccountById(id: string, includeCredentials: boolean = false): Account | undefined {
     this.ensureInitialized()
-    const accounts = ((this.store!.get('accounts') as Account[]) || []).map(account => normalizeAccountDailyUsage(account))
-    const account = accounts.find((a: Account) => a.id === id)
-    
-    if (account && includeCredentials) {
-      return {
-        ...account,
-        credentials: this.decryptCredentials(account.credentials),
-      }
-    }
-    
-    return account
+    const account = (this.peek<Account[]>('accounts') || []).find((a: Account) => a.id === id)
+    return account ? this.withCredentials(this.applyPendingUsage(normalizeAccountDailyUsage(account)), includeCredentials) : undefined
   }
 
   /**
@@ -620,17 +719,10 @@ export class StoreManager {
    */
   getAccountsByProviderId(providerId: string, includeCredentials: boolean = false): Account[] {
     this.ensureInitialized()
-    const accounts = ((this.store!.get('accounts') as Account[]) || []).map(account => normalizeAccountDailyUsage(account))
-    const filtered = accounts.filter((a: Account) => a.providerId === providerId)
-    
-    if (includeCredentials) {
-      return filtered.map((account: Account) => ({
-        ...account,
-        credentials: this.decryptCredentials(account.credentials),
-      }))
-    }
-    
-    return filtered
+    const now = Date.now()
+    return (this.peek<Account[]>('accounts') || [])
+      .filter((a: Account) => a.providerId === providerId)
+      .map(account => this.withCredentials(this.applyPendingUsage(normalizeAccountDailyUsage(account, now)), includeCredentials))
   }
 
   /**
@@ -654,6 +746,8 @@ export class StoreManager {
    */
   updateAccount(id: string, updates: Partial<Account>): Account | null {
     this.ensureInitialized()
+    // Explicit writes start from materialized counters so buffered usage is neither lost nor counted twice.
+    if (this.pendingAccountUsage.has(id)) this.flushUsage()
     const accounts = ((this.store!.get('accounts') as Account[]) || []).map(account => normalizeAccountDailyUsage(account))
     const index = accounts.findIndex((a: Account) => a.id === id)
     
@@ -688,6 +782,7 @@ export class StoreManager {
       return false
     }
     
+    this.pendingAccountUsage = new Map([...this.pendingAccountUsage].filter(([accountId]) => accountId !== id))
     this.store!.set('accounts', accounts.filter(account => account.id !== id))
     return true
   }
@@ -697,17 +792,9 @@ export class StoreManager {
    */
   getActiveAccounts(includeCredentials: boolean = false): Account[] {
     this.ensureInitialized()
-    const accounts = ((this.store!.get('accounts') as Account[]) || []).map(account => normalizeAccountDailyUsage(account))
-    const active = accounts.filter((a: Account) => a.status === 'active')
-    
-    if (includeCredentials) {
-      return active.map((account: Account) => ({
-        ...account,
-        credentials: this.decryptCredentials(account.credentials),
-      }))
-    }
-    
-    return active
+    return this.readAccounts()
+      .filter((a: Account) => a.status === 'active')
+      .map(account => this.withCredentials(account, includeCredentials))
   }
 
   // ==================== Configuration Operations ====================
@@ -717,7 +804,8 @@ export class StoreManager {
    */
   getConfig(): AppConfig {
     this.ensureInitialized()
-    const config = this.normalizeConfig(this.store!.get('config') || DEFAULT_CONFIG)
+    // Callers may change what they receive, so hand out a copy of the shared normalized config.
+    const config = structuredClone(this.storedConfig())
     return { ...config, apiKeys: config.apiKeys.map(key => {
       const usage = this.keyUsage.get(key.id)
       return usage ? { ...key, usageCount: (key.usageCount || 0) + usage.count, lastUsedAt: usage.lastUsedAt } : key
@@ -749,6 +837,10 @@ export class StoreManager {
     this.ensureInitialized()
     if (updates.uiTypography !== undefined) validateTypography(updates.uiTypography)
     const currentConfig = this.getConfig()
+    // Every writer (settings UI, management API key routes, imports) passes through here. Only a
+    // change that removes protection is refused; an already unprotected setup stays editable so it can be fixed.
+    const exposure = networkExposureError({ ...currentConfig, ...updates })
+    if (exposure && !networkExposureError(currentConfig)) throw new Error(exposure)
     const newConfig = {
       ...currentConfig,
       ...updates,
@@ -1042,7 +1134,7 @@ export class StoreManager {
    */
   getStatistics(): PersistentStatistics {
     this.ensureInitialized()
-    const stored = this.store!.get('statistics') || DEFAULT_STATISTICS
+    const stored = this.pendingStatistics ? structuredClone(this.pendingStatistics) : this.store!.get('statistics') || DEFAULT_STATISTICS
     return {
       ...DEFAULT_STATISTICS,
       ...stored,
@@ -1059,6 +1151,7 @@ export class StoreManager {
    */
   updateStatistics(updates: Partial<PersistentStatistics>): PersistentStatistics {
     this.ensureInitialized()
+    this.flushUsage()
     const currentStats = this.store!.get('statistics') || DEFAULT_STATISTICS
     const newStats = {
       ...currentStats,
@@ -1080,10 +1173,20 @@ export class StoreManager {
     accountId?: string
   ): PersistentStatistics {
     this.ensureInitialized()
-    this.cleanOldDailyStats()
     const stats = this.getStatistics()
     const today = localDateKey()
-    
+    const increment = (usage: Record<string, number>, key: string) => ({ ...usage, [key]: (usage[key] || 0) + 1 })
+    const existingDay: DailyStatistics = stats.dailyStats[today] || emptyDailyStatistics(today)
+    const dayModelUsage = existingDay.modelUsage || {}
+    const day: DailyStatistics = {
+      ...existingDay,
+      totalRequests: existingDay.totalRequests + 1,
+      successRequests: existingDay.successRequests + (success ? 1 : 0),
+      failedRequests: existingDay.failedRequests + (success ? 0 : 1),
+      totalLatency: existingDay.totalLatency + (success ? latency : 0),
+      modelUsage: model ? increment(dayModelUsage, statModelKey(dayModelUsage, model)) : { ...dayModelUsage },
+      providerUsage: providerId ? increment(existingDay.providerUsage || {}, providerId) : { ...(existingDay.providerUsage || {}) },
+    }
     const newStats: PersistentStatistics = {
       ...stats,
       totalRequests: stats.totalRequests + 1,
@@ -1091,59 +1194,14 @@ export class StoreManager {
       failedRequests: success ? stats.failedRequests : stats.failedRequests + 1,
       totalLatency: success ? stats.totalLatency + latency : stats.totalLatency,
       lastUpdated: Date.now(),
-      modelUsage: { ...stats.modelUsage },
-      modelTokenUsage: { ...stats.modelTokenUsage },
-      providerUsage: { ...stats.providerUsage },
-      accountUsage: { ...stats.accountUsage },
-      dailyStats: { ...stats.dailyStats },
+      modelUsage: model ? increment(stats.modelUsage, statModelKey(stats.modelUsage, model)) : stats.modelUsage,
+      providerUsage: providerId ? increment(stats.providerUsage, providerId) : stats.providerUsage,
+      accountUsage: accountId ? increment(stats.accountUsage, accountId) : stats.accountUsage,
+      dailyStats: { ...stats.dailyStats, [today]: day },
     }
-    
-    if (model) {
-      newStats.modelUsage[model] = (newStats.modelUsage[model] || 0) + 1
-    }
-    
-    if (providerId) {
-      newStats.providerUsage[providerId] = (newStats.providerUsage[providerId] || 0) + 1
-    }
-    
-    if (accountId) {
-      newStats.accountUsage[accountId] = (newStats.accountUsage[accountId] || 0) + 1
-    }
-    
-    if (!newStats.dailyStats[today]) {
-      newStats.dailyStats[today] = {
-        date: today,
-        totalRequests: 0,
-        successRequests: 0,
-        failedRequests: 0,
-        totalLatency: 0,
-        modelUsage: {},
-        totalTokens: 0,
-        modelTokenUsage: {},
-        providerUsage: {},
-      }
-    }
-    
-    const existingDay = newStats.dailyStats[today]
-    newStats.dailyStats[today] = { ...existingDay, modelUsage: { ...existingDay.modelUsage }, providerUsage: { ...existingDay.providerUsage } }
-    newStats.dailyStats[today].totalRequests++
-    if (success) {
-      newStats.dailyStats[today].successRequests++
-      newStats.dailyStats[today].totalLatency += latency
-    } else {
-      newStats.dailyStats[today].failedRequests++
-    }
-    
-    if (model) {
-      newStats.dailyStats[today].modelUsage[model] = (newStats.dailyStats[today].modelUsage[model] || 0) + 1
-    }
-    
-    if (providerId) {
-      newStats.dailyStats[today].providerUsage[providerId] = (newStats.dailyStats[today].providerUsage[providerId] || 0) + 1
-    }
-    
-    this.store!.set('statistics', newStats)
-    return newStats
+    this.pendingStatistics = newStats
+    this.scheduleUsageFlush()
+    return structuredClone(newStats)
   }
 
   /**
@@ -1156,39 +1214,28 @@ export class StoreManager {
 
     const stats = this.getStatistics()
     const today = localDateKey()
-    const existingDay = stats.dailyStats[today] || {
-      date: today,
-      totalRequests: 0,
-      successRequests: 0,
-      failedRequests: 0,
-      totalLatency: 0,
-      modelUsage: {},
-      totalTokens: 0,
-      modelTokenUsage: {},
-      providerUsage: {},
-    }
+    const existingDay = stats.dailyStats[today] || emptyDailyStatistics(today)
+    const dayTokens = existingDay.modelTokenUsage || {}
+    const totalModelTokens = stats.modelTokenUsage || {}
+    const dayKey = statModelKey(dayTokens, model)
+    const totalKey = statModelKey(totalModelTokens, model)
     const day: DailyStatistics = {
       ...existingDay,
       modelUsage: { ...(existingDay.modelUsage || {}) },
       totalTokens: (existingDay.totalTokens || 0) + tokens,
-      modelTokenUsage: {
-        ...(existingDay.modelTokenUsage || {}),
-        [model]: (existingDay.modelTokenUsage?.[model] || 0) + tokens,
-      },
+      modelTokenUsage: { ...dayTokens, [dayKey]: (dayTokens[dayKey] || 0) + tokens },
       providerUsage: { ...(existingDay.providerUsage || {}) },
     }
     const next: PersistentStatistics = {
       ...stats,
       totalTokens: (stats.totalTokens || 0) + tokens,
-      modelTokenUsage: {
-        ...(stats.modelTokenUsage || {}),
-        [model]: (stats.modelTokenUsage?.[model] || 0) + tokens,
-      },
+      modelTokenUsage: { ...totalModelTokens, [totalKey]: (totalModelTokens[totalKey] || 0) + tokens },
       dailyStats: { ...stats.dailyStats, [today]: day },
       lastUpdated: Date.now(),
     }
-    this.store!.set('statistics', next)
-    return next
+    this.pendingStatistics = next
+    this.scheduleUsageFlush()
+    return structuredClone(next)
   }
 
   /**
@@ -1223,20 +1270,18 @@ export class StoreManager {
    */
   cleanOldDailyStats(): void {
     this.ensureInitialized()
+    this.flushUsage()
     const stats = this.store!.get('statistics') || DEFAULT_STATISTICS
-    const cutoff = Date.now() - Math.max(30, this.getConfig().logRetentionDays) * 24 * 60 * 60 * 1000
-    const cutoffDate = localDateKey(cutoff)
-    
-    const filteredDailyStats: Record<string, DailyStatistics> = {}
-    for (const [date, dayStats] of Object.entries(stats.dailyStats)) {
-      if (date >= cutoffDate) {
-        filteredDailyStats[date] = dayStats as DailyStatistics
-      }
+    const filtered = this.withoutExpiredDailyStats(stats)
+    if (Object.keys(filtered.dailyStats).length !== Object.keys(stats.dailyStats || {}).length) {
+      this.store!.set('statistics', filtered)
     }
-    
-    if (Object.keys(filteredDailyStats).length !== Object.keys(stats.dailyStats).length) {
-      this.store!.set('statistics', { ...stats, dailyStats: filteredDailyStats })
-    }
+  }
+
+  /** Daily statistics are kept for max(30 days, log retention). */
+  private withoutExpiredDailyStats(stats: PersistentStatistics): PersistentStatistics {
+    const cutoffDate = localDateKey(Date.now() - Math.max(30, this.storedConfig().logRetentionDays) * 24 * 60 * 60 * 1000)
+    return { ...stats, dailyStats: Object.fromEntries(Object.entries(stats.dailyStats || {}).filter(([date]) => date >= cutoffDate)) }
   }
 
   // ==================== System Prompts Operations ====================
@@ -1298,8 +1343,7 @@ export class StoreManager {
       updatedAt: Date.now(),
     }
     
-    prompts.push(newPrompt)
-    this.store!.set('systemPrompts', prompts)
+    this.store!.set('systemPrompts', [...prompts, newPrompt])
     
     return newPrompt
   }
@@ -1328,9 +1372,9 @@ export class StoreManager {
       updatedAt: Date.now(),
     }
 
-    if (index >= 0) prompts[index] = updated
-    else prompts.push(updated)
-    this.store!.set('systemPrompts', prompts)
+    this.store!.set('systemPrompts', index >= 0
+      ? prompts.map((prompt: SystemPrompt, position: number) => position === index ? updated : prompt)
+      : [...prompts, updated])
     return updated
   }
 
@@ -1353,9 +1397,8 @@ export class StoreManager {
     if (index === -1) {
       return false
     }
-    
-    prompts.splice(index, 1)
-    this.store!.set('systemPrompts', prompts)
+
+    this.store!.set('systemPrompts', prompts.filter((prompt: SystemPrompt) => prompt.id !== id))
     
     return true
   }
@@ -1435,8 +1478,7 @@ export class StoreManager {
   addSession(session: SessionRecord): void {
     this.ensureInitialized()
     const sessions = this.store!.get('sessions') || []
-    sessions.push(session)
-    this.store!.set('sessions', sessions)
+    this.store!.set('sessions', [...sessions, session])
   }
 
   /**
@@ -1451,13 +1493,13 @@ export class StoreManager {
       return null
     }
     
-    sessions[index] = {
+    const updated: SessionRecord = {
       ...sessions[index],
       ...updates,
     }
-    
-    this.store!.set('sessions', sessions)
-    return sessions[index]
+
+    this.store!.set('sessions', sessions.map((session: SessionRecord, position: number) => position === index ? updated : session))
+    return updated
   }
 
   /**
@@ -1473,17 +1515,13 @@ export class StoreManager {
     }
     
     const config = this.getSessionConfig()
-    const session = sessions[index]
-    
-    if (session.messages.length >= config.maxMessagesPerSession) {
-      session.messages = session.messages.slice(-config.maxMessagesPerSession + 1)
-    }
-    
-    session.messages.push(message)
-    session.lastActiveAt = Date.now()
-    
-    sessions[index] = session
-    this.store!.set('sessions', sessions)
+    const current: SessionRecord = sessions[index]
+    const retained = current.messages.length >= config.maxMessagesPerSession
+      ? current.messages.slice(-config.maxMessagesPerSession + 1)
+      : current.messages
+    const session: SessionRecord = { ...current, messages: [...retained, message], lastActiveAt: Date.now() }
+
+    this.store!.set('sessions', sessions.map((item: SessionRecord, position: number) => position === index ? session : item))
     return session
   }
 
@@ -1498,9 +1536,8 @@ export class StoreManager {
     if (index === -1) {
       return false
     }
-    
-    sessions.splice(index, 1)
-    this.store!.set('sessions', sessions)
+
+    this.store!.set('sessions', sessions.filter((session: SessionRecord) => session.id !== id))
     return true
   }
 
@@ -1598,6 +1635,11 @@ export class StoreManager {
     return this.store!.get('userModelOverrides') || DEFAULT_USER_MODEL_OVERRIDES
   }
 
+  private updateProviderModelOverrides(providerId: string, update: (current: ProviderModelOverrides) => ProviderModelOverrides): void {
+    const overrides = this.getUserModelOverrides()
+    this.setUserModelOverrides({ ...overrides, [providerId]: update(overrides[providerId] || { addedModels: [], excludedModels: [] }) })
+  }
+
   /**
    * Set User Model Overrides
    */
@@ -1623,8 +1665,18 @@ export class StoreManager {
    */
   getEffectiveModels(providerId: string): EffectiveModel[] {
     this.ensureInitialized()
-    
-    const provider = this.getProviderById(providerId)
+    const version = this.storeVersion()
+    if (version === undefined) return this.computeEffectiveModels(providerId)
+    if (this.effectiveModelsMemo?.version !== version) this.effectiveModelsMemo = { version, models: new Map() }
+    const memo = this.effectiveModelsMemo
+    const cached = memo.models.get(providerId) ?? this.computeEffectiveModels(providerId)
+    if (!memo.models.has(providerId)) this.effectiveModelsMemo = { version, models: new Map([...memo.models, [providerId, cached]]) }
+    // Routing reads this per request; the memo stays private and callers get their own copy.
+    return structuredClone(cached) as EffectiveModel[]
+  }
+
+  private computeEffectiveModels(providerId: string): EffectiveModel[] {
+    const provider = (this.peek<Provider[]>('providers') || []).find((p: Provider) => p.id === providerId)
     if (!provider) {
       return []
     }
@@ -1667,16 +1719,7 @@ export class StoreManager {
   addCustomModel(providerId: string, model: CustomModel): EffectiveModel[] {
     this.ensureInitialized()
     
-    const overrides = this.getUserModelOverrides()
-    
-    if (!overrides[providerId]) {
-      overrides[providerId] = {
-        addedModels: [],
-        excludedModels: [],
-      }
-    }
-
-    const existingModel = overrides[providerId].addedModels.find(
+    const existingModel = this.getProviderModelOverrides(providerId).addedModels.find(
       m => m.displayName === model.displayName || m.actualModelId === model.actualModelId
     )
     
@@ -1684,8 +1727,7 @@ export class StoreManager {
       throw new Error(`Model with display name "${model.displayName}" or actual ID "${model.actualModelId}" already exists`)
     }
 
-    overrides[providerId].addedModels.push(model)
-    this.setUserModelOverrides(overrides)
+    this.updateProviderModelOverrides(providerId, current => ({ ...current, addedModels: [...current.addedModels, model] }))
 
     return this.getEffectiveModels(providerId)
   }
@@ -1703,29 +1745,10 @@ export class StoreManager {
       throw new Error('Provider not found')
     }
 
-    const overrides = this.getUserModelOverrides()
-    
-    if (!overrides[providerId]) {
-      overrides[providerId] = {
-        addedModels: [],
-        excludedModels: [],
-      }
-    }
-
-    const defaultModels = provider.supportedModels || []
-    const isDefaultModel = defaultModels.includes(modelName)
-
-    if (isDefaultModel) {
-      if (!overrides[providerId].excludedModels.includes(modelName)) {
-        overrides[providerId].excludedModels.push(modelName)
-      }
-    } else {
-      overrides[providerId].addedModels = overrides[providerId].addedModels.filter(
-        m => m.displayName !== modelName
-      )
-    }
-
-    this.setUserModelOverrides(overrides)
+    const isDefaultModel = (provider.supportedModels || []).includes(modelName)
+    this.updateProviderModelOverrides(providerId, current => isDefaultModel
+      ? { ...current, excludedModels: current.excludedModels.includes(modelName) ? current.excludedModels : [...current.excludedModels, modelName] }
+      : { ...current, addedModels: current.addedModels.filter(m => m.displayName !== modelName) })
 
     return this.getEffectiveModels(providerId)
   }
@@ -1736,12 +1759,8 @@ export class StoreManager {
   restoreModel(providerId: string, modelName: string): EffectiveModel[] {
     this.ensureInitialized()
 
-    const overrides = this.getUserModelOverrides()
-    if (overrides[providerId]) {
-      overrides[providerId].excludedModels = overrides[providerId].excludedModels.filter(
-        excluded => excluded !== modelName
-      )
-      this.setUserModelOverrides(overrides)
+    if (this.getUserModelOverrides()[providerId]) {
+      this.updateProviderModelOverrides(providerId, current => ({ ...current, excludedModels: current.excludedModels.filter(excluded => excluded !== modelName) }))
     }
 
     return this.getEffectiveModels(providerId)
@@ -1757,8 +1776,7 @@ export class StoreManager {
     const overrides = this.getUserModelOverrides()
     
     if (overrides[providerId]) {
-      delete overrides[providerId]
-      this.setUserModelOverrides(overrides)
+      this.setUserModelOverrides(Object.fromEntries(Object.entries(overrides).filter(([id]) => id !== providerId)))
     }
 
     const builtinConfig = BUILTIN_PROVIDERS.find(provider => provider.id === providerId)
@@ -1768,17 +1786,7 @@ export class StoreManager {
           return provider
         }
 
-        return {
-          ...provider,
-          apiEndpoint: builtinConfig.apiEndpoint,
-          chatPath: builtinConfig.chatPath,
-          supportedModels: builtinConfig.supportedModels,
-          modelMappings: builtinConfig.modelMappings,
-          headers: builtinConfig.headers,
-          credentialFields: builtinConfig.credentialFields,
-          description: builtinConfig.description,
-          updatedAt: Date.now(),
-        }
+        return { ...refreshBuiltinProvider(provider, builtinConfig, true), updatedAt: Date.now() }
       })
       this.store!.set('providers', providers)
     }
@@ -1807,6 +1815,10 @@ export class StoreManager {
    */
   clearAll(): void {
     this.ensureInitialized()
+    clearTimeout(this.usageTimer); this.usageTimer = undefined
+    this.pendingAccountUsage = new Map()
+    this.pendingStatistics = undefined
+    this.decryptedValues = new Map()
     this.appLogManager?.clearLogs()
     this.appLogManager?.flushSync()
     this.store!.clear()
@@ -1821,6 +1833,7 @@ export class StoreManager {
    */
   exportData(): Omit<StoreSchema, 'accounts'> & { accounts: Omit<Account, 'credentials'>[] } {
     this.ensureInitialized()
+    this.flushUsage()
     const providers = this.store!.get('providers') || []
     const accounts = (this.store!.get('accounts') || []).map((a: Account) => {
       const { credentials, ...rest } = a

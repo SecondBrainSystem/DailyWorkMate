@@ -38,6 +38,10 @@ const SUCCESS_PILL = 'border-success/30 bg-success/10 text-success'
 const DANGER_PILL = 'border-danger/30 bg-danger/10 text-danger'
 const NEUTRAL_PILL = 'border-border bg-secondary text-muted-foreground'
 
+type ScanProgress = { providerId: string; model: string; completed: number; total: number }
+const sameProgress = (a: ScanProgress[], b: ScanProgress[]) => a.length === b.length
+  && a.every((item, index) => item.providerId === b[index].providerId && item.model === b[index].model && item.completed === b[index].completed && item.total === b[index].total)
+
 function visionClass(vision: string): string {
   if (vision === 'supported') return SUCCESS_PILL
   return NEUTRAL_PILL
@@ -58,7 +62,7 @@ export function OllamaNodes() {
   const [busy, setBusy] = useState<Set<string>>(new Set())
   const [importing, setImporting] = useState(false)
   const [scanProgress, setScanProgress] = useState('')
-  const [modelProgress, setModelProgress] = useState<{ providerId: string; model: string; completed: number; total: number }[]>([])
+  const [modelProgress, setModelProgress] = useState<ScanProgress[]>([])
   const [activeTests, setActiveTests] = useState<Record<string, string>>({})
   const [stopping, setStopping] = useState<Set<string>>(new Set())
   const scanCancelled = useRef(false)
@@ -67,6 +71,8 @@ export function OllamaNodes() {
   const [authDrafts, setAuthDrafts] = useState<Record<string, AuthDraft>>({})
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
+  // Background polls report separately so the next successful poll can clear their own failure.
+  const [pollError, setPollError] = useState('')
   const [importErrors, setImportErrors] = useState<string[]>([])
   const [savingRouting, setSavingRouting] = useState(false)
   const busyRef = useRef(new Set<string>())
@@ -86,6 +92,7 @@ export function OllamaNodes() {
       ])
       if (version !== loadVersion.current) return
       setNodes(nextNodes)
+      setPollError('')
       setConfig(nextConfig)
       setAuthDrafts(current => Object.fromEntries(nextNodes.map(node => [
         node.id,
@@ -100,7 +107,13 @@ export function OllamaNodes() {
 
   useEffect(() => {
     void load()
-    const timer = setInterval(() => { if (!document.hidden && !busyRef.current.size && !importingRef.current) void window.electronAPI.ollama.list().then(setNodes).catch(error => setLoadError(String(error))) }, 5000)
+    const timer = setInterval(() => {
+      if (document.hidden || busyRef.current.size || importingRef.current) return
+      void window.electronAPI.ollama.list().then(next => { setNodes(next); setPollError('') }).catch(error => {
+        console.error('[Ollama] Background node refresh:', error)
+        setPollError(String(error))
+      })
+    }, 5000)
     return () => { loadVersion.current++; scanCancelled.current = true; clearInterval(timer) }
   }, [load])
 
@@ -113,14 +126,17 @@ export function OllamaNodes() {
       try {
         const progress = await window.electronAPI.ollama.getScanProgress()
         if (active) {
-          setModelProgress(progress)
+          // Idle polls return an empty list every second; keep the previous array so the page does not re-render.
+          setModelProgress(current => sameProgress(current, progress) ? current : progress)
           if (progress.length) {
             const latest = await window.electronAPI.ollama.list()
             if (active) setNodes(latest)
           }
+          if (active) setPollError('')
         }
       } catch (error) {
-        if (active) setLoadError(String(error))
+        console.error('[Ollama] Scan progress refresh:', error)
+        if (active) setPollError(String(error))
       } finally {
         polling = false
       }
@@ -337,7 +353,7 @@ export function OllamaNodes() {
   }
 
   return (
-    <div className="min-w-0 space-y-5" data-ollama-ready={!loading && !loadError}>
+    <div className="min-w-0 space-y-5" data-ollama-ready={!loading && !loadError && !pollError}>
       <PageHeader
         icon={Network}
         title={t('ollama.title')}
@@ -349,9 +365,9 @@ export function OllamaNodes() {
         <Button size="sm" variant="outline" disabled={stopping.size > 0} onClick={() => void cancelScans()}>{t('ollama.stopAllTests')}</Button>
       </div>}
 
-      {loadError ? <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm">
+      {loadError || pollError ? <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-danger/30 bg-danger/5 p-4 text-sm">
         <AlertTriangle className="h-4 w-4 shrink-0 text-danger" />
-        <p className="min-w-0 flex-1 break-words text-danger">{loadError}</p>
+        <p className="min-w-0 flex-1 break-words text-danger">{loadError || pollError}</p>
         <Button variant="outline" disabled={loading} onClick={() => void load()}>{t('common.retry')}</Button>
       </div> : null}
       {loading ? <p role="status" className="text-sm text-muted-foreground">{t('common.loading')}</p> : null}

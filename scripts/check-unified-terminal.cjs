@@ -131,41 +131,11 @@ if (ownerHome) {
       await send(manager, wsl.id, 'printf "WSL_RESTORED:%s\\n" "$PWD"\r'); await output(manager, wsl.id, /WSL_RESTORED:\/tmp/)
       await manager.command('close', { id: wsl.id }); checks.push('Installed WSL launches a Linux shell and restores its Linux current directory')
     }
-    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-    context = { ...context, proxy: { ...context.proxy, proxyPort: server.address().port } }
-    await manager.synchronize()
-    await manager.command('preferences', { preferences: { restoreOnStartup: true, keepRunningOnExit: true } })
+    // OpenCode now runs only in Work tabs (main-process agent); the detached host must refuse it.
     const native = create('opencode', workspace, { opencode: { workspaceId: 'qa', model: 'qa-model', accessScope: 'group' } })
-    state = await manager.command('create', { input: native })
-    assert.equal(state.sessions[0].status, 'running', state.sessions[0].error)
-    const sessionId = state.sessions[0].sessionId
-    let cursor = 0, polling = false, failed
-    nativePoll = setInterval(async () => {
-      if (polling) return
-      polling = true
-      try {
-        const next = await manager.command('poll', { id: native.id, cursor }); cursor = next.cursor; nativeOutput += next.data
-        if (next.data.includes('\x1b[6n')) await send(manager, native.id, '\x1b[1;1R')
-        if (next.data.includes('\x1b[c')) await send(manager, native.id, '\x1b[?1;2c')
-        if (next.data.includes('\x1b[?u')) await send(manager, native.id, '\x1b[?0u')
-        if (next.data.includes('\x1b[>q')) await send(manager, native.id, '\x1bP>|xterm\x1b\\')
-        if (next.data.includes('\x1b]11;?')) await send(manager, native.id, '\x1b]11;rgb:1616/1818/1d1d\x1b\\')
-      } catch (error) { failed = error } finally { polling = false }
-    }, 100)
-    await until(() => /DailyWorkMate|Terminal QA|qa-model/.test(nativeOutput), 'OpenCode initial render', 45000)
-    await sleep(800); await send(manager, native.id, '\x1b[200~请读取 hello.txt 并返回内容 UNIFIED_INPUT_QA\x1b[201~'); await sleep(350); await send(manager, native.id, '\r')
-    await until(() => { if (failed) throw failed; return nativeOutput.includes('UNIFIED_OPENCODE_COMPLETE') }, 'OpenCode guarded model reply', 45000)
-    assert.ok(modelRequests.some(body => JSON.stringify(body.messages).includes('UNIFIED_INPUT_QA')))
-    assert.ok(modelRequests.some(body => JSON.stringify(body.messages).includes('UNIFIED_GUARDED_FILE_QA')))
-    clearInterval(nativePoll); nativePoll = undefined; await until(() => !polling, 'poll stopped')
-    await manager.detach(); manager = client(); state = await manager.synchronize()
-    assert.equal(state.sessions[0].sessionId, sessionId)
-    assert.equal(state.sessions[0].status, 'running')
-    checks.push('Guarded OpenCode v2 TUI, Chinese input, real file tool and restored session after awaited shutdown')
-    context = { ...context, workspaces: [] }; state = await manager.synchronize()
-    assert.equal(state.sessions[0].status, 'error'); assert.match(state.sessions[0].error, /permissions changed/)
-    checks.push('Revoking workspace access ends the corresponding native OpenCode process')
-    await manager.command('close', { id: native.id })
+    await assert.rejects(manager.command('create', { input: native }), /Work/)
+    assert.equal((await manager.command('state')).sessions.some(item => item.id === native.id), false)
+    checks.push('Detached host refuses OpenCode tabs; OpenCode opens in Work')
     const saved = fs.readFileSync(path.join(options.home, 'sessions.json'), 'utf8')
     assert.ok(!saved.includes('apiKeys') && !saved.includes('proxyPort') && !saved.includes('password'))
     fs.writeFileSync(path.join(scratch, 'report.json'), JSON.stringify({ passed: true, checks, wslAvailable: state.shells.find(item => item.kind === 'wsl').available }, null, 2))

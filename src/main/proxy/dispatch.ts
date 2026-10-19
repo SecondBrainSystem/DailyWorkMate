@@ -1,3 +1,4 @@
+import { setTimeout as delay } from 'node:timers/promises'
 import { loadBalancer } from './loadbalancer'
 import { modelMapper } from './modelMapper'
 import { requestForwarder } from './forwarder'
@@ -8,12 +9,18 @@ import { extractTokenCount } from './tokenUsage'
 import type { ChatCompletionRequest, ForwardResult, AccountSelection, ProxyContext } from './types'
 import { ModelFeatureError, normalizeFeatureRequest } from './modelFeatures'
 import { openCodeAffinityKey, openCodeSessionAffinity } from './sessionAffinity'
+import { isTransportFailure, sameAccountRetryDelay } from './upstreamFailure'
 
 export interface DispatchResult {
   selection?: AccountSelection
   result: ForwardResult
   finishStream?: (error?: Error) => void
 }
+
+/** Failures another account (or a later attempt) may not repeat. 400-class input errors never retry. */
+const retryable = (status?: number) => status === undefined || [401, 403, 408, 429].includes(status) || status >= 500
+/** Credential failures are specific to an account, so only a different account can help. */
+const sameAccountRetryable = (status?: number) => status === undefined || status === 408 || status === 429 || status >= 500
 
 export async function dispatchChatCompletion(
   request: ChatCompletionRequest,
@@ -76,48 +83,62 @@ export async function dispatchChatCompletion(
   proxyStatusManager.recordRequestStart(request.model, selection.provider.id, selection.account.id)
 
   try {
-    const forward = async (): Promise<ForwardResult> => {
-      // Actual requests determine availability. Do not gate inference on a marker-echo test.
-      return requestForwarder.forwardChatCompletion(
+    // Actual requests determine availability. Do not gate inference on a marker-echo test.
+    // The forwarder makes exactly one attempt; this loop owns the single retry budget.
+    const forward = (): Promise<ForwardResult> => requestForwarder.forwardChatCompletion(
       request,
       selection.account,
       selection.provider,
       selection.actualModel,
       { ...context, providerId: selection.provider.id, accountId: selection.account.id, actualModel: selection.actualModel },
-      // Ollama retries must select another eligible node, not repeat a dead endpoint.
-      selection.provider.upstreamKind === 'ollama' ? 0 : undefined,
-      )
-    }
+    )
     let result = await forward()
     let attemptedAccounts: string[] = [selection.account.id]
-    const retryable = (status?: number) => status === undefined || [401, 403, 408, 429].includes(status) || status >= 500
-    while (!result.success && !signal?.aborted && (selection.provider.upstreamKind === 'ollama' || config.loadBalanceStrategy === 'failover') && retryable(result.status)) {
+    let attempts = 1
+    while (!result.success && !signal?.aborted && retryable(result.status)) {
       openCodeSessionAffinity.forget(affinityKey, selection.account.id)
-      loadBalancer.markAccountFailed(selection.account.id, selection.provider.upstreamKind === 'ollama')
-      if (attemptedAccounts.length > config.retryCount) break
+      const ollama = selection.provider.upstreamKind === 'ollama'
+      // Only an unreachable or silent node is quarantined at once. An HTTP 5xx can be caused by the
+      // request itself (out of memory, context too long), so it only counts toward the threshold.
+      loadBalancer.markAccountFailed(selection.account.id, ollama && isTransportFailure(result))
+      if (attempts > config.retryCount) break
       const next = loadBalancer.selectAccount(
         routing.model, config.loadBalanceStrategy, preferredProviderId,
         routing.ollamaOnly ? undefined : modelMapper.getPreferredAccount(routing.model),
-        selection.provider.upstreamKind === 'ollama' ? 'ollama' : undefined, attemptedAccounts,
+        ollama ? 'ollama' : undefined, attemptedAccounts,
       )
-      if (!next) break
-      storeManager.addLog('warn', 'Account failed; trying another account for the same model', {
+      let wait = 0
+      if (next) {
+        selection = next
+        attemptedAccounts = [...attemptedAccounts, next.account.id]
+      } else {
+        // No other account. Retrying the same Ollama endpoint repeats a dead node, and a
+        // credential error or a long Retry-After will not clear within this request.
+        const retryDelay = ollama || !sameAccountRetryable(result.status)
+          ? undefined : sameAccountRetryDelay(result, proxyStatusManager.getConfig().retryDelay)
+        if (retryDelay === undefined) break
+        wait = retryDelay
+      }
+      storeManager.addLog('warn', next ? 'Account failed; trying another account for the same model' : 'Request failed; retrying the same account', {
         requestId, providerId: selection.provider.id,
         model: request.model, error: result.error,
-        data: { nextProviderId: next.provider.id, status: result.status },
+        data: { nextProviderId: selection.provider.id, status: result.status, waitMs: wait },
       })
-      selection = next
-      attemptedAccounts = [...attemptedAccounts, next.account.id]
+      if (wait > 0) {
+        try { await delay(wait, undefined, { signal }) } catch {
+          result = { success: false, status: 499, error: 'Client cancelled the request' }
+          break
+        }
+      }
+      attempts += 1
       result = await forward()
     }
     const latency = Date.now() - startTime
 
     if (!result.success) {
+      // Every failed attempt was already counted in the loop; counting again would quarantine early.
       openCodeSessionAffinity.forget(affinityKey, selection.account.id)
       proxyStatusManager.recordRequestFailure(latency)
-      if (!signal?.aborted && selection.provider.upstreamKind !== 'ollama' && retryable(result.status)) {
-        loadBalancer.markAccountFailed(selection.account.id)
-      }
       storeManager.addLog('error', `Request failed: ${result.error || 'Unknown error'}`, {
         requestId,
         providerId: selection.provider.id,
@@ -133,7 +154,7 @@ export async function dispatchChatCompletion(
         selection.provider.id,
         selection.account.id,
       )
-      return { selection, result: { ...result, error: `${selection.provider.name}: ${result.error || 'Request failed'}${attemptedAccounts.length > 1 ? ` (${attemptedAccounts.length} nodes attempted)` : ''}` } }
+      return { selection, result: { ...result, error: `${selection.provider.name}: ${result.error || 'Request failed'}${attemptedAccounts.length > 1 ? ` (${attemptedAccounts.length} nodes attempted)` : attempts > 1 ? ` (${attempts} attempts)` : ''}` } }
     }
 
     let finished = false
@@ -146,15 +167,15 @@ export async function dispatchChatCompletion(
         proxyStatusManager.recordRequestFailure(elapsed)
         if (!signal?.aborted) loadBalancer.markAccountFailed(selection.account.id)
       } else {
-        if (selection.provider.upstreamKind === 'ollama') openCodeSessionAffinity.remember(affinityKey, selection.account.id)
+        const ollama = selection.provider.upstreamKind === 'ollama'
+        if (ollama) openCodeSessionAffinity.remember(affinityKey, selection.account.id)
         loadBalancer.clearAccountFailure(selection.account.id)
         proxyStatusManager.recordRequestSuccess(elapsed)
-        const current = storeManager.getAccountById(selection.account.id)
-        if (current) storeManager.updateAccount(current.id, {
-          ...(selection.provider.upstreamKind === 'ollama' ? { status: 'active' as const, errorMessage: undefined } : {}),
-          lastUsed: Date.now(), requestCount: (current.requestCount || 0) + 1, todayUsed: (current.todayUsed || 0) + 1,
-        })
-        if (selection.provider.upstreamKind === 'ollama') storeManager.updateProvider?.(selection.provider.id, { status: 'online', lastScanError: undefined, lastStatusCheck: Date.now() })
+        // Counters are buffered in memory; only an actual status change is written right away.
+        storeManager.recordAccountUsage(selection.account.id, { reactivate: ollama })
+        if (ollama && (selection.provider.status !== 'online' || selection.provider.lastScanError)) {
+          storeManager.updateProvider(selection.provider.id, { status: 'online', lastScanError: undefined, lastStatusCheck: Date.now() })
+        }
       }
       storeManager.addLog(error ? 'error' : 'debug', error ? `Stream failed: ${error.message}` : 'Request succeeded', {
         requestId, providerId: selection.provider.id, accountId: selection.account.id,
