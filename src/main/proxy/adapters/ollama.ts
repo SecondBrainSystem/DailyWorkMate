@@ -10,7 +10,7 @@ import { readUpstreamErrorBody } from '../upstreamError'
 import { createOllamaAgents } from '../connectionAgents'
 import { requestOllama } from '../../ollama/request'
 import { awaitFirstOutput } from '../firstOutput'
-import { UPSTREAM_TIMEOUT, UPSTREAM_UNREACHABLE, retryAfter, upstreamFailure } from '../upstreamFailure'
+import { UPSTREAM_EMPTY, UPSTREAM_TIMEOUT, UPSTREAM_UNREACHABLE, retryAfter, upstreamFailure } from '../upstreamFailure'
 import {
   claudeToOpenAIResponse,
   createClaudeToOpenAIStream,
@@ -133,9 +133,9 @@ export class OllamaAdapter {
           return {
             success: false,
             status: 502,
-            // A node that keeps closing before any output is broken. An empty but completed answer or
-            // an error event may be caused by the request, so those only count toward quarantine.
-            ...(first.reason === 'stream_error' && !first.finished ? { errorCode: UPSTREAM_UNREACHABLE } : {}),
+            // A node that keeps closing before any output is broken. A completed but empty answer is
+            // failed over without counting against the node; an error event only counts toward quarantine.
+            ...(first.reason === 'stream_error' ? { errorCode: first.finished ? UPSTREAM_EMPTY : UPSTREAM_UNREACHABLE } : {}),
             error: `Ollama ${path} stream produced no output: ${first.error.message}${attempt > 1 ? ` (tried ${attempt} times)` : ''}`,
           }
         }

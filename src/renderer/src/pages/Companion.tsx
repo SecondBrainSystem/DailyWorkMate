@@ -9,6 +9,8 @@ import { Button } from '@/components/ui/button'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Avatar } from '@/components/companion/Avatar'
+import { DailyTodoNote } from '@/components/companion/DailyTodoNote'
+import { useDailyTodo } from '@/hooks/useDailyTodo'
 import { CompanionSettings } from '@/components/companion/CompanionSettings'
 import { OpenCodePanel } from '@/components/companion/OpenCodePanel'
 import { CompanionHints } from '@/components/companion/CompanionHints'
@@ -354,6 +356,7 @@ export function Companion({ visible = true }: { visible?: boolean }) {
   }, [messages])
   useEffect(() => { if (mode === 'agent') page.current?.scrollIntoView({ block: 'start' }) }, [mode])
   const chatView = visible && mode === 'chat' && !terminalOpen
+  const dailyTodo = useDailyTodo({ api, workspaces: snapshot?.workspaces || [], messages, workspaceId: chatWorkspace.workspaceId, active: chatView && !!snapshot, busy })
   canSpeak.current = chatView
   useEffect(() => { if (!visible) { setContinuous(false); voice.stop() } }, [visible])
   useEffect(() => {
@@ -695,8 +698,9 @@ export function Companion({ visible = true }: { visible?: boolean }) {
     {snapshot?.warnings?.map(warning => <p key={warning} role="status" className="companion-notice">{errorText(warning)}</p>)}
     {chatView && voice.notice && <p role="status" className="mb-3 rounded-lg border border-[var(--glass-border)] bg-[var(--glass-bg)] px-4 py-3 text-sm text-[var(--text-secondary)]">{voice.notice}<button className="ml-3" aria-label={copy.cancel} onClick={voice.clearNotice}><X size={13} /></button></p>}
     {chatView && !avatarVisible && <div className="companion-compact-controls">{voiceControls}</div>}
-    <div className={'companion-layout' + (!avatarVisible || !chatView ? ' is-avatar-hidden' : '')}>
-      {chatView && avatarVisible && <section className="companion-stage">
+    <div className={'companion-layout' + (!chatView || (!avatarVisible && !dailyTodo.visible) ? ' is-avatar-hidden' : '') + (chatView && dailyTodo.visible ? ' has-daily-todo' : '')}>
+      {chatView && (avatarVisible || dailyTodo.visible) && <aside className={dailyTodo.visible ? 'companion-daily-sidebar' : undefined}>
+      {avatarVisible && <section className="companion-stage">
         <div className="companion-stage-header"><span className="companion-eyebrow" aria-hidden="true"><span className="companion-online" /></span><button className="companion-icon-button" title={copy.avatar + ' · ' + copy.avatarHint} aria-label={copy.avatar} disabled={locked || !snapshot} onClick={() => { void control(() => settings.avatarMode === '3d' ? api.pickAvatarModel() : api.pickAvatar()) }}><Sparkles size={16} /></button><button className="companion-icon-button" aria-label={t('companion.page.resetAvatar')} title={t('companion.page.resetAvatar')} disabled={locked || !snapshot} onClick={() => { if (window.confirm(t('companion.page.resetAvatarConfirm'))) void control(() => settings.avatarMode === '3d' ? api.resetAvatarModel() : api.resetAvatar()) }}><RefreshCw size={16} /></button></div>
         <Avatar state={state} image={snapshot?.avatarUrl || ''} name={settings.name} level={voice.level} avatarMode={settings.avatarMode} modelUrl={snapshot?.avatarModelUrl || ''} />
         <h2 className="companion-name flex max-w-full items-center justify-center gap-2"><span className="min-w-0 break-words">{settings.name}</span><button type="button" className="companion-icon-button shrink-0" aria-label={t('companion.page.editName')} title={copy.name} disabled={locked || !snapshot} onClick={() => { setContinuous(false); voice.stop(); setSettingsOpen(true) }}><Pencil size={14} /></button></h2>
@@ -710,6 +714,8 @@ export function Companion({ visible = true }: { visible?: boolean }) {
         <div className="mt-5 w-full">{voiceControls}</div>
         </details>
       </section>}
+      {dailyTodo.visible && <DailyTodoNote key={chatWorkspace.workspaceId || 'personal'} model={dailyTodo} />}
+      </aside>}
       <section className="companion-chat">
         <div className="companion-chat-header"><div className="companion-tabs" role="tablist" aria-label={copy.title} onKeyDown={event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]; const index = buttons.indexOf(document.activeElement as HTMLButtonElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length; event.preventDefault(); buttons[next]?.focus(); buttons[next]?.click() }}>{(['chat', 'agent'] as const).map(item => <button role="tab" aria-selected={!terminalOpen && mode === item} key={item} disabled={busy || voice.transcribing || historyBusy || !conversation} {...(item === 'agent' ? activityDescription(workActivity) : {})} onClick={() => showView(item)}>{item === 'chat' ? <Bot size={14} /> : <Briefcase size={14} />}{copy[item]}{item === 'agent' && <ActivityMark state={workActivity} announce={false} />}</button>)}<button role="tab" aria-selected={terminalOpen} disabled={busy || voice.transcribing || historyBusy || !conversation} {...activityDescription(terminalActivity)} onClick={() => showView('terminal')}><Terminal size={14} />{t('companion.page.terminal')}<ActivityMark state={terminalActivity} announce={false} /></button></div>
           <div className="companion-session-controls flex min-w-0 flex-wrap items-center gap-1"><select className="companion-select companion-model-select" aria-label={copy.model} title={workView && work.active ? t('companion.page.sessionModel') : undefined} value={shownModel} disabled={workView ? !snapshot || !work.ready : locked || !snapshot} onChange={event => chooseModel(event.target.value)}><option value="" disabled>{copy.model}</option>

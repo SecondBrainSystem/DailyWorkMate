@@ -78,6 +78,7 @@ if (ownerHome) {
     assert.equal(await status({ Authorization: 'Bearer ' + descriptor.token, Origin: 'https://untrusted.invalid' }), 403)
     checks.push('Local host rejects unauthenticated clients and browser-origin requests')
     assert.equal(state.sessions[0].id, info.id)
+    await output(manager, info.id, /\x1b\]133;A(?:\x07|\x1b\\)/)
     const beforeQuery = (await manager.command('poll', { id: info.id, cursor: 0 })).cursor
     await send(manager, info.id, 'echo %DAILYWORKMATE_TERMINAL_QA% & echo AFTER_TRUE_OWNER_EXIT\r')
     await until(async () => {
@@ -95,6 +96,7 @@ if (ownerHome) {
     // "# token" keeps test commands out of the user's PowerShell history file (PSReadLine stores such lines in memory only).
     await send(manager, ps.id, "Write-Output ('中文输入成功:' + $PID) # token\r")
     const first = await output(manager, ps.id, /中文输入成功:\d+/)
+    assert.match(first.data, /\x1b\]133;A(?:\x07|\x1b\\)/, 'PowerShell reports a real shell prompt separately from its directory')
     const firstPid = Number(first.data.match(/中文输入成功:(\d+)/)[1])
     await send(manager, ps.id, "Set-Location -LiteralPath '.\\子目录'; Write-Output 'CWD_READY' # token\r")
     await until(async () => (await manager.command('state')).sessions.find(item => item.id === ps.id)?.directory === path.join(workspace, '子目录'), 'PowerShell current directory')

@@ -9,7 +9,7 @@ import { extractTokenCount } from './tokenUsage'
 import type { ChatCompletionRequest, ForwardResult, AccountSelection, ProxyContext } from './types'
 import { ModelFeatureError, normalizeFeatureRequest } from './modelFeatures'
 import { openCodeAffinityKey, openCodeSessionAffinity } from './sessionAffinity'
-import { isTransportFailure, sameAccountRetryDelay } from './upstreamFailure'
+import { UPSTREAM_EMPTY, isTransportFailure, sameAccountRetryDelay } from './upstreamFailure'
 
 export interface DispatchResult {
   selection?: AccountSelection
@@ -100,7 +100,8 @@ export async function dispatchChatCompletion(
       const ollama = selection.provider.upstreamKind === 'ollama'
       // Only an unreachable or silent node is quarantined at once. An HTTP 5xx can be caused by the
       // request itself (out of memory, context too long), so it only counts toward the threshold.
-      loadBalancer.markAccountFailed(selection.account.id, ollama && isTransportFailure(result))
+      // An empty but completed answer comes from a healthy node: try another one without marking it failed.
+      if (result.errorCode !== UPSTREAM_EMPTY) loadBalancer.markAccountFailed(selection.account.id, ollama && isTransportFailure(result))
       if (attempts > config.retryCount) break
       const next = loadBalancer.selectAccount(
         routing.model, config.loadBalanceStrategy, preferredProviderId,

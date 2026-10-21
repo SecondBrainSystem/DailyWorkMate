@@ -19,6 +19,8 @@ DailyWorkMate is a desktop companion for everyday work. Talk through a plan, let
 ![Assistant with a sample daily plan](docs/screenshots/assistant.png)
 
 - **Chat and plan:** streaming replies, conversation history, model selection, and an editable assistant name and persona. The default name is **DailyWorkMate**; use the pencil beside it or **Character & voice → Assistant name** to save your own.
+- **Daily Todo note:** mentioning DailyTodo, Daily or Todo in chat, or finding a related folder/document in an authorized workspace, reveals a paper-style note below a smaller avatar. Markdown renders headings, nested checklists, tables, quotes and code. In writable workspaces, checking a task saves its marker directly to the file; external edits are detected before saving. **Copy for today** copies the latest version in the same folder and name series to a file dated `YYYY-MM-DD`, adds a number if needed, and opens the new copy. Originals and checkmarks are preserved. Read-only folders remain read only; personal notes support editing, checkboxes and local persistence.
+- **Copy content:** messages and notes have copy buttons. Select text in messages, headings or interface descriptions and copy it with the keyboard or the context menu.
 - **From conversation to action:** chat-only mode can hand file tasks to a workspace agent when a workspace is connected and the model supports the handoff tool.
 - **Voice:** microphone input, optional spoken replies, full or summarized reading, and voice settings. Local recognition and synthesis require the optional speech resources; system voices and compatible speech APIs are also supported.
 - **Your companion:** the included octopus, a custom image, or a supported GLB/GLTF avatar with a 3D viewer.
@@ -47,6 +49,8 @@ Shell commands run with your operating-system account's permissions. Folder rule
 ![PowerShell and CMD terminal tabs](docs/screenshots/terminal.png)
 
 The **Terminal** tab is a real PTY terminal with xterm.js. On Windows it supports **PowerShell, CMD and installed WSL distributions**. Choosing OpenCode opens a folder-bound Work session.
+
+Copy terminal selections with **Ctrl+C / ⌘C, Ctrl+Shift+C or right-click**. Without a selection, Ctrl+C still interrupts the command. Hold **Shift while dragging** to select text when a program captures the mouse. Work terminals use the same shortcuts.
 
 - Keep multiple terminal tabs open and switch views without restarting their processes. Each tab shows what its terminal is doing: a pulsing dot while a command runs or an agent such as Claude Code, Codex or OpenCode works on a turn, a green check once it has finished (until you type in that terminal), and a quiet ring when idle. Simply having Claude Code, Codex or OpenCode open, or a command that finishes within two seconds, does not light up; only an actual turn or a longer command does. The Work and Terminal tabs above show the same marks, so you can see a finished run from the chat view.
 - Split a tab into up to four panes to run a script in one while working in another: **Split right** (Alt+Shift+=) or **Split down** (Alt+Shift+-). Alt+Arrow moves between panes. Drag a divider, or focus it and use the arrow keys, to resize. Each pane is its own shell, starts in the focused pane's folder, and has its own close button. Narrow windows stack side-by-side panes vertically.

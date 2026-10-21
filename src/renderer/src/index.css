@@ -4,6 +4,14 @@
 @tailwind components;
 @tailwind utilities;
 
+/* App text is selectable, including headings, metadata and labels. xterm owns its own selection. */
+body { user-select: text; -webkit-user-select: text; }
+:where(h1, h2, h3, h4, p, label, dt, dd, th, td, pre, code, summary) { user-select: text; }
+::selection { background: var(--accent-soft-strong); color: var(--text-primary); }
+.copy-text-control { position: relative; display: inline-flex; align-items: center; }
+.copy-text-error { position: absolute; right: 0; bottom: 100%; z-index: 5; min-width: 12rem; padding: 8px; border: 1px solid var(--glass-border); border-radius: 6px; background: var(--bg-secondary); color: var(--text-primary); font-size: 12px; }
+.companion-message-copy { display: flex; justify-content: flex-end; margin-top: 4px; }
+
 /* ------------------------------------------------------------------ */
 /* Design tokens                                                       */
 /* One brand (violet) on cool neutrals; both themes share every role.  */

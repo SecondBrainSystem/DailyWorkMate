@@ -5,6 +5,8 @@ import type { ForwardResult } from './types.ts'
 export const UPSTREAM_UNREACHABLE = 'upstream_unreachable'
 /** The node accepted the connection but produced nothing within the timeout. */
 export const UPSTREAM_TIMEOUT = 'upstream_timeout'
+/** The node completed normally but answered with nothing: worth trying another node, but the node is healthy. */
+export const UPSTREAM_EMPTY = 'upstream_empty'
 
 const CONNECTION_ERROR_CODES = new Set(['ECONNREFUSED', 'ECONNRESET', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'ERR_SOCKET_CLOSED'])
 const TIMEOUT_ERROR_CODES = new Set(['ECONNABORTED', 'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT'])

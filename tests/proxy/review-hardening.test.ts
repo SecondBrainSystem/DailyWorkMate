@@ -43,8 +43,10 @@ test('forwarder and direct connections share one URL rule', () => {
   assert.equal(buildUpstreamUrl('https://api.example.com/v1', '/chat/completions'), 'https://api.example.com/v1/chat/completions')
   assert.equal(buildUpstreamUrl('https://api.example.com/v1beta', '/v1/chat/completions'), 'https://api.example.com/v1beta/chat/completions')
   assert.equal(buildUpstreamUrl('https://api.example.com', 'v1/messages'), 'https://api.example.com/v1/messages')
-  // A /v1 segment in the middle of the base is not a version suffix.
-  assert.equal(buildUpstreamUrl('https://api.example.com/v1/openai', '/v1/chat/completions'), 'https://api.example.com/v1/openai/v1/chat/completions')
+  // A /v1 segment in the middle of the base (gateways) also carries the version, as the proxy always treated it.
+  assert.equal(buildUpstreamUrl('https://api.example.com/v1/openai', '/v1/chat/completions'), 'https://api.example.com/v1/openai/chat/completions')
+  assert.equal(buildUpstreamUrl('https://api.example.com/v2/openai', '/v1/chat/completions'), 'https://api.example.com/v2/openai/v1/chat/completions', 'only /v1 counts mid-path')
+  assert.equal(buildUpstreamUrl('https://generativelanguage.googleapis.com/v1beta/openai', '/chat/completions'), 'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions')
 })
 
 test('Retry-After is honoured only within a bounded wait', () => {

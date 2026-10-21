@@ -41,6 +41,11 @@ before(async () => {
     requests.push({ index, body })
     if (index === 0 && mode === 'hang') return
     if (index === 0 && mode === 'down') { req.socket.destroy(); return }
+    if (index === 0 && mode === 'empty' && body.stream) {
+      res.writeHead(200, {'Content-Type':'application/x-ndjson'})
+      res.end(JSON.stringify({message:{content:''},done:true,done_reason:'stop'}) + '\n') // completed, but nothing to show
+      return
+    }
     if (mode === 'all-fail' || index === 0 && (mode === 'fail' || mode === 'bad-input')) {
       res.writeHead(mode === 'bad-input' ? 400 : 503, {'Content-Type':'application/json'})
       res.end(JSON.stringify({error:mode === 'bad-input' ? 'context too large' : 'node overloaded'}))
@@ -145,6 +150,18 @@ test('an HTTP 5xx fails over but only counts toward quarantine; three in a row q
   requests = []
   assert.equal((await dispatch()).selection.provider.id, '1')
   assert.deepEqual(requests.map(r => r.index), [1])
+})
+
+test('a completed but empty answer fails over without counting against the node', async () => {
+  mode = 'empty'
+  for (let round = 1; round <= 4; round += 1) {
+    requests = []
+    const { result, selection } = await dispatch('hello', true)
+    assert.equal(result.success, true)
+    assert.equal(selection.provider.id, '1')
+    // Never marked failed, so the healthy first node stays preferred however often it answers empty.
+    assert.deepEqual(requests.map(r => r.index), [0, 1], 'round ' + round)
+  }
 })
 
 test('when every node is quarantined the least-failed node is still tried', async () => {

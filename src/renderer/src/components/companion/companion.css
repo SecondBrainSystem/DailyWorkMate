@@ -175,7 +175,7 @@ html{--terminal-bg:#16181d;--terminal-fg:#e4e4e7;--terminal-strong:#f4f4f5;--ter
 @media(max-width:700px){.work-session-bar{flex-wrap:wrap}.work-session-tabs{flex-basis:100%}.work-session-model,.work-session-details .work-chip{display:none}}
 /* Collapsible terminal startup options */
 .companion-stage-options{width:100%;margin-top:12px}
-.companion-stage-options>summary{cursor:pointer;list-style:none;text-align:center;font-size:12px;color:var(--text-muted);padding:4px 0;user-select:none}
+.companion-stage-options>summary{cursor:pointer;list-style:none;text-align:center;font-size:12px;color:var(--text-muted);padding:4px 0;user-select:text}
 .companion-stage-options>summary::-webkit-details-marker{display:none}
 .companion-stage-options>summary::after{content:" \25BE"}
 .companion-stage-options[open]>summary::after{content:" \25B4"}

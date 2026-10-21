@@ -16,8 +16,26 @@ export function titleActivity(title: string): boolean | undefined {
 }
 
 // Codex ("Working (5s • esc to interrupt)"), OpenCode ("esc interrupt") and Claude Code show this only while busy.
-const INTERRUPT_HINT = /\b(?:esc|escape)\b[\s·•:]{0,3}(?:to\s+)?interrupt\b/i
-export function screenShowsInterruptHint(screen: string): boolean { return INTERRUPT_HINT.test(screen) }
+const INTERRUPT_HINT = /\b(?:esc|escape)\b[\s·•:]{0,3}(?:to\s+)?(?:interrupt|cancel|stop)\b/i
+/** Codex emits OSC 7501 on turn transitions, including when its visible footer is redrawing. */
+export function reportedAgentActivity(payload: string): boolean | undefined {
+  if (!/(?:^|:)app=codex(?:$|:)/.test(payload)) return undefined
+  const state = payload.match(/(?:^|:)state=(working|idle)(?:$|:)/)?.[1]
+  return state === 'working' ? true : state === 'idle' ? false : undefined
+}
+/** Codex's input row stays visible while idle, even in the normal buffer or through a multiplexer. */
+export function screenShowsAgentPrompt(screen: string): boolean { return /^\s*›(?:\s|$)/m.test(screen) }
+export function screenShowsInterruptHint(screen: string): boolean {
+  const lines = screen.split('\n')
+  const prompt = lines.map(line => /^\s*›(?:\s|$)/.test(line)).lastIndexOf(true)
+  // Only the live composer/status area, never an old status or quoted hint in the transcript.
+  // Do not truncate a long/multiline composer from the bottom: its status lives ABOVE it.
+  const footer = prompt < 0 ? lines.filter(line => line.trim()).slice(-8) : lines.slice(Math.max(0, prompt - 4), prompt)
+  return footer.some((line, index) => !/^\s*(?:›|>|["'`])/.test(line) && (
+    INTERRUPT_HINT.test(line) || (!!footer[index + 1] && INTERRUPT_HINT.test(line + ' ' + footer[index + 1].trim())
+      && /\b(?:esc|escape)\b/i.test(line))
+  ))
+}
 
 /** The rows currently on screen (not the scrolled viewport): where a TUI draws its status line. */
 export function liveScreen(terminal: Pick<Terminal, 'rows' | 'buffer'>): string {
@@ -35,8 +53,10 @@ export interface ActivityTracker {
   input(data: string): void
   /** New program output has been written to the terminal. */
   output(): void
-  /** The shell printed its prompt (OSC 7): the previous command has ended. */
+  /** The shell printed its actual prompt (OSC 133 A): the previous command has ended. */
   prompt(): void
+  /** OSC 7 is a directory update, not proof that an interactive agent ended its turn. */
+  directory(): void
   /** The process exited or the pane stopped running. */
   ended(): void
   dispose(): void
@@ -46,13 +66,14 @@ export interface ActivityTracker {
  * Per-pane activity, like Claude Code's own indicator: working only while something actually runs, then "done"
  * until the user types in that pane again, otherwise idle.
  *
- * A plain shell command runs from Enter until the next prompt (OSC 7). An interactive program (Claude Code,
+ * A plain shell command runs from Enter until the next prompt (OSC 133 A, legacy OSC 7). Codex's OSC 7501
+ * turn state is authoritative when available. An interactive program (Claude Code,
  * Codex, OpenCode, a REPL, vim) is recognised by bracketed paste or the alternate screen. It counts as idle
  * while it waits for input and as working only on its own signal: a spinning title (Claude Code), the
  * "esc to interrupt" status (Codex, OpenCode), or, when it gives neither, sustained output after the user
  * submitted something (spinners and timers redraw while busy; start-up screens and echoes of typing do not count).
  */
-export function trackActivity(terminal: Pick<Terminal, 'rows' | 'buffer' | 'modes' | 'onTitleChange'>, options: {
+export function trackActivity(terminal: Pick<Terminal, 'rows' | 'buffer' | 'modes' | 'onTitleChange'> & Partial<Pick<Terminal, 'parser'>>, options: {
   onChange: (state: ActivityState) => void
   /** Shell panes report prompts and treat Enter as starting a command; direct TUIs (Work tabs) do not. */
   shellPrompts: boolean
@@ -66,17 +87,23 @@ export function trackActivity(terminal: Pick<Terminal, 'rows' | 'buffer' | 'mode
   // command: a shell command is running; started: it has run for startDelay. reason: why "working" is shown.
   let command = false, started = false, reason: 'command' | 'agent' | undefined
   let titleKnown = false, titleWorking = false, hintKnown = false, hintWorking = false
+  let interactiveKnown = false, composerKnown = false
+  let reported: boolean | undefined
   // submitted: the user pressed Enter inside the interactive program; only then can its output mean work.
   let inputAt = -Infinity, outputs: number[] = [], submitted = false
   let startTimer: ReturnType<typeof setTimeout> | undefined, settleTimer: ReturnType<typeof setTimeout> | undefined
   let scanTimer: ReturnType<typeof setTimeout> | undefined, quietTimer: ReturnType<typeof setTimeout> | undefined, lastScan = 0
   const set = (next: ActivityState) => { if (!disposed && next !== state) { state = next; onChange(next) } }
-  const interactive = () => !shellPrompts || terminal.modes.bracketedPasteMode || terminal.buffer.active.type === 'alternate' || titleKnown || hintKnown
+  // TUIs can temporarily disable paste mode / leave the alternate screen between redraws. Once
+  // identified, they remain interactive until the next shell prompt, not a long-running shell command.
+  const interactive = () => interactiveKnown || !shellPrompts || terminal.modes.bracketedPasteMode || terminal.buffer.active.type === 'alternate' || titleKnown || hintKnown
   const busyOutput = () => { const now = Date.now(); outputs = outputs.filter(time => now - time < quietDelay); return submitted && outputs.length >= 2 }
-  const agentWorking = () => titleKnown ? titleWorking || hintWorking : hintKnown ? hintWorking : busyOutput()
+  // Codex's composer is authoritative; Claude's title remains authoritative during tool-output gaps.
+  const agentWorking = () => reported ?? (composerKnown ? hintWorking : titleKnown ? titleWorking || hintWorking : hintKnown ? hintWorking : busyOutput())
   const evaluate = () => {
-    if (disposed) return
-    const running = shellPrompts ? command : true
+    if (disposed || ignore()) return
+    const running = !shellPrompts || command || reported === true || hintWorking
+    if (running && interactive()) interactiveKnown = true
     const plain = running && !interactive()
     const working = plain ? started : running && agentWorking()
     if (working) { clearTimeout(settleTimer); settleTimer = undefined; reason = plain ? 'command' : 'agent'; set('working'); return }
@@ -87,22 +114,42 @@ export function trackActivity(terminal: Pick<Terminal, 'rows' | 'buffer' | 'mode
     if (!settleTimer) settleTimer = setTimeout(() => { settleTimer = undefined; if (state === 'working' && !(running && agentWorking())) { reason = undefined; submitted = false; set('done') } }, settleDelay)
   }
   const reset = () => {
-    command = false; started = false; reason = undefined; titleKnown = false; titleWorking = false; hintKnown = false; hintWorking = false; outputs = []; submitted = false
+    command = false; started = false; reason = undefined; titleKnown = false; titleWorking = false; hintKnown = false; hintWorking = false; interactiveKnown = false; composerKnown = false; reported = undefined; outputs = []; submitted = false
     clearTimeout(startTimer); clearTimeout(settleTimer); clearTimeout(quietTimer); settleTimer = undefined
   }
   const scan = () => {
     scanTimer = undefined; lastScan = Date.now()
-    if (disposed) return
-    const hint = screenShowsInterruptHint(liveScreen(terminal))
-    if (hint) hintKnown = true
-    hintWorking = hint
+    if (disposed || ignore()) return
+    const content = liveScreen(terminal), hint = screenShowsInterruptHint(content)
+    const composer = screenShowsAgentPrompt(content)
+    if (composer) composerKnown = true
+    if (hint || composerKnown) { hintKnown = true; interactiveKnown = true }
+    // No composer/status during a TUI repaint is unknown, not a completion signal.
+    if (hint || composer || !composerKnown) hintWorking = hint
     evaluate()
   }
+  const prompt = () => {
+    if (disposed || ignore()) return
+    const finished = state === 'working'
+    reset(); set(finished ? 'done' : state)
+  }
+  const report = terminal.parser?.registerOscHandler(7501, payload => {
+    if (disposed || ignore()) return false
+    const value = reportedAgentActivity(payload)
+    if (value === undefined) return false
+    reported = value; interactiveKnown = true
+    if (value) command = true
+    evaluate(); return false
+  })
+  const shellPrompt = terminal.parser?.registerOscHandler(133, payload => {
+    if (payload === 'A' || payload.startsWith('A;')) prompt()
+    return false
+  })
   const title = terminal.onTitleChange(value => {
     if (disposed || ignore()) return
     const working = titleActivity(value)
-    if (working === undefined) return
-    titleKnown = true; titleWorking = working; evaluate()
+    // A neutral title replaces a spinner too; keeping the old title state latched leaves Codex busy.
+    titleKnown = working !== undefined; titleWorking = working === true; evaluate()
   }) as IDisposable
   // Entering a full-screen program re-evaluates at once: it is waiting for the user until it signals work.
   const screen = terminal.buffer.onBufferChange(() => { if (!disposed && !ignore()) evaluate() }) as IDisposable
@@ -128,13 +175,10 @@ export function trackActivity(terminal: Pick<Terminal, 'rows' | 'buffer' | 'mode
       }
       if (!scanTimer) scanTimer = setTimeout(scan, Math.max(0, scanInterval - (now - lastScan)))
     },
-    prompt() {
-      if (disposed || ignore()) return
-      const finished = state === 'working'
-      reset(); set(finished ? 'done' : state)
-    },
+    prompt,
+    directory() { if (reported !== true && !hintWorking) prompt() },
     ended() { const finished = state === 'working'; reset(); set(finished ? 'done' : state) },
-    dispose() { disposed = true; reset(); clearTimeout(scanTimer); title.dispose(); screen.dispose() },
+    dispose() { disposed = true; reset(); clearTimeout(scanTimer); title.dispose(); screen.dispose(); report?.dispose(); shellPrompt?.dispose() },
   }
 }
 

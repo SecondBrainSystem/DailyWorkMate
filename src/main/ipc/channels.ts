@@ -19,6 +19,7 @@ export const IpcChannels = {
     resetAvatar: 'companion:resetAvatar', pickAvatarModel: 'companion:pickAvatarModel', resetAvatarModel: 'companion:resetAvatarModel',
     saveWorkspaceGroup: 'companion:saveWorkspaceGroup', deleteWorkspaceGroup: 'companion:deleteWorkspaceGroup',
     listFiles: 'companion:listFiles', readFile: 'companion:readFile', transcribe: 'companion:transcribe', synthesize: 'companion:synthesize',
+    readTodo: 'companion:readTodo', setTodoTask: 'companion:setTodoTask', copyTodoToday: 'companion:copyTodoToday',
     cancelSpeech: 'companion:cancelSpeech', startAgent: 'companion:startAgent', pollAgent: 'companion:pollAgent',
     stopAgent: 'companion:stopAgent', replyPermission: 'companion:replyPermission',
   },

@@ -5,6 +5,7 @@ import type { CompanionMessage } from '@shared/companion'
 import { MessageMarkdown } from '@/components/chat/MessageMarkdown'
 import { WorkspaceAgentStatus } from '@/components/chat/ChatWorkspaceAccess'
 import { ErrorText } from '@/components/ui/error-text'
+import { CopyTextButton } from '@/components/ui/copy-text-button'
 import type { CompanionCopy } from './copy'
 
 const ATTACHED_FILE = /\n\n<attached-file name=([\s\S]*?)>[\s\S]*?<\/attached-file>/g
@@ -34,6 +35,7 @@ export const CompanionMessageItem = memo(function CompanionMessageItem({ message
   return <article data-message-id={message.id} className={'companion-message ' + (message.role === 'user' ? 'is-user' : '')}>
     <div className="companion-message-label">{message.role === 'user' ? t('companion.message.you') : name}{message.role === 'assistant' && message.model && <span data-message-model className="break-all"> · {message.model}</span>}{message.retryOf && <span data-retry-source>{t('companion.message.retryFrom')}{retrySource}</span>}{message.role === 'assistant' && message.content && (['summary', 'full'] as const).map(reading => <button key={reading} className="companion-read-button" aria-label={copy[reading] + ' · ' + name + ' · ' + new Date(message.createdAt).toLocaleString(locale)} disabled={speakDisabled} onClick={() => onSpeak(message, reading)}><Volume2 size={12} />{copy[reading]}</button>)}</div>
     <div className="companion-message-body">{message.content ? <MessageMarkdown text={message.content.replace(ATTACHED_FILE, (_match, file) => '\n📎 ' + file)} /> : placeholder && <span className="text-[var(--text-muted)]">{placeholder}</span>}</div>
+    {!!message.content && <div className="companion-message-copy"><CopyTextButton text={message.content} /></div>}
     {message.error && <p role="alert" className="mt-2 whitespace-pre-wrap break-words text-sm text-danger"><ErrorText error={message.error} /></p>}
     {footer}
     {!!message.tools?.length && <WorkspaceAgentStatus snapshot

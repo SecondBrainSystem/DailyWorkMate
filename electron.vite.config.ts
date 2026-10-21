@@ -17,6 +17,9 @@ export default defineConfig({
           'mime-types',
           'zstd-codec',
           'electron-store',
+          'unified',
+          'remark-parse',
+          'remark-gfm',
           'electron-updater'
         ]
       })

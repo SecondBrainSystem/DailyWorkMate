@@ -11,6 +11,7 @@ import { ActivityMark } from './ActivityMark'
 import { HeaderPopover } from './HeaderPopover'
 import { enableShiftWheelScroll, fittedSize, redrawTerminal, settledPtyResize, followScrollback, readScrollback, saveScrollback, SCROLLBACK_CHOICES, terminalOptions, writeInChunks } from '@/lib/terminalDisplay'
 import { forwardImeSpaces } from '@/lib/terminalInput'
+import { enableTerminalCopy } from '@/lib/terminalClipboard'
 import { folderLabel } from '@/lib/folderLabel'
 import type { TerminalCreateInput, TerminalSession, TerminalState, ShellKind } from '@shared/terminal'
 import { MAX_PANES, MAX_RATIO, MIN_RATIO, clampRatio, neighborPane, paneGeometry, panesOf, setRatio, tabOf, type PaneDirection, type PaneRect, type SplitDirection, type TerminalTab } from '@shared/terminalTabs'
@@ -60,11 +61,12 @@ function TerminalView({ session, tabActive, focused, visible, split, activity, s
     // OpenCode) announce their own turns; see terminalActivity. Replayed history is not new activity.
     const tracker = trackActivity(terminal, { shellPrompts: session.kind !== 'opencode', ignore: () => replaying || cancelled,
       onChange: state => callbacks.current.onActivity(session.id, state) })
-    const prompt = terminal.parser.registerOscHandler(7, () => { tracker.prompt(); return false })
+    const prompt = terminal.parser.registerOscHandler(7, () => { tracker.directory(); return false })
     setError('')
     // A failed poll's banner clears on the next successful poll; other failures stay until replaced.
     let pollFailed = false
     const report = (reason: unknown) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)) }
+    const stopCopy = enableTerminalCopy(terminal, host.current, report)
     const ptySize = settledPtyResize((cols, rows) => { if (running && !cancelled) void api.resize(session.id, cols, rows).catch(report) })
     resize.current = () => {
       const size = cancelled ? undefined : fittedSize(host.current, fit)
@@ -111,7 +113,7 @@ function TerminalView({ session, tabActive, focused, visible, split, activity, s
     resize.current(); if (callbacks.current.shown && callbacks.current.focused) terminal.focus(); void poll()
     return () => {
       cancelled = true; clearTimeout(timer); tracker.dispose(); callbacks.current.onActivity(session.id, 'idle')
-      ptySize.cancel(); stopLayout(); stopShiftWheel(); stopScrollback(); prompt.dispose(); spaces.dispose(); data.dispose()
+      ptySize.cancel(); stopLayout(); stopShiftWheel(); stopScrollback(); stopCopy(); prompt.dispose(); spaces.dispose(); data.dispose()
       // Blur first so any open IME composition ends while its textarea is still in the document.
       if (terminal.textarea && terminal.textarea === document.activeElement) terminal.blur()
       if (display.current === terminal) display.current = null
@@ -143,7 +145,7 @@ function TerminalView({ session, tabActive, focused, visible, split, activity, s
       <ActivityMark state={activity} idle={<i className={'terminal-dot ' + session.status} aria-hidden="true" />} />
       <button type="button" className="terminal-pane-close" aria-label={t('terminal.pane.close', { name })} title={t('terminal.pane.closeTitle')} onClick={() => onClosePane(session)}><X size={12} /></button>
     </div>}
-    <div ref={host} className="unified-terminal-host" />
+    <div ref={host} className="unified-terminal-host" title={t('terminal.copyHint')} />
     {(error || session.error) && <p className="companion-terminal-error" role="alert">{error || session.error}</p>}
     <div className="unified-terminal-footer"><span role="status">{session.status === 'running' ? t('terminal.status.running') : session.status === 'starting' ? t('terminal.status.starting') : t('terminal.status.ended')}</span>
       {session.status === 'running' && <button type="button" className="terminal-redraw" title={t('terminal.redrawTitle')} aria-label={t('terminal.redrawLabel', { name })} onClick={() => redraw.current()}><RefreshCcw size={12} /><span>{t('terminal.redraw')}</span></button>}<button type="button" className="terminal-open-folder" title={session.directory} aria-label={t('terminal.openFolder')} onClick={() => { void window.electronAPI.companion.openTerminalDirectory(session.id).catch(reason => setError(reason instanceof Error ? reason.message : String(reason))) }}><FolderOpen size={14} /><span>{session.directory}</span></button></div>

@@ -154,7 +154,8 @@ export class OpenCodeService {
     const key = createHash('sha256').update(identity).digest('hex').slice(0, 16)
     const pending = this.launches.get(key)
     if (pending) {
-      // The other owner is starting this exact server: wait for it instead of replacing it.
+      // A concurrent launch for the same owner and scope is starting this exact server (owner is part of the
+      // identity, so chat and Work never share one): wait for it instead of starting a second process.
       await pending.catch(() => undefined)
       return this.launch(owner, input, grants, selected, model, active, freeModel)
     }

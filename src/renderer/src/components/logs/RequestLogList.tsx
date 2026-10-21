@@ -126,7 +126,7 @@ export function RequestLogList() {
   useEffect(() => {
     let pending: ReturnType<typeof setTimeout> | undefined
     const refresh = () => { if (!document.hidden) refreshLogs().catch(error => console.error('Failed to refresh request logs:', error)) }
-    const unsubscribe = window.electronAPI?.requestLogs?.onNewLog?.(() => { if (!pending) pending = setTimeout(() => { pending = undefined; refresh() }, 300) })
+    const unsubscribe = window.electronAPI?.requestLogs?.onNewLog?.(() => { if (!pending) pending = setTimeout(() => { pending = undefined; refresh() }, 1000) })
     const interval = setInterval(refresh, 15000)
     return () => { clearInterval(interval); clearTimeout(pending); unsubscribe?.() }
   }, [refreshLogs])

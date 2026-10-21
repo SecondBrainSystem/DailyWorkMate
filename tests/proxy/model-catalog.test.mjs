@@ -72,7 +72,7 @@ test('desktop catalog and HTTP return the same models without starting or advanc
   assert.deepEqual(direct, (await (await fetch(endpoint + '/v1/models')).json()).data)
   assert.equal(api.loadBalancer.selectAccount('usable').account.id, 'second')
 })
-test('catalog respects failure cooldown only for failover, without advancing round robin', async () => {
+test('catalog lists models routing can still reach, without advancing round robin', async () => {
   api.state.accounts = [...api.state.accounts, {...api.state.accounts[0],id:'second'}]
   assert.equal(api.loadBalancer.selectAccount('usable').account.id, 'ready')
   await list()
@@ -80,5 +80,7 @@ test('catalog respects failure cooldown only for failover, without advancing rou
   for (const id of ['ready','second']) for (let i=0;i<3;i++) api.loadBalancer.markAccountFailed(id)
   assert.deepEqual(await list(), ['alias','usable'])
   api.state.config = {...api.state.config,loadBalanceStrategy:'failover'}
-  assert.deepEqual(await list(), [])
+  // Failover falls back to the least-failed account when all cool down, so the catalog keeps the models.
+  assert.deepEqual(await list(), ['alias','usable'])
+  assert.ok(api.loadBalancer.selectAccount('usable', 'failover'), 'failover still routes while every account cools down')
 })

@@ -90,6 +90,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   statistics: { get: async () => ({ dailyStats: {}, accountUsage: {} }) },
   companion: {
+    readTodo: (id, relativePath) => ipcRenderer.invoke('qa:daily:readTodo', id, relativePath),
+    setTodoTask: (id, relativePath, change) => ipcRenderer.invoke('qa:daily:setTodoTask', id, relativePath, change),
+    copyTodoToday: (id, relativePath) => ipcRenderer.invoke('qa:daily:copyTodoToday', id, relativePath),
     openTerminal: input => ipcRenderer.invoke('qa:openTerminal', input),
     pollTerminal: (id, cursor) => ipcRenderer.invoke('qa:pollTerminal', id, cursor),
     writeTerminal: (id, data) => ipcRenderer.invoke('qa:writeTerminal', id, data),
@@ -146,8 +149,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
     resetAvatar: async () => save({ ...state, settings: { ...state.settings, avatar: '' }, avatarUrl: '' }),
     pickAvatarModel: async () => { record('pickAvatarModel'); const response = await fetch('http://127.0.0.1:' + port + '/qa-avatar'); return save({ ...state, settings: { ...state.settings, avatarMode: '3d', avatarModel: 'qa-model.glb', avatarVisible: true }, avatarModelUrl: await response.text() }) },
     resetAvatarModel: async () => { record('resetAvatarModel'); return save({ ...state, settings: { ...state.settings, avatarMode: '3d', avatarModel: '' }, avatarModelUrl: '', avatarModelError: undefined }) },
-    listFiles: async (_id, relativePath = '') => relativePath ? [{ name: 'nested', relativePath: relativePath + '/nested', directory: true }, { name: 'notes.txt', relativePath: relativePath + '/notes.txt', directory: false }] : [{ name: 'docs', relativePath: 'docs', directory: true }, { name: 'notes.txt', relativePath: 'notes.txt', directory: false }],
-    readFile: async () => 'ATTACHMENT_QA',
+    listFiles: async (id, relativePath = '') => process.argv.includes('--daily-todo-qa')
+      ? ipcRenderer.invoke('qa:daily:listFiles', id, relativePath)
+      : relativePath ? [{ name: 'nested', relativePath: relativePath + '/nested', directory: true }, { name: 'notes.txt', relativePath: relativePath + '/notes.txt', directory: false }] : [{ name: 'docs', relativePath: 'docs', directory: true }, { name: 'notes.txt', relativePath: 'notes.txt', directory: false }],
+    readFile: async (id, relativePath) => process.argv.includes('--daily-todo-qa') ? ipcRenderer.invoke('qa:daily:readFile', id, relativePath) : 'ATTACHMENT_QA',
     cancelSpeech: async () => {},
     transcribe: async () => 'VOICE_QA',
     synthesize: async () => { throw new Error('Local speech resources unavailable in this fixture') },

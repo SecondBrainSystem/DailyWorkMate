@@ -9,6 +9,7 @@ import { observeTerminalLayout } from '@/lib/terminalLayout'
 import { trackActivity, type ActivityState } from '@/lib/terminalActivity'
 import { enableShiftWheelScroll, fittedSize, redrawTerminal, settledPtyResize, followScrollback, terminalOptions, writeInChunks } from '@/lib/terminalDisplay'
 import { forwardImeSpaces } from '@/lib/terminalInput'
+import { enableTerminalCopy } from '@/lib/terminalClipboard'
 import { pollWorkTerminal } from '@/lib/terminalPolling'
 import type { AgentEngine, TerminalInput, TerminalSnapshot } from '@shared/companion'
 import '@xterm/xterm/css/xterm.css'
@@ -76,6 +77,7 @@ export function OpenCodeTerminal({ input, prepare, onSession, onPhase, onActivit
     terminal.open(host.current)
     display.current = terminal
     const spaces = forwardImeSpaces(terminal)
+    const stopCopy = enableTerminalCopy(terminal, host.current, reason => setError(String(reason)))
     const stopShiftWheel = enableShiftWheelScroll(terminal, host.current), stopScrollback = followScrollback(terminal)
     let cancelled = false, remote: TerminalSnapshot | undefined
     // The TUI runs directly (no shell prompt), so only its own working signals count; output restored on
@@ -206,7 +208,7 @@ export function OpenCodeTerminal({ input, prepare, onSession, onPhase, onActivit
       void close().catch(reason => console.error('[Companion] Close terminal:', reason))
     }
     return () => {
-      stop(); tracker.dispose(); callbacks.current.onActivity?.('idle'); ptySize.cancel(); stopLayout(); stopShiftWheel(); stopScrollback(); spaces.dispose(); data.dispose(); if (display.current === terminal) display.current = null
+      stop(); tracker.dispose(); callbacks.current.onActivity?.('idle'); ptySize.cancel(); stopLayout(); stopShiftWheel(); stopScrollback(); stopCopy(); spaces.dispose(); data.dispose(); if (display.current === terminal) display.current = null
       // End any IME composition while the textarea is still attached; see TerminalPanel.
       if (terminal.textarea && terminal.textarea === document.activeElement) terminal.blur()
       terminal.dispose()
@@ -223,7 +225,7 @@ export function OpenCodeTerminal({ input, prepare, onSession, onPhase, onActivit
     {notice && <p className="companion-terminal-notice" role="status"><ShieldCheck size={14} />{notice}</p>}
     {phase === 'recovering' && <p className="companion-terminal-notice" role="status"><LoaderCircle size={14} className="animate-spin" />{t('terminal.work.recoveringNotice')}</p>}
     {ended && <p className="companion-terminal-notice" role="status">{canReconnect ? t('terminal.work.reattachHint') : t('terminal.work.restartHint')}</p>}
-    <div ref={host} className="companion-terminal-host" />
+    <div ref={host} className="companion-terminal-host" title={t('terminal.copyHint')} />
     {phase === 'starting' && <div className="companion-terminal-loading" role="status"><LoaderCircle size={18} className="animate-spin" />{stage === 'verify' ? t('terminal.work.verifying') : t('terminal.work.starting')}
 </div>}
     {error && <p className="companion-terminal-error" role="alert"><ErrorText error={error} /></p>}

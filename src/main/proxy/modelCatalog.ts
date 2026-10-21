@@ -8,7 +8,8 @@ export function availableModelInfo(modelId: string, snapshot: RoutingSnapshot = 
   const preferredProviderId = modelMapper.getPreferredProvider(modelId)
   const provider = snapshot.providers.find(candidate =>
     candidate.enabled && (!preferredProviderId || candidate.id === preferredProviderId)
-    && loadBalancer.getAvailableAccountCount(modelId, candidate.id, config.loadBalanceStrategy === 'failover', snapshot) > 0)
+    // Routing falls back to the least-failed account when all are quarantined, so the catalog must not hide the model.
+    && loadBalancer.getAvailableAccountCount(modelId, candidate.id, false, snapshot) > 0)
   if (!provider) return undefined
   return {
     id: modelId, object: 'model', created: Math.floor(provider.createdAt / 1000),

@@ -59,6 +59,9 @@ const clearChatsHandlers: Record<string, (provider: Provider, account: Account) 
   mimo: async (provider, account) => new MimoAdapter(provider, account).deleteAllChats(),
 }
 
+let stopRequestLogPush: (() => void) | undefined
+let oauthProgress: ((event: unknown) => void) | undefined
+
 export async function registerIpcHandlers(mainWindow: BrowserWindow | null): Promise<void> {
   for (const channel of Object.values(IpcChannels)) if (typeof channel === 'string') ipcMain.removeHandler(channel)
   ipcMain.handle(IpcChannels.STORE_INIT_ERROR, () => ({ message: storeManager.getInitializationError()?.message || null }))
@@ -748,7 +751,9 @@ export async function registerIpcHandlers(mainWindow: BrowserWindow | null): Pro
   })
 
   // Live request log view: entries arrive without bodies; details load through REQUEST_LOGS_GET_BY_ID.
-  storeManager.onRequestLogChanged(log => {
+  // Handlers are registered again when the window is reopened from the tray; keep a single subscription.
+  stopRequestLogPush?.()
+  stopRequestLogPush = storeManager.onRequestLogChanged(log => {
     for (const window of BrowserWindow.getAllWindows()) {
       try { if (!window.isDestroyed()) window.webContents.send(IpcChannels.REQUEST_LOGS_NEW, log) } catch (error) {
         console.error('[IPC] Failed to send request log update:', error)
@@ -992,9 +997,12 @@ export async function registerIpcHandlers(mainWindow: BrowserWindow | null): Pro
     return newContextConfig
   })
   
-  oauthManager.on('progress', (event) => {
-    mainWindow?.webContents.send(IpcChannels.OAUTH_PROGRESS, event)
-  })
+  // Re-registration (window reopened from the tray) replaces the listener that held the old window.
+  if (oauthProgress) oauthManager.off('progress', oauthProgress)
+  oauthProgress = (event: unknown) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send(IpcChannels.OAUTH_PROGRESS, event)
+  }
+  oauthManager.on('progress', oauthProgress)
 }
 
 export function getProxyStatus(): ProxyStatus {

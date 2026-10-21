@@ -1,0 +1,110 @@
+/* A paper note shares the companion's rose accent; warm inks remain readable in both themes. */
+html {
+  --todo-paper: #fff9e9;
+  --todo-ink: #433d31;
+  --todo-muted: #756850;
+  --todo-rule: #e9dfc8;
+  --todo-accent: #906129;
+  --todo-tape: #dfb88c;
+}
+html[data-theme=dark] {
+  --todo-paper: #302c24;
+  --todo-ink: #f1e6d3;
+  --todo-muted: #c9bba2;
+  --todo-rule: #514839;
+  --todo-accent: #e5bb7e;
+  --todo-tape: #947650;
+}
+.companion-layout.has-daily-todo { grid-template-columns: minmax(240px, 310px) minmax(0, 1fr); }
+.companion-daily-sidebar { min-width: 0; display: grid; gap: 18px; position: sticky; top: 16px; }
+.has-daily-todo .companion-stage { min-height: 0; height: auto; padding: 12px 18px; }
+.has-daily-todo .companion-avatar { height: 135px; max-width: 180px; margin: 0; }
+.has-daily-todo .companion-custom-avatar { width: 140px; height: 130px; }
+.has-daily-todo .companion-orbit { width: 114px; height: 114px; top: 10px; }
+.has-daily-todo .orbit-two { width: 138px; height: 138px; top: 0; }
+.has-daily-todo .companion-avatar-shadow { width: 75px; height: 8px; }
+.has-daily-todo .companion-spark { font-size: 15px; top: 20px; right: 6px; }
+.has-daily-todo .spark-two { top: 90px; left: 4px; right: auto; }
+.has-daily-todo .companion-name { margin: 4px 0 6px; font-size: 17px; }
+.has-daily-todo .companion-status { font-size: 11px; padding: 4px 10px; }
+.has-daily-todo .companion-stage-options { margin-top: 8px; }
+.daily-todo-note { position: relative; min-width: 0; color: var(--todo-ink); background: var(--todo-paper); border: 1px solid var(--todo-rule); border-radius: 3px 3px 16px 3px; padding: 22px 20px 12px; box-shadow: 0 7px 18px -12px #402b1d50; }
+.daily-todo-note::before { content: ''; position: absolute; top: -7px; left: calc(50% - 25px); width: 50px; height: 14px; background: var(--todo-tape); opacity: .48; transform: rotate(-4deg); pointer-events: none; }
+.daily-todo-heading { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.daily-todo-eyebrow { display: flex; align-items: center; gap: 5px; color: var(--todo-muted); font-size: 10px; letter-spacing: .08em; }
+.daily-todo-heading h2 { margin-top: 4px; font-size: 23px; font-weight: 650; letter-spacing: -.04em; line-height: 1.35; }
+.daily-todo-heading h2>span:first-child { font-family: Georgia, serif; font-weight: 400; font-style: italic; }
+.daily-todo-period { color: var(--companion-accent); }
+.daily-todo-tools { display: flex; align-items: center; }
+.daily-todo-note button { color: var(--todo-muted); }
+.daily-todo-tools button { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 6px; }
+.daily-todo-note button:hover:not(:disabled) { color: var(--todo-ink); background: var(--todo-rule); }
+.daily-todo-note button:disabled { opacity: .5; }
+.daily-todo-note :is(button, select, textarea, input, [tabindex]):focus-visible { outline: 2px solid var(--todo-accent); outline-offset: 3px; }
+.daily-todo-dateline { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px; margin: 13px 0 7px; font-size: 10px; color: var(--todo-muted); }
+.daily-todo-progress { appearance: none; display: block; width: 100%; height: 3px; border: 0; background: var(--todo-rule); accent-color: var(--todo-accent); }
+.daily-todo-progress::-webkit-progress-bar { background: var(--todo-rule); }
+.daily-todo-progress::-webkit-progress-value { background: var(--todo-accent); }
+.daily-todo-source { display: flex; align-items: center; gap: 6px; min-width: 0; margin: 12px 0 6px; color: var(--todo-muted); }
+.daily-todo-source svg { flex-shrink: 0; }
+.daily-todo-source select { width: 100%; min-width: 0; padding: 6px 0; background: var(--todo-paper); color: var(--todo-muted); font-size: 11px; text-overflow: ellipsis; }
+.daily-todo-body { max-height: min(38vh, 380px); min-height: 120px; overflow: auto; scrollbar-width: thin; padding: 2px 2px 8px; overflow-wrap: anywhere; }
+.daily-todo-body h3 { margin: 8px 0; font-size: 12px; font-weight: 600; }
+.daily-todo-markdown { font-size: 13px; line-height: 1.8; }
+.daily-todo-markdown :is(h1, h2, h3, h4, h5, h6) { margin: 14px 0 7px; font-weight: 650; line-height: 1.5; }
+.daily-todo-markdown h1 { font-size: 18px; }
+.daily-todo-markdown h2 { font-size: 15px; }
+.daily-todo-markdown :is(h3, h4, h5, h6) { font-size: 13px; }
+.daily-todo-markdown p { margin: 6px 0; }
+.daily-todo-markdown ul { list-style: disc; padding-left: 20px; }
+.daily-todo-markdown ol { list-style: decimal; padding-left: 22px; }
+.daily-todo-markdown .contains-task-list { list-style: none; padding-left: 0; }
+.daily-todo-markdown li>ul, .daily-todo-markdown li>ol { margin: 6px 0 0; }
+.daily-todo-markdown .daily-todo-task { position: relative; list-style: none; padding: 9px 0 9px 33px; border-bottom: 1px solid var(--todo-rule); }
+.daily-todo-task input { appearance: none; display: grid; place-items: center; position: absolute; left: 0; top: 10px; cursor: pointer; width: 24px; height: 24px; border: 1px solid var(--todo-muted); border-radius: 5px; background: transparent; color: var(--todo-paper); }
+.daily-todo-task input:disabled { cursor: default; opacity: .65; }
+.daily-todo-task input:checked { background: var(--todo-accent); border-color: var(--todo-accent); }
+.daily-todo-task input:checked::after { content: '✓'; font-size: 14px; line-height: 1; color: var(--todo-paper); }
+.daily-todo-task-text { min-height: 24px; }
+.daily-todo-task-text>p:first-child { margin-top: 0; }
+.daily-todo-task.is-done>.daily-todo-task-text { text-decoration: line-through; color: var(--todo-muted); }
+.daily-todo-markdown blockquote { margin: 10px 0; border-left: 2px solid var(--todo-accent); padding-left: 12px; color: var(--todo-muted); }
+.daily-todo-markdown a { text-decoration: underline; text-underline-offset: 3px; color: var(--todo-accent); }
+.daily-todo-markdown code { font-size: 11px; font-family: ui-monospace, monospace; background: var(--todo-rule); padding: 2px 4px; border-radius: 3px; }
+.daily-todo-markdown pre { margin: 10px 0; overflow-x: auto; padding: 10px; background: var(--todo-rule); border-radius: 6px; }
+.daily-todo-markdown pre code { padding: 0; white-space: pre; }
+.daily-todo-markdown hr { margin: 12px 0; border-color: var(--todo-rule); }
+.daily-todo-markdown img { max-width: 100%; height: auto; border-radius: 5px; }
+.daily-todo-table { overflow-x: auto; margin: 10px 0; }
+.daily-todo-table table { min-width: 100%; border-collapse: collapse; font-size: 11px; }
+.daily-todo-table :is(th, td) { border: 1px solid var(--todo-rule); padding: 5px 8px; min-width: 65px; }
+.daily-todo-table th { font-weight: 600; background: var(--todo-rule); }
+.daily-todo-rollover { margin-top: 10px; }
+.daily-todo-rollover>button { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; min-height: 36px; padding: 7px 10px; border: 1px solid var(--todo-rule); border-radius: 7px; font-size: 12px; color: var(--todo-accent); }
+.daily-todo-rollover>span, .daily-todo-rollover>p { display: block; margin-top: 5px; font-size: 10px; line-height: 1.6; color: var(--todo-muted); overflow-wrap: anywhere; }
+.daily-todo-footer { display: flex; align-items: center; justify-content: space-between; gap: 5px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--todo-rule); font-size: 10px; color: var(--todo-muted); }
+.daily-todo-footer button, .daily-todo-empty button, .daily-todo-editor button { display: flex; align-items: center; gap: 5px; min-height: 32px; padding: 4px 6px; border-radius: 5px; }
+.daily-todo-empty { display: grid; justify-items: start; gap: 9px; padding: 16px 0; font-size: 13px; }
+.daily-todo-empty>span { color: var(--todo-muted); font-size: 11px; line-height: 1.7; }
+.daily-todo-editor { display: grid; gap: 8px; font-size: 11px; }
+.daily-todo-editor textarea { width: 100%; min-height: 190px; resize: vertical; background: transparent; border: 1px solid var(--todo-rule); border-radius: 5px; padding: 10px; color: var(--todo-ink); font: inherit; font-size: 13px; line-height: 1.9; }
+.daily-todo-editor button { justify-self: end; }
+.daily-todo-warning, .daily-todo-discovery { font-size: 11px; line-height: 1.6; overflow-wrap: anywhere; padding: 6px 0; }
+.daily-todo-warning>span { display: block; color: var(--todo-muted); }
+.daily-todo-warning button { text-decoration: underline; min-height: 32px; }
+.daily-todo-discovery summary { cursor: pointer; color: var(--todo-muted); }
+@media(max-width: 1100px) and (min-width: 921px) { .companion-layout.has-daily-todo { grid-template-columns: minmax(220px, 260px) minmax(0, 1fr); gap: 14px; } }
+@media(max-width: 920px) {
+  .companion-layout.has-daily-todo { grid-template-columns: minmax(0, 1fr); }
+  .companion-daily-sidebar { position: static; grid-template-columns: minmax(150px, .65fr) minmax(0, 1fr); align-items: start; }
+  .companion-daily-sidebar>.daily-todo-note:only-child { grid-column: 1 / -1; }
+  .daily-todo-body { max-height: 240px; }
+}
+@media(max-width: 540px) {
+  .companion-daily-sidebar { grid-template-columns: minmax(0, 1fr); }
+  .has-daily-todo .companion-stage { padding: 10px 16px; }
+  .has-daily-todo .companion-avatar { height: 95px; }
+  .has-daily-todo .companion-custom-avatar { height: 90px; }
+  .has-daily-todo .companion-orbit { width: 85px; height: 85px; top: 0; }
+  .has-daily-todo .orbit-two { width: 100px; height: 100px; }
+}

@@ -1,7 +1,7 @@
 import path from 'node:path'
 import os from 'node:os'
 import { existsSync } from 'node:fs'
-import { mkdir, readFile, writeFile, rename, realpath, stat } from 'node:fs/promises'
+import { copyFile, mkdir, readFile, writeFile, rename, realpath, stat } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { DEFAULT_TERMINAL_PREFERENCES, validateTerminalCreate, validateTerminalPreferences, terminalId } from '../../shared/terminal'
@@ -74,8 +74,13 @@ export class TerminalHost {
     } catch (error) {
       // Keep the unreadable file for inspection instead of overwriting it on the next save.
       const backup = this.file() + '.' + new Date().toISOString().replace(/[:.]/g, '-') + '.bak'
-      await rename(this.file(), backup)
-      console.error('[Terminal host] Saved terminals were unreadable and moved to ' + backup + ':', message(error))
+      // A locked file (antivirus, indexer) must not stop the host either: fall back to a copy, then to nothing.
+      try { await rename(this.file(), backup) }
+      catch (renameError) {
+        try { await copyFile(this.file(), backup) }
+        catch (copyError) { console.error('[Terminal host] Could not back up unreadable saved terminals:', message(renameError), '/', message(copyError)); return }
+      }
+      console.error('[Terminal host] Saved terminals were unreadable and kept as ' + backup + ':', message(error))
       return
     }
     const sessions = new Map<string, Live>()
@@ -155,18 +160,18 @@ export class TerminalHost {
       const powershell = findPowerShell()
       if (!powershell) throw new Error('PowerShell is unavailable')
       file = powershell.file
-      const prompt = "$global:DailyWorkMateOriginalPrompt=$function:prompt; function global:prompt { $d=(Get-Location).Path; if($d -match '^[A-Za-z]:'){[Console]::Write([char]27+']7;'+([uri]$d).AbsoluteUri+[char]7)}; if($global:DailyWorkMateOriginalPrompt){& $global:DailyWorkMateOriginalPrompt}else{'PS '+$d+'> '} }"
+      const prompt = "$global:DailyWorkMateOriginalPrompt=$function:prompt; function global:prompt { [Console]::Write([char]27+']133;A'+[char]7); $d=(Get-Location).Path; if($d -match '^[A-Za-z]:'){[Console]::Write([char]27+']7;'+([uri]$d).AbsoluteUri+[char]7)}; if($global:DailyWorkMateOriginalPrompt){& $global:DailyWorkMateOriginalPrompt}else{'PS '+$d+'> '} }"
       args = ['-NoLogo', '-NoExit', '-EncodedCommand', Buffer.from(prompt, 'utf16le').toString('base64')]
     } else if (initial.session.kind === 'cmd') {
       file = path.join(system, 'System32', 'cmd.exe'); args = ['/D', '/Q']
-      env.PROMPT = '$E]7;file://localhost/$P$E\\$P$G'
+      env.PROMPT = '$E]133;A$E\\$E]7;file://localhost/$P$E\\$P$G'
     } else {
       file = path.join(system, 'System32', 'wsl.exe')
       const unc = directory.match(/^\\\\wsl(?:\.localhost|\$)\\([^\\]+)(.*)$/i)
       const distribution = unc ? ['--distribution', unc[1]] : []
       const startingDirectory = unc ? unc[2].replace(/\\/g, '/') || '/' : directory
       const rc = path.join(this.home, 'wsl-shell.bashrc')
-      await writeFile(rc, 'if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi\n_dailyworkmate_cwd() { local d="$PWD"; d=${d//%/%25}; d=${d//#/%23}; d=${d//\\?/%3F}; printf "\\033]7;file://%s%s\\007" "$WSL_DISTRO_NAME" "$d"; }\nPROMPT_COMMAND="_dailyworkmate_cwd${PROMPT_COMMAND:+; $PROMPT_COMMAND}"\n', { mode: 0o600 })
+      await writeFile(rc, 'if [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc"; fi\n_dailyworkmate_cwd() { local d="$PWD"; d=${d//%/%25}; d=${d//#/%23}; d=${d//\\?/%3F}; printf "\\033]133;A\\007\\033]7;file://%s%s\\007" "$WSL_DISTRO_NAME" "$d"; }\nPROMPT_COMMAND="_dailyworkmate_cwd${PROMPT_COMMAND:+; $PROMPT_COMMAND}"\n', { mode: 0o600 })
       const linuxRc = await new Promise<string>((resolve, reject) => execFile(file, [...distribution, '--exec', 'wslpath', '-a', rc], { windowsHide: true, timeout: 10000 }, (error, stdout) => error ? reject(new Error('Unable to prepare WSL shell: ' + error.message)) : resolve(stdout.trim())))
       args = [...distribution, '--cd', startingDirectory, '--exec', 'bash', '--rcfile', linuxRc, '-i']
     }
