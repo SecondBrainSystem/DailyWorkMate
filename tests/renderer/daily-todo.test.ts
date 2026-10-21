@@ -67,3 +67,9 @@ test('conversation drafts need a related list; manually saved empty notes remain
   assert.equal(parseDailyMemo('{"enabled":true,"text":"","edited":true}').edited, true)
   assert.throws(() => parseDailyMemo('{"enabled":true,"text":123}'))
 })
+
+test('chat drafts preserve doing markers and a checkbox can complete an in-progress task', () => {
+  const content = '- [ ] Plan\n- [/] **Write**\n- [x] Review'
+  assert.equal(dailyChatDraft([{ role: 'user', content: 'Daily Todo' }, { role: 'assistant', content }]), content)
+  assert.equal(toggleDailyTask(content, 1), content.replace('[/]', '[x]'))
+})

@@ -36,6 +36,39 @@ test('checking a disk task changes only its ASCII marker and preserves mixed new
   await assert.rejects(setTodoTask(grant, 'Daily/todo.md', { revision: saved.revision, line: 5, checked: true }), /task changed/)
 })
 
+test('doing tasks render through GFM without changing code, HTML, metadata or source positions', () => {
+  const content = '\uFEFF---\r\nstatus: [/]\r\n---\r\n- [ ] 待办\r\n  - [/] **进行中**\r\n> 1. [/] 引用任务\r\n\r\n- [x] 完成\r\n\r\n```md\r\n- [/] 代码示例\r\n```\r\n\r\n<div>\r\n- [/] HTML 示例\r\n</div>\r\n\r\n    - [/] 缩进代码'
+  const tasks = markdownTasks(content)
+  assert.deepEqual(tasks.map(({ line, status, text }) => [line, status, text]), [
+    [3, 'todo', '待办'], [4, 'doing', '进行中'], [5, 'doing', '引用任务'], [7, 'done', '完成'],
+  ])
+  assert.ok(tasks.every(task => content[task.offset] === (task.status === 'doing' ? '/' : task.done ? 'x' : ' ')))
+  const rendered = todoMarkdownSource(content)
+  assert.equal(rendered.length, content.length)
+  assert.match(rendered, /- \[ \] \*\*进行中\*\*/)
+  for (const example of ['代码示例', 'HTML 示例', '缩进代码']) assert.ok(rendered.includes('- [/] ' + example))
+  assert.equal(setMarkdownTask(content, 4, 'todo'), content.replace('- [/] **进行中**', '- [ ] **进行中**'))
+  assert.equal(setMarkdownTask(content, 4, 'done'), content.replace('- [/] **进行中**', '- [x] **进行中**'))
+  assert.throws(() => setMarkdownTask(content, 10, 'doing'), /task changed/)
+})
+
+test('all three states save to disk losslessly and invalid status requests cannot write', async () => {
+  const grant = await workspace(), file = path.join(grant.path, 'Daily/todo.md')
+  const original = '\uFEFF# 今天\r\n- [ ] **任务**\n  - [x] 子任务\r\n'
+  await writeFile(file, original)
+  let document = await readTodo(grant, 'Daily/todo.md')
+  for (const [status, marker] of [['doing', '/'], ['done', 'x'], ['todo', ' ']] as const) {
+    document = await setTodoTask(grant, 'Daily/todo.md', { revision: document.revision, line: 1, status })
+    assert.equal(await readFile(file, 'utf8'), original.replace('- [ ] **任务**', `- [${marker}] **任务**`))
+    assert.equal((await setTodoTask(grant, 'Daily/todo.md', { revision: document.revision, line: 1, status })).revision, document.revision)
+  }
+  for (const value of [{ status: 'invalid' }, { status: null }, {}, { status: 'doing', checked: true }]) {
+    await assert.rejects(setTodoTask(grant, 'Daily/todo.md', { revision: document.revision, line: 1, ...value } as never), /Invalid todo/)
+  }
+  await assert.rejects(setTodoTask({ ...grant, writable: false }, 'Daily/todo.md', { revision: document.revision, line: 1, status: 'doing' }), /read only/)
+  assert.equal(await readFile(file, 'utf8'), original)
+})
+
 test('an external edit or simultaneous stale checkbox cannot overwrite a newer file version', async () => {
   const grant = await workspace(), file = path.join(grant.path, 'Daily/todo.md')
   await writeFile(file, '- [ ] A\n- [ ] B')

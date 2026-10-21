@@ -20,6 +20,7 @@ export const IpcChannels = {
     saveWorkspaceGroup: 'companion:saveWorkspaceGroup', deleteWorkspaceGroup: 'companion:deleteWorkspaceGroup',
     listFiles: 'companion:listFiles', readFile: 'companion:readFile', transcribe: 'companion:transcribe', synthesize: 'companion:synthesize',
     readTodo: 'companion:readTodo', setTodoTask: 'companion:setTodoTask', copyTodoToday: 'companion:copyTodoToday',
+    editTodoTask: 'companion:editTodoTask',
     cancelSpeech: 'companion:cancelSpeech', startAgent: 'companion:startAgent', pollAgent: 'companion:pollAgent',
     stopAgent: 'companion:stopAgent', replyPermission: 'companion:replyPermission',
   },

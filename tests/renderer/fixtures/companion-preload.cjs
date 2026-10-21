@@ -92,7 +92,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   companion: {
     readTodo: (id, relativePath) => ipcRenderer.invoke('qa:daily:readTodo', id, relativePath),
     setTodoTask: (id, relativePath, change) => ipcRenderer.invoke('qa:daily:setTodoTask', id, relativePath, change),
-    copyTodoToday: (id, relativePath) => ipcRenderer.invoke('qa:daily:copyTodoToday', id, relativePath),
+    editTodoTask: (id, relativePath, change) => ipcRenderer.invoke('qa:daily:editTodoTask', id, relativePath, change),
+    copyTodoToday: (id, relativePath, mode) => ipcRenderer.invoke('qa:daily:copyTodoToday', id, relativePath, mode),
     openTerminal: input => ipcRenderer.invoke('qa:openTerminal', input),
     pollTerminal: (id, cursor) => ipcRenderer.invoke('qa:pollTerminal', id, cursor),
     writeTerminal: (id, data) => ipcRenderer.invoke('qa:writeTerminal', id, data),

@@ -1,4 +1,5 @@
 import type { CompanionAPI, CompanionMessage, WorkspaceGrant } from '../../../shared/companion'
+import { markdownTasks, setMarkdownTask, todoTaskMarker, type TodoTaskStatus } from '../../../shared/todoMarkdown.ts'
 
 const DAILY = /(?:^|[^a-z0-9])(?:daily(?:[\s_-]*(?:to[\s_-]*dos?(?:[\s_-]*lists?)?|notes?|plans?|tasks?))?|to[\s_-]*dos?(?:[\s_-]*lists?)?)(?=$|[^a-z0-9])|待办|每日计划|今日计划/i
 const TEXT_FILE = /\.(?:md|markdown|txt)$/i
@@ -76,7 +77,7 @@ export async function discoverDailyTodos(
   return { sources, matched, errors, limited: limited || queue.length > 0 }
 }
 
-export type DailyLine = { line: number; text: string; kind: 'task'; done: boolean }
+export type DailyLine = { line: number; text: string; kind: 'task'; done: boolean; status: TodoTaskStatus }
   | { line: number; text: string; kind: 'heading' | 'text' }
 
 /** Keep source line numbers for lossless local checkbox edits; code and YAML aren't tasks. */
@@ -88,19 +89,17 @@ export function dailyLines(content: string): DailyLine[] {
     const marker = text.trim().match(/^(`{3,}|~{3,})/)?.[1]
     if (marker) { fence = fence ? (marker[0] === fence[0] && marker.length >= fence.length ? '' : fence) : marker; return [] }
     if (fence || !text.trim() || /^\s*[-*_]{3,}\s*$/.test(text)) return []
-    const task = text.match(/^\s*(?:[-*+]|\d+[.)])\s+\[([ xX])\]\s+(.*)$/)
-    if (task) return [{ kind: 'task', line, text: task[2], done: task[1].toLowerCase() === 'x' }]
+    const task = text.match(/^\s*(?:[-*+]|\d+[.)])\s+\[([ xX/])\]\s+(.*)$/)
+    if (task) return [{ kind: 'task', line, text: task[2], done: task[1].toLowerCase() === 'x',
+      status: task[1] === '/' ? 'doing' : task[1].toLowerCase() === 'x' ? 'done' : 'todo' }]
     const heading = text.match(/^#{1,6}\s+(.+?)\s*#*$/)
     return [{ kind: heading ? 'heading' : 'text', line, text: heading?.[1] || text }]
   })
 }
 
 export function toggleDailyTask(content: string, line: number): string {
-  const separator = content.includes('\r\n') ? '\r\n' : '\n'
-  return content.split(/\r?\n/).map((text, index) => index !== line ? text : text.replace(
-    /^(\s*(?:[-*+]|\d+[.)])\s+\[)([ xX])(\])/,
-    (_all, before, state, after) => before + (state === ' ' ? 'x' : ' ') + after,
-  )).join(separator)
+  const task = markdownTasks(content).find(item => item.line === line)
+  return task ? setMarkdownTask(content, line, !task.done) : content
 }
 
 /** Only pull an explicit list from a Daily/Todo exchange, never unrelated later replies. */
@@ -111,7 +110,7 @@ export function dailyChatDraft(messages: Pick<CompanionMessage, 'role' | 'conten
     if (!relevant) continue
     const lines = dailyLines(message.content).filter(line => line.kind === 'task' || /^\s*(?:[-*+]|\d+[.)])\s+/.test(line.text))
     if (lines.length) return lines.map(line => line.kind === 'task'
-      ? `- [${line.done ? 'x' : ' '}] ${line.text}`
+      ? `- [${todoTaskMarker(line.status)}] ${line.text}`
       : line.text.replace(/^\s*(?:[-*+]|\d+[.)])\s+/, '- [ ] ')).join('\n').slice(0, DAILY_NOTE_LIMIT)
   }
   return ''

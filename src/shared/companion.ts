@@ -78,8 +78,13 @@ export function agentEngine(value: unknown): AgentEngine {
 }
 export interface WorkspaceEntry { name: string; relativePath: string; directory: boolean }
 export interface TodoDocument { content: string; revision: string }
-export interface TodoTaskChange { revision: string; line: number; checked: boolean }
+export type TodoTaskChange = { revision: string; line: number } & (
+  | { status: import('./todoMarkdown').TodoTaskStatus; checked?: never }
+  | { checked: boolean; status?: never }
+)
 export interface TodoCopy { relativePath: string; copiedFrom: string; document: TodoDocument }
+export type TodoTaskEditRequest = { revision: string; edit: import('./todoMarkdown').TodoTaskEdit }
+export type TodoCopyMode = 'all' | 'unfinished'
 export interface SpeechAudio { audio: Uint8Array; mime: string; notice?: string }
 export interface AgentPermission { id: string; sessionID: string; permission: string; patterns: string[] }
 export interface AgentTool { id: string; name: string; status: string; title: string }
@@ -132,7 +137,8 @@ export interface CompanionAPI {
   readFile: (id: string, relativePath: string) => Promise<string>
   readTodo: (id: string, relativePath: string) => Promise<TodoDocument>
   setTodoTask: (id: string, relativePath: string, change: TodoTaskChange) => Promise<TodoDocument>
-  copyTodoToday: (id: string, relativePath: string) => Promise<TodoCopy>
+  editTodoTask: (id: string, relativePath: string, change: TodoTaskEditRequest) => Promise<TodoDocument>
+  copyTodoToday: (id: string, relativePath: string, mode?: TodoCopyMode) => Promise<TodoCopy>
   transcribe: (audio: Uint8Array, mime: string) => Promise<string>
   synthesize: (text: string, settings?: CompanionSettings) => Promise<SpeechAudio>
   cancelSpeech: () => Promise<void>

@@ -16,6 +16,7 @@ const SKIP_DIRS = new Set([
   'out',
   'dist',
   'backup',
+  'tmp',
   'src/renderer/next-app',
 ])
 

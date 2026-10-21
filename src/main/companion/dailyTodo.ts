@@ -1,12 +1,12 @@
-import { createHash } from 'node:crypto'
-import { open, readdir, stat, unlink, type FileHandle } from 'node:fs/promises'
+import { createHash, randomUUID } from 'node:crypto'
+import { open, readdir, rename, stat, unlink, type FileHandle } from 'node:fs/promises'
 import path from 'node:path'
-import type { TodoCopy, TodoDocument, TodoTaskChange, WorkspaceGrant } from '../../shared/companion'
-import { datedTodoName, localTodoDay, markdownTasks, todoDate, todoFilePattern, todoSeries } from '../../shared/todoMarkdown.ts'
+import type { TodoCopy, TodoCopyMode, TodoDocument, TodoTaskChange, TodoTaskEditRequest, WorkspaceGrant } from '../../shared/companion'
+import { datedTodoName, editMarkdownTask, isTodoTaskStatus, localTodoDay, markdownTasks, todoDate, todoFilePattern, todoSeries, todoTaskMarker, unfinishedTodoMarkdown } from '../../shared/todoMarkdown.ts'
 import { resolveWorkspacePath } from './workspaces.ts'
 
 const limit = 512 * 1024
-const conflict = () => new Error('文件已被其他操作修改，请刷新后重新勾选。 / File changed elsewhere; refresh before checking this task again.')
+const conflict = () => new Error('文件已被其他操作修改，请刷新后重新编辑。 / File changed elsewhere; refresh before editing this task again.')
 const documentOf = (bytes: Buffer): TodoDocument => {
   if (bytes.includes(0)) throw new Error('请选择 UTF-8 Markdown 文本。 / Choose a UTF-8 Markdown text file.')
   return { content: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes), revision: createHash('sha256').update(bytes).digest('hex') }
@@ -54,7 +54,10 @@ async function serialize<T>(target: string, operation: () => Promise<T>): Promis
 export async function setTodoTask(grant: WorkspaceGrant, relativePath: string, change: TodoTaskChange): Promise<TodoDocument> {
   writable(grant)
   if (!change || typeof change !== 'object' || typeof change.revision !== 'string' || !/^[a-f0-9]{64}$/.test(change.revision)
-    || !Number.isSafeInteger(change.line) || change.line < 0 || typeof change.checked !== 'boolean') throw new Error('Invalid todo task change')
+    || !Number.isSafeInteger(change.line) || change.line < 0
+    || !(isTodoTaskStatus(change.status) && change.checked === undefined
+      || change.status === undefined && typeof change.checked === 'boolean')) throw new Error('Invalid todo task change')
+  const status = change.status ?? (change.checked ? 'done' : 'todo')
   const target = await targetPath(grant, relativePath)
   return serialize(target, async () => {
     const handle = await open(await targetPath(grant, relativePath), 'r+')
@@ -68,9 +71,9 @@ export async function setTodoTask(grant: WorkspaceGrant, relativePath: string, c
       if (opened.nlink !== 1) throw new Error('无法修改硬链接待办，请使用独立文件。 / Use a standalone todo file instead of a hard link.')
       // Recheck immediately before changing a single ASCII byte. Preserve BOM, mixed newlines and all other text.
       if (documentOf(await readBytes(handle)).revision !== change.revision) throw conflict()
-      if (task.done !== change.checked) {
+      if (task.status !== status) {
         const position = Buffer.byteLength(document.content.slice(0, task.offset), 'utf8')
-        const result = await handle.write(Buffer.from(change.checked ? 'x' : ' '), 0, 1, position)
+        const result = await handle.write(Buffer.from(todoTaskMarker(status)), 0, 1, position)
         if (result.bytesWritten !== 1) throw new Error('未能保存待办勾选，请重试。 / Unable to save the task; try again.')
         await handle.sync()
       }
@@ -79,9 +82,44 @@ export async function setTodoTask(grant: WorkspaceGrant, relativePath: string, c
   })
 }
 
-/** Copy the latest sibling version, preserving the entire source and never replacing an existing file. */
-export async function copyTodoToday(grant: WorkspaceGrant, relativePath: string, now = new Date()): Promise<TodoCopy> {
+/** Stage full-text edits before replacing the file; revision checks reject stale drafts. */
+export async function editTodoTask(grant: WorkspaceGrant, relativePath: string, change: TodoTaskEditRequest): Promise<TodoDocument> {
   writable(grant)
+  if (!change || typeof change !== 'object' || typeof change.revision !== 'string' || !/^[a-f0-9]{64}$/.test(change.revision)) throw new Error('Invalid todo task edit')
+  const target = await targetPath(grant, relativePath)
+  return serialize(target, async () => {
+    const handle = await open(await targetPath(grant, relativePath), 'r+')
+    const temporary = path.join(path.dirname(target), '.todo-' + randomUUID() + '.tmp')
+    let staged = false, closed = false
+    try {
+      const document = documentOf(await readBytes(handle)), opened = await handle.stat()
+      if (document.revision !== change.revision) throw conflict()
+      if (opened.nlink !== 1) throw new Error('无法修改硬链接待办，请使用独立文件。 / Use a standalone todo file instead of a hard link.')
+      const bytes = Buffer.from(editMarkdownTask(document.content, change.edit), 'utf8')
+      if (bytes.length > limit) throw new Error('待办文件超过 512 KiB。 / Todo file exceeds 512 KiB.')
+      const next = documentOf(bytes)
+      const output = await open(temporary, 'wx', opened.mode & 0o777)
+      staged = true
+      try { await output.writeFile(bytes); await output.sync() } finally { await output.close() }
+      const currentTarget = await targetPath(grant, relativePath), current = await stat(currentTarget)
+      if (currentTarget !== target || opened.dev !== current.dev || opened.ino !== current.ino
+        || documentOf(await readBytes(handle)).revision !== change.revision) throw conflict()
+      // Windows may deny replacing a file while our read handle is still open.
+      await handle.close(); closed = true
+      await rename(temporary, target)
+      staged = false
+      return next
+    } finally {
+      if (!closed) await handle.close()
+      if (staged) await unlink(temporary).catch(error => console.error('[DailyTodo] Remove staged edit:', error))
+    }
+  })
+}
+
+/** Copy the latest sibling version, never replacing an existing file. */
+export async function copyTodoToday(grant: WorkspaceGrant, relativePath: string, now = new Date(), mode: TodoCopyMode = 'all'): Promise<TodoCopy> {
+  writable(grant)
+  if (mode !== 'all' && mode !== 'unfinished') throw new Error('Invalid todo copy mode')
   const selected = await targetPath(grant, relativePath)
   const directory = path.dirname(selected), series = todoSeries(path.basename(selected)), today = localTodoDay(now)
   const entries = (await readdir(directory, { withFileTypes: true }))
@@ -93,7 +131,12 @@ export async function copyTodoToday(grant: WorkspaceGrant, relativePath: string,
     || b.modified - a.modified || b.name.localeCompare(a.name, undefined, { numeric: true }))[0]
   if (!latest) throw new Error('未找到可复制的待办，请刷新。 / No todo file found; refresh and try again.')
   const folder = path.relative(grant.path, directory), copiedFrom = path.join(folder, latest.name)
-  const bytes = await readBytesAt(grant, copiedFrom), document = documentOf(bytes)
+  const sourceBytes = await readBytesAt(grant, copiedFrom), source = documentOf(sourceBytes)
+  if (mode === 'unfinished' && !markdownTasks(source.content).some(task => !task.done)) {
+    throw new Error('最新便签没有未完成的待办，无需创建副本。 / The latest note has no unfinished tasks to copy.')
+  }
+  const bytes = mode === 'unfinished' ? Buffer.from(unfinishedTodoMarkdown(source.content), 'utf8') : sourceBytes
+  const document = mode === 'unfinished' ? documentOf(bytes) : source
   for (let number = 1; number <= 1000; number++) {
     const name = datedTodoName(latest.name, today, number)
     const destination = path.join(await resolveWorkspacePath(grant, folder), name)

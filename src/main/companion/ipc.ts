@@ -17,7 +17,7 @@ import { SpeechService } from './speech'
 import { storeManager } from '../store/store'
 import { resolveModelConnection } from '../inference/modelConnection'
 import { listWorkspaceFiles, readWorkspaceFile, resolveWorkspacePath } from './workspaces'
-import { readTodo, setTodoTask, copyTodoToday } from './dailyTodo'
+import { readTodo, setTodoTask, editTodoTask, copyTodoToday } from './dailyTodo'
 import { openLocalDirectory } from './folders'
 import type { CompanionAPI, CompanionSettings, CompanionMessage, AgentInput, CompanionGetOptions } from '../../shared/companion'
 import { agentEngine, boundedText, validateSettings, type AgentEngine } from '../../shared/companion'
@@ -195,7 +195,8 @@ export function registerCompanionHandlers(window: BrowserWindow) {
     readFile: async (id: string, relativePath: string) => readWorkspaceFile(await storage.grant(id), relativePath),
     readTodo: async (id, relativePath) => readTodo(await storage.grant(id), relativePath),
     setTodoTask: async (id, relativePath, change) => setTodoTask(await storage.grant(id), relativePath, change),
-    copyTodoToday: async (id, relativePath) => copyTodoToday(await storage.grant(id), relativePath),
+    editTodoTask: async (id, relativePath, change) => editTodoTask(await storage.grant(id), relativePath, change),
+    copyTodoToday: async (id, relativePath, mode) => copyTodoToday(await storage.grant(id), relativePath, new Date(), mode),
     transcribe: async (audio: Uint8Array, mime: string) => speech.transcribe((await storage.get()).settings, audio, mime),
     synthesize: async (text: string, settings?: CompanionSettings) => speech.synthesize(settings ? validateSettings(settings) : (await storage.get()).settings, text),
     cancelSpeech: async () => speech.cancel(),
