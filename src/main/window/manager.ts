@@ -2,6 +2,7 @@ import { BrowserWindow, app, shell, nativeTheme, dialog } from 'electron'
 import { join } from 'path'
 import { storeManager } from '../store/store'
 import { registerCopyContextMenu } from './copyContextMenu'
+import { registerWindowInputFocus } from './inputFocus'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -44,6 +45,7 @@ export function createWindow(options: WindowOptions = {}): BrowserWindow {
     icon: app.isPackaged ? join(process.resourcesPath, 'build/icon.png') : join(app.getAppPath(), 'build/icon.png'),
   })
 
+  registerWindowInputFocus(mainWindow)
   registerCopyContextMenu(mainWindow, () => (storeManager.getConfig().language || app.getLocale()).startsWith('zh'))
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
