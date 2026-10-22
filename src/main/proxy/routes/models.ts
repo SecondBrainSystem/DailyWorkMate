@@ -3,10 +3,13 @@
  */
 import Router from '@koa/router'
 import type { Context } from 'koa'
-import type { ModelsResponse } from '../types'
-import { availableModelInfo, listAvailableModels } from '../modelCatalog'
+import { availableModelInfo } from '../modelCatalog'
 import { verifyModelSelection } from '../modelVerification'
 import { clientAbortSignal } from '../responseStream'
+import { listInferenceModels, resolveProxyFreeModel } from '../../inference/modelListing'
+import { KiloModelError } from '../../inference/kiloModels'
+import { OpenCodeModelError } from '../../companion/opencodeModels'
+import { freeModelSource } from '../../../shared/freeModels'
 
 const router = new Router({ prefix: '/v1' })
 
@@ -27,16 +30,25 @@ router.post('/models/verify', async (ctx: Context) => {
 })
 
 router.get('/models', async (ctx: Context) => {
-  const response: ModelsResponse = {
-    object: 'list',
-    data: listAvailableModels(),
-  }
   ctx.set('Content-Type', 'application/json')
-  ctx.body = response
+  ctx.body = await listInferenceModels(ctx.get('X-Refresh-Free-Models') === 'true', clientAbortSignal(ctx), true)
 })
 
 router.get('/models/:model', async (ctx: Context) => {
   const modelId = ctx.params.model
+  const source = freeModelSource(modelId)
+  if (source) {
+    try {
+      const model = await resolveProxyFreeModel(modelId, clientAbortSignal(ctx))
+      ctx.body = { id: model.id, name: model.name, object: 'model', created: 0, owned_by: source.name }
+    } catch (error) {
+      if (!(error instanceof KiloModelError) && !(error instanceof OpenCodeModelError)) throw error
+      ctx.status = error.status
+      ctx.body = { error: { message: error.message, type: error.status < 500 ? 'invalid_request_error' : 'api_error',
+        param: 'model', code: error.status === 404 ? 'model_not_found' : 'free_model_unavailable' } }
+    }
+    return
+  }
   const model = availableModelInfo(modelId)
   if (model) {
     ctx.set('Content-Type', 'application/json')

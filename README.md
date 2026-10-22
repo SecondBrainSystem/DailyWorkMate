@@ -8,7 +8,7 @@ DailyWorkMate is a desktop companion for everyday work. Talk through a plan, let
 
 ## Highlights
 
-- **Free models, self-hosted or hosted:** add a local or LAN Ollama node to run open models with no API fees, or use OpenCode's free models directly (the free catalog and quotas are provided by OpenCode and may change).
+- **Free models, self-hosted or hosted:** use a local or LAN Ollama node, OpenCode's official free models, or Kilo's account-free model pool. Hosted catalogs and limits are controlled upstream and may change.
 - **Pick up where you left off:** terminal tabs, split panes, shell types and working directories are saved automatically and restored the next time you start the app — no need to reopen terminals and `cd` back after a reboot.
 - **Workspace history:** authorized folders, folder groups and recent Work sessions are kept, so you can reopen a session and continue.
 - **AI that works in your folders:** run OpenCode or Claude Code against folders you authorize, with model, engine and access scope always visible.
@@ -66,9 +66,13 @@ Screenshots show the real application with fictional demonstration data. The ter
 
 ## Models and integrations
 
-DailyWorkMate includes provider/account management, official API-key presets, Ollama nodes, model mappings, request logs and a local OpenAI-compatible proxy. The separate AI Chat page supports task prompts and translation target languages. OpenCode's free-model catalog is provided dynamically; availability and quotas may change. Catalog errors do not indicate exhausted quota. Catalog status, free-model guidance and folder-drop help open from the **?** button in the control row; a dot on it marks a catalog problem or a free-model limitation.
+DailyWorkMate includes provider/account management, official API-key presets, Ollama nodes, model mappings, request logs and a local OpenAI-compatible proxy. The separate AI Chat page supports task prompts and translation target languages. Its model selector also lists official free models labeled **OpenCode v2**, using the installed native runtime without importing subscription accounts. This connection currently supports text and text attachments; OpenCode free models using Chat Completions are also available through the local proxy. OpenCode's free-model catalog is provided dynamically; availability and quotas may change. Refresh an expired catalog and wait before retrying a rate limit. In the desktop companion, catalog status, free-model guidance and folder-drop help open from the **?** button in the control row.
 
-Configure a provider or Ollama node first, then select a model in the assistant. Image, reasoning and tool support depend on the selected provider/model. Speech endpoints are separate from chat endpoints.
+Both chat pages also have a **Kilo free models** group, populated from Kilo's current `isFree` catalog without an account or API key. Refresh rechecks free eligibility; expired or failed catalogs block Kilo calls while configured models remain available. AI Chat calls Kilo through main-process inference; workspace engines use the private compatibility bridge, with tool support required. Upstream providers may log prompts and use them to improve services; avoid sensitive content. Both free sources are exposed at `http://127.0.0.1:11434/v1`, with `opencode-free/` and `kilo-free/` IDs in `/v1/models`. Ollama `/api/tags`, `/api/show`, `/api/chat` and Anthropic `/v1/messages` compatibility are also supported. Clients use the local proxy key; the free upstreams need no personal key. See [free model connections](docs/free-models.md).
+
+In **Ollama Nodes → Global Model Routing**, refresh the free catalog, choose an **OpenCode Free** or **Kilo Free** model, and enable **Force selected model** to route API requests to it. Free targets require no Ollama node or account. Desktop chats retain their explicit model selection. An unavailable saved target stays selected and reports an error instead of silently switching models.
+
+Select a free model directly, or configure a provider or Ollama node first. Image, reasoning and tool support depend on the selected provider/model. Speech endpoints are separate from chat endpoints.
 
 See the [provider reference](docs/providers/README.md) for built-in model defaults and provider-specific limitations.
 

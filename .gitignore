@@ -91,3 +91,4 @@ backup/
 
 # Current provider reference (not internal plans or bug logs)
 !/docs/providers/
+!/docs/free-models.md

@@ -6,13 +6,14 @@ import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 
 const output = path.resolve('tmp/qa/model-connection-test.mjs')
-let directModelConnection, resolveModelConnection, state
+let directModelConnection, resolveModelConnection, state, kiloFreeModels
 before(async () => {
   await mkdir(path.dirname(output), { recursive: true })
   await build({ stdin: { contents: `
     export { directModelConnection } from './src/main/inference/directConnection.ts'
     export { resolveModelConnection } from './src/main/inference/modelConnection.ts'
     export { state } from './src/main/store/store'
+    export { kiloFreeModels } from './src/main/inference/kiloModels.ts'
   `, resolveDir: process.cwd() }, outfile: output, bundle: true, format: 'esm', platform: 'node', packages: 'external',
   plugins: [{ name: 'isolated-resolution', setup(builder) {
     builder.onResolve({ filter: /(?:\/store\/store$|\/proxy\/(?:loadbalancer|modelMapper)$|^\.\/bridge$)/ }, () => ({ path: 'state', namespace: 'qa' }))
@@ -24,7 +25,7 @@ before(async () => {
       export const internalInferenceBridge = { connection: async () => { state.bridgeStarts++; return { baseURL: 'http://127.0.0.1:11435/v1', apiKey: 'internal-only' } } }
     ` }))
   } }] })
-  ;({ directModelConnection, resolveModelConnection, state } = await import(pathToFileURL(output)))
+  ;({ directModelConnection, resolveModelConnection, state, kiloFreeModels } = await import(pathToFileURL(output)))
 })
 after(async () => { await rm(output, { force: true }) })
 
@@ -104,4 +105,19 @@ test('invalid credentials, URLs and injected header values fail before starting 
   await assert.rejects(resolveModelConnection('model', 'opencode'), /No available account/)
   await assert.rejects(resolveModelConnection('', 'opencode'), /valid model/)
   assert.equal(state.bridgeStarts, starts)
+})
+
+test('Kilo workspace models use the private bridge without selecting an account and reject text-only models', async t => {
+  const calls = state.calls.length
+  t.mock.method(kiloFreeModels, 'resolve', async id => ({ id, toolCall: true }))
+  for (const consumer of ['opencode', 'claude']) {
+    const connection = await resolveModelConnection('kilo-free/vendor/model:free', consumer)
+    assert.equal(connection.model, 'kilo-free/vendor/model:free')
+    assert.equal(connection.baseURL, 'http://127.0.0.1:11435/v1')
+    assert.equal(connection.protocol, consumer === 'claude' ? 'anthropic' : 'openai')
+    assert.equal(connection.direct, false)
+  }
+  assert.equal(state.calls.length, calls)
+  t.mock.method(kiloFreeModels, 'resolve', async id => ({ id, toolCall: false }))
+  await assert.rejects(resolveModelConnection('kilo-free/vendor/model:free', 'opencode'), /tool support/)
 })

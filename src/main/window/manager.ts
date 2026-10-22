@@ -2,7 +2,7 @@ import { BrowserWindow, app, shell, nativeTheme, dialog } from 'electron'
 import { join } from 'path'
 import { storeManager } from '../store/store'
 import { registerCopyContextMenu } from './copyContextMenu'
-import { registerWindowInputFocus } from './inputFocus'
+import { registerWindowInputFocus, restoreWindowInputFocus, withWindowInputFocus } from './inputFocus'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -76,6 +76,7 @@ export function createWindow(options: WindowOptions = {}): BrowserWindow {
     const chinese = app.getLocale().startsWith('zh')
     const discard = dialog.showMessageBoxSync(mainWindow!, { type: 'question', message: chinese ? '有未保存的修改，是否放弃并离开？' : 'Discard unsaved changes and leave?', buttons: chinese ? ['继续编辑', '放弃修改'] : ['Keep editing', 'Discard'], defaultId: 0, cancelId: 0 }) === 1
     if (discard) event.preventDefault()
+    else restoreWindowInputFocus(mainWindow!)
   })
 
   mainWindow.once('ready-to-show', () => {
@@ -132,8 +133,8 @@ export async function confirmDiscardUnsavedChanges(timeout = 3000): Promise<bool
   } finally { clearTimeout(timer) }
   if (unsaved !== true || window.isDestroyed()) return true
   const chinese = app.getLocale().startsWith('zh')
-  const { response } = await dialog.showMessageBox(window, { type: 'question', message: chinese ? '有未保存的修改，是否放弃并退出？' : 'Discard unsaved changes and quit?',
-    buttons: chinese ? ['继续编辑', '放弃修改并退出'] : ['Keep editing', 'Discard and quit'], defaultId: 0, cancelId: 0, noLink: true })
+  const { response } = await withWindowInputFocus(window, () => dialog.showMessageBox(window, { type: 'question', message: chinese ? '有未保存的修改，是否放弃并退出？' : 'Discard unsaved changes and quit?',
+    buttons: chinese ? ['继续编辑', '放弃修改并退出'] : ['Keep editing', 'Discard and quit'], defaultId: 0, cancelId: 0, noLink: true }))
   return response === 1
 }
 

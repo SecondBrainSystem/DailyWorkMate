@@ -57,6 +57,7 @@ function createInferenceFixture(getPort, record = () => {}, catalogue) {
 }
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  companion: { openCodeModels: async () => ({ models: [], stale: false, updatedAt: Date.now() }) },
   inference: createInferenceFixture(async () => port, operation => { const calls = JSON.parse(localStorage.getItem('chat-qa-api') || '[]'); localStorage.setItem('chat-qa-api', JSON.stringify([...calls, operation])) }),
   config: { get: async () => config, update: async updates => { config = { ...config, ...updates }; return true }, onConfigChanged: () => () => {} },
   store: { get: async key => key === 'config' ? config : [], set: async (_key, value) => { config = value } },

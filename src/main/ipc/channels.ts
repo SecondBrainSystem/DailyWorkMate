@@ -59,6 +59,8 @@ export const IpcChannels = {
   PROVIDERS_RESET_MODELS: 'providers:resetModels',
 
   OLLAMA_LIST: 'ollama:list',
+  OLLAMA_ROUTING_MODELS: 'ollama:routingModels',
+  OLLAMA_TEST_ROUTING: 'ollama:testRouting',
   OLLAMA_IMPORT_TEXT: 'ollama:importText',
   OLLAMA_SCAN: 'ollama:scan',
   OLLAMA_CANCEL_SCAN: 'ollama:cancelScan',

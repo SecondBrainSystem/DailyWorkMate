@@ -277,8 +277,8 @@ app.whenReady().then(async () => {
   while ((await manager.command('state')).tabs.find(tab => tab.id === psId).layout.ratio !== 0.55) { if (Date.now() > ratioEnd) throw new Error('Divider ratio was not saved'); await sleep(100) }
   await screenshot('terminal-split')
   // Closing a pane ends only that shell; the remaining panes take over its area.
-  await js('window.confirm = () => true; void 0')
   await click(`${pane(downId)}.querySelector('.terminal-pane-close')`)
+  if (await js(`!!(${button('Confirm')})`)) await click(button('Confirm'))
   await wait(`document.querySelectorAll('.unified-terminal-view:not(.is-inactive) .terminal-pane').length === 2`, 'pane closed')
   state = await manager.command('state')
   assert.equal(state.sessions.some(item => item.id === downId), false)
@@ -306,9 +306,9 @@ app.whenReady().then(async () => {
   window.setSize(540, 900); await sleep(350); await screenshot('mobile-dark')
   assert.equal(await js('document.documentElement.scrollWidth > innerWidth + 1'), false)
   await js('document.documentElement.classList.remove("dark");document.documentElement.dataset.theme="light"'); await screenshot('mobile-light')
-  // Closing a running terminal asks for confirmation; a native dialog would block the hidden window.
-  await js('window.confirm = () => true; void 0')
+  // Closing a running terminal uses the application confirmation.
   await click(`document.querySelector('[aria-label="Close terminal CMD"]')`)
+  await click(button('Confirm'))
   await wait(`document.querySelectorAll('.unified-terminal-tab').length === 1`, 'closed tab removed')
   window.setSize(1360, 900)
   // OpenCode opens as a Work session bound to an authorized folder, not as a Terminal tab.
@@ -389,8 +389,8 @@ app.whenReady().then(async () => {
   assert.notEqual(openedWorkTerminals.at(-1).id, liveWork.id)
   await wait(`document.querySelector('.companion-terminal:not([hidden]) .xterm-rows')?.textContent.includes('Build')`, 'restarted TUI is usable', 60000)
   await sleep(1500); await screenshot('opencode-desktop')
-  await js('window.confirm = () => true; void 0')
   await click(`document.querySelector('.work-session-tab.is-active .work-session-close')`)
+  await click(button('Confirm'))
   await wait(`!document.querySelector('.work-session-tab')`, 'Work session closed')
   await click(button('Terminal'))
   await click(`document.querySelector('button[aria-label="Switch to Chinese"]')`)

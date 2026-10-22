@@ -29,6 +29,7 @@ import { LoadError } from '@/components/ui/load-error'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { useConfirm } from '@/components/ui/confirmation-provider'
 import { Card } from '@/components/ui/card'
 import {
   Dialog,
@@ -40,7 +41,7 @@ import {
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectGroup, SelectLabel, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
 import type { AppConfig, SystemPrompt } from '@/types/electron'
 import { internalInferenceFetch } from '@/lib/internalInferenceClient'
@@ -54,6 +55,7 @@ import { ChatWorkspaceAccess, WorkspaceAgentStatus } from '@/components/chat/Cha
 import { useWorkspaceAgent } from '@/hooks/useWorkspaceAgent'
 import { chatWorkspaceIdentity, workspaceSelectionFromState, workspaceStateFields, type ChatWorkspaceSelection } from '@/lib/workspaceAgent'
 import type { CompanionSnapshot } from '@shared/companion'
+import { isKiloFreeModel } from '@shared/freeModels'
 import { MessageMarkdown } from '@/components/chat/MessageMarkdown'
 import { toast } from '@/hooks/use-toast'
 import { ChatHistoryDialog } from '@/components/chat/ChatHistoryDialog'
@@ -65,7 +67,8 @@ import {
 } from '@/lib/chatClient'
 
 interface ModelListResponse {
-  data?: Array<{ id: string; owned_by?: string }>
+  data?: Array<{ id: string; name?: string; owned_by?: string }>
+  kilo?: { stale: boolean; error?: string }
 }
 
 const TASKS_COLLAPSED_KEY = 'dailyworkmate.chat.tasksCollapsed'
@@ -126,6 +129,7 @@ function formatBytes(bytes: number): string {
 
 export function Chat() {
   const { t } = useTranslation()
+  const confirm = useConfirm()
   const [restoredState] = useState(() => loadPersistedChatState())
   const [workspaceSnapshot, setWorkspaceSnapshot] = useState<CompanionSnapshot | null>(null)
   const [agentState, setAgentState] = useState(() => ({ selection: workspaceSelectionFromState(restoredState), sessionId: restoredState.agentSessionId || '', access: restoredState.agentWorkspaceAccess || '' }))
@@ -133,7 +137,7 @@ export function Chat() {
   const [messages, setMessages] = useState<ChatMessage[]>(restoredState.messages)
   const [attachments, setAttachments] = useState<ChatAttachment[]>(restoredState.draftAttachments || [])
   const [input, setInput] = useState(restoredState.draft || '')
-  const [models, setModels] = useState<Array<{ id: string; owner: string }>>([])
+  const [models, setModels] = useState<Array<{ id: string; owner: string; name?: string }>>([])
   const [model, setModel] = useState(restoredState.model)
   const [prompts, setPrompts] = useState<SystemPrompt[]>(CHAT_BUILTIN_PROMPTS)
   const [promptId, setPromptId] = useState(restoredState.promptId)
@@ -162,6 +166,8 @@ export function Chat() {
   const [modelNotice, setModelNotice] = useState('')
   // Kept apart from the composer error so a failed model load shows one message, not two.
   const [modelsError, setModelsError] = useState('')
+  const [openCodeModelsError, setOpenCodeModelsError] = useState('')
+  const [kiloModelsError, setKiloModelsError] = useState('')
   const [verifyingModel, setVerifyingModel] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
@@ -177,7 +183,9 @@ export function Chat() {
   const initializeVersionRef = useRef(0)
   const snapshotRef = useRef<PersistedChatState>(restoredState)
   const conversationModelRef = useRef(restoredState.model)
-  const visionEnabled = features.vision === 'enabled' || (features.vision === 'auto' && config?.modelFeatureDefaults?.vision !== 'disabled')
+  const openCodeModel = model.startsWith('opencode-free/')
+  const nativeChat = openCodeModel || !!agentState.selection.workspaceId
+  const visionEnabled = !nativeChat && (features.vision === 'enabled' || (features.vision === 'auto' && config?.modelFeatureDefaults?.vision !== 'disabled'))
 
   const selectedPrompt = useMemo(
     () => prompts.find(prompt => prompt.id === promptId),
@@ -188,7 +196,7 @@ export function Chat() {
   // Translation tasks send the chosen target language with the task prompt.
   const requestSystemPrompt = isTranslation ? withTranslationTarget(effectiveSystemPrompt, translationTarget) : effectiveSystemPrompt
   const modelAvailable = models.some(item => item.id === model)
-  const canVerifyModel = modelAvailable || Boolean(model && conversationModelRef.current === model)
+  const canVerifyModel = modelAvailable || Boolean(!openCodeModel && model && conversationModelRef.current === model)
   // Checked in the background as soon as a listed model is selected, so sending does not wait for it.
   const preverify = useModelPreverification(model, modelAvailable && !isLoadingModels)
   const modelPrechecked = preverify.model === model && preverify.status === 'ready'
@@ -263,10 +271,12 @@ export function Chat() {
     }
   }
 
-  const loadWorkspace = useCallback(async () => {
+  const loadWorkspace = useCallback(async (forceRefresh = false) => {
     setIsLoadingModels(true)
     setError('')
     setModelsError('')
+    setOpenCodeModelsError('')
+    setKiloModelsError('')
     try {
       const [nextConfig, storedPrompts] = await Promise.all([
         window.electronAPI.config.get(),
@@ -277,10 +287,24 @@ export function Chat() {
       const nextPrompts = storedPrompts.length > 0 ? storedPrompts : CHAT_BUILTIN_PROMPTS
       setPrompts(nextPrompts)
 
-      const response = await internalInferenceFetch('/v1/models')
-      if (!response.ok) throw new Error(`${t('chat.errors.loadModels')} (HTTP ${response.status})`)
-      const payload = await response.json() as ModelListResponse
-      const nextModels = (payload.data || []).map(item => ({ id: item.id, owner: item.owned_by || '' }))
+      // A catalogue outage must not hide the other source's usable models.
+      const [proxy, openCode] = await Promise.allSettled([
+        (async () => {
+          const response = await internalInferenceFetch('/v1/models', { headers: forceRefresh ? { 'X-Refresh-Free-Models': 'true' } : {} })
+          if (!response.ok) throw new Error(`${t('chat.errors.loadModels')} (HTTP ${response.status})`)
+          return await response.json() as ModelListResponse
+        })(),
+        window.electronAPI.companion.openCodeModels(forceRefresh),
+      ])
+      if (proxy.status === 'rejected') setModelsError(proxy.reason instanceof Error ? proxy.reason.message : t('chat.errors.loadModels'))
+      else if (proxy.value.kilo?.stale) setKiloModelsError(proxy.value.kilo.error || t('freeModels.kiloUnavailable'))
+      if (openCode.status === 'rejected') setOpenCodeModelsError(t('chat.openCode.catalogueError'))
+      else if (openCode.value.stale || openCode.value.error) setOpenCodeModelsError(openCode.value.error || t('chat.openCode.catalogueError'))
+      const nextModels = [
+        ...(proxy.status === 'fulfilled' ? (proxy.value.data || []).filter(item => !item.id.startsWith('opencode-free/')).map(item => ({ id: item.id, name: item.name, owner: item.owned_by || '' })) : []),
+        ...(openCode.status === 'fulfilled' && !openCode.value.stale && !openCode.value.error
+          ? openCode.value.models.map(item => ({ id: item.id, name: item.name, owner: 'OpenCode v2' })) : []),
+      ]
       setModels(nextModels)
       setModel(current => current || nextModels[0]?.id || '')
     } catch (loadError) {
@@ -364,13 +388,13 @@ export function Chat() {
 
   const generateAssistant = async (history: ChatMessage[], forceNewSession = false) => {
     if (!canVerifyModel || !historyReadyRef.current || historyBusyRef.current || abortControllerRef.current || fileReadRef.current) return
-    if (agentState.selection.workspaceId && history[history.length - 1]?.attachments?.some(file => file.kind === 'image')) {
-      setError(t('chat.workspace.imagesUnsupported'))
+    if (nativeChat && history[history.length - 1]?.attachments?.some(file => file.kind === 'image')) {
+      setError(t(openCodeModel ? 'chat.openCode.imagesUnsupported' : 'chat.workspace.imagesUnsupported'))
       return
     }
 
     const assistantId = createId()
-    setMessages([...history, { id: assistantId, role: 'assistant', content: '' }])
+    setMessages([...history, { id: assistantId, role: 'assistant', content: '', model }])
     setIsSending(true)
 
     const controller = new AbortController()
@@ -381,32 +405,37 @@ export function Chat() {
       const activeConfig = await window.electronAPI.config.get()
       if (abortControllerRef.current !== controller) return
       setConfig(activeConfig)
-      // Only surface the verifying state when the background check has not already passed.
-      if (!modelPrechecked) setVerifyingModel(true)
-      timeout = window.setTimeout(() => { timedOut = true; controller.abort() }, (activeConfig.requestTimeout || 120000) * 2 + 10000)
-      const verification = await internalInferenceFetch('/v1/models/verify', {
-        method: 'POST',
-        body: JSON.stringify({ model, recover: false }), signal: controller.signal,
-      })
-      const verified = await verification.json() as {
-        model?: string; recovered?: boolean; skipped?: boolean; providerName?: string; reason?: string; error?: { message?: string }
+      let skipped: boolean | undefined
+      // Free models are resolved against the official catalogue in the main process.
+      // They never enter the proxy's account verification or failover paths.
+      if (!openCodeModel) {
+        if (!modelPrechecked) setVerifyingModel(true)
+        timeout = window.setTimeout(() => { timedOut = true; controller.abort() }, (activeConfig.requestTimeout || 120000) * 2 + 10000)
+        const verification = await internalInferenceFetch('/v1/models/verify', {
+          method: 'POST',
+          body: JSON.stringify({ model, recover: false }), signal: controller.signal,
+        })
+        const verified = await verification.json() as {
+          model?: string; recovered?: boolean; skipped?: boolean; error?: { message?: string }
+        }
+        if (!verification.ok || verified.model !== model || verified.recovered === true) {
+          clearPreverifyCache(model)
+          const reason = verified.error?.message || t('chat.history.modelUnavailable', { model })
+          preverify.report(false, reason)
+          throw new Error(reason)
+        }
+        skipped = verified.skipped
+        preverify.report(true, undefined, skipped)
       }
-      if (!verification.ok || verified.model !== model || verified.recovered === true) {
-        clearPreverifyCache(model)
-        const reason = verified.error?.message || t('chat.history.modelUnavailable', { model })
-        preverify.report(false, reason)
-        throw new Error(reason)
-      }
-      if (abortControllerRef.current !== controller) return
-      preverify.report(true, undefined, verified.skipped)
+      if (abortControllerRef.current !== controller || controller.signal.aborted) return
       const activeModel = model
       setVerifyingModel(false)
-      if (agentState.selection.workspaceId) {
+      if (nativeChat) {
         window.clearTimeout(timeout)
-        const grants = await window.electronAPI.companion.get({ assets: false })
+        const grants = agentState.selection.workspaceId ? await window.electronAPI.companion.get({ assets: false }) : null
         if (controller.signal.aborted) return
-        setWorkspaceSnapshot(grants)
-        const access = chatWorkspaceIdentity(grants, agentState.selection, activeModel, requestSystemPrompt)
+        if (grants) setWorkspaceSnapshot(grants)
+        const access = chatWorkspaceIdentity(grants || { workspaces: [], groups: [] }, agentState.selection, activeModel, requestSystemPrompt)
         const resume = !forceNewSession && agentState.access === access ? agentState.sessionId : ''
         const dialogue = toChatApiMessages(history, false).map(message => ({ role: message.role as 'user' | 'assistant', content: String(message.content) }))
         const latest = dialogue[dialogue.length - 1]
@@ -451,7 +480,7 @@ export function Chat() {
           reasoning: (message.reasoning || '') + (delta.reasoning || ''),
         } : message))
       }, resetTimeout)
-      preverify.report(true, undefined, verified.skipped)
+      preverify.report(true, undefined, skipped)
     } catch (sendError) {
       if (abortControllerRef.current !== controller) return
       if (controller.signal.aborted && !timedOut) {
@@ -460,7 +489,7 @@ export function Chat() {
         )))
       } else {
         const message = timedOut ? t('chat.errors.timeout') : sendError instanceof Error ? sendError.message : t('chat.errors.send')
-        preverify.report(false, message)
+        if (!openCodeModel) preverify.report(false, message)
         setMessages(current => current.map(item => (
           item.id === assistantId ? { ...item, status: 'error', error: message } : item
         )))
@@ -539,7 +568,8 @@ export function Chat() {
   const changeConversation = async (targetId?: string, clear = false, confirmed = false) => {
     if (!historyReadyRef.current || historyBusyRef.current) return
     if (targetId === conversation.id) { setHistoryOpen(false); return }
-    if (clear && !confirmed && !window.confirm(t('chat.clearChat') + '?')) return
+    if (clear && !confirmed && !await confirm(t('chat.clearChat') + '?')) return
+    if (!mountedRef.current || historyBusyRef.current) return
     historyBusyRef.current = true
     setHistoryBusy(true)
     setHistoryError('')
@@ -704,28 +734,36 @@ export function Chat() {
       {!historyReady && <p role="status" className="text-sm text-muted-foreground">{historyError || t('chat.history.loading')}</p>}
       {!isLoadingModels && model && !modelAvailable && <p role="alert" className="text-sm text-destructive">{t('chat.history.modelUnavailable', { model })}</p>}
       {modelsError && <LoadError message={modelsError} onRetry={() => { void loadWorkspace() }} retrying={isLoadingModels} />}
+      {openCodeModelsError && <LoadError message={openCodeModelsError} onRetry={() => { void loadWorkspace(true) }} retrying={isLoadingModels} />}
+      {kiloModelsError && <LoadError message={kiloModelsError} onRetry={() => { void loadWorkspace(true) }} retrying={isLoadingModels} />}
 
       <div className="rounded-xl border bg-card px-4 py-3 shadow-card">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-3">
-          <div className="flex min-w-0 flex-1 items-center gap-2 sm:flex-none">
+          <div className="flex w-full min-w-0 flex-none items-center gap-2 sm:w-auto">
           <Select value={model} onValueChange={value => { setModel(value); setModelNotice(''); setAgentState(current => ({ ...current, sessionId: '' })) }} disabled={!historyReady || historyBusy || isLoadingModels || models.length === 0 || isSending}>
-            <SelectTrigger className="w-full sm:w-[220px]" aria-label={t('chat.selectModel')}><SelectValue placeholder={t('chat.selectModel')} /></SelectTrigger>
+            <SelectTrigger className="w-full min-w-0 sm:w-[220px]" aria-label={t('chat.selectModel')}><SelectValue placeholder={t('chat.selectModel')} /></SelectTrigger>
             <SelectContent>
               {model && !modelAvailable && <SelectItem value={model} disabled>{model} · {t('chat.history.unavailable')}</SelectItem>}
-              {models.map(item => <SelectItem key={item.id} value={item.id}>{item.id}{item.owner ? ` · ${item.owner}` : ''}</SelectItem>)}
+              {[
+                { label: t('freeModels.configured'), items: models.filter(item => !item.id.startsWith('opencode-free/') && !isKiloFreeModel(item.id)) },
+                { label: t('freeModels.openCode'), items: models.filter(item => item.id.startsWith('opencode-free/')) },
+                { label: t('freeModels.kilo'), items: models.filter(item => isKiloFreeModel(item.id)) },
+              ].filter(group => group.items.length).map(group => <SelectGroup key={group.label}><SelectLabel>{group.label}</SelectLabel>{group.items.map(item => <SelectItem key={item.id} value={item.id}>{item.name || item.id}{item.owner ? ` · ${item.owner}` : ''}</SelectItem>)}</SelectGroup>)}
             </SelectContent>
           </Select>
-          <Button variant="outline" size="icon" onClick={() => { clearPreverifyCache(); void loadWorkspace() }} disabled={historyBusy || isLoadingModels || isSending} title={t('chat.refreshModels')} aria-label={t('chat.refreshModels')}>
+          <Button variant="outline" size="icon" onClick={() => { clearPreverifyCache(); void loadWorkspace(true) }} disabled={historyBusy || isLoadingModels || isSending} title={t('chat.refreshModels')} aria-label={t('chat.refreshModels')}>
             <RefreshCw className={cn('h-4 w-4', isLoadingModels && 'animate-spin')} />
           </Button>
-          <ModelCheckBadge state={preverify} onRecheck={preverify.recheck} />
+          {!openCodeModel && <ModelCheckBadge state={preverify} onRecheck={preverify.recheck} />}
           </div>
           <div className="hidden h-6 w-px bg-border sm:block" aria-hidden="true" />
-          <div title={agentState.selection.workspaceId ? t('chat.workspace.defaultCapabilities') : t('modelFeatures.chatHint') + (!visionEnabled ? ' ' + t('chat.visionOffHint') : '')}>
-            <ModelFeatureControls compact value={features} onChange={setFeatures} disabled={!historyReady || historyBusy || isSending || !!agentState.selection.workspaceId} />
+          <div title={nativeChat ? t(openCodeModel ? 'chat.openCode.defaultCapabilities' : 'chat.workspace.defaultCapabilities') : t('modelFeatures.chatHint') + (!visionEnabled ? ' ' + t('chat.visionOffHint') : '')}>
+            <ModelFeatureControls compact value={features} onChange={setFeatures} disabled={!historyReady || historyBusy || isSending || nativeChat} />
           </div>
           <ChatWorkspaceAccess collapsible inline selection={agentState.selection} disabled={!historyReady || historyBusy || isSending || workspaceAgent.running} snapshot={workspaceSnapshot || undefined} onSnapshot={setWorkspaceSnapshot} onChange={(selection: ChatWorkspaceSelection) => { setAgentState({ selection, sessionId: '', access: '' }); workspaceAgent.reset(); setError('') }} />
         </div>
+        {openCodeModel && <p className="mt-2 text-xs text-muted-foreground">{t('chat.openCode.note')}</p>}
+        {isKiloFreeModel(model) && <p className="mt-2 text-xs text-muted-foreground">{t('freeModels.kiloPrivacy')}</p>}
       </div>
 
       <div className={cn('grid min-h-[440px] flex-1 gap-4 lg:min-h-0', !tasksCollapsed && 'lg:grid-cols-[240px_minmax(0,1fr)]')}>
@@ -827,7 +865,7 @@ export function Chat() {
                         </details>
                       )}
                       {message.content ? <MessageMarkdown text={message.content} /> : message.status ? (message.status === 'stopped' ? <span className="text-muted-foreground">{t('chat.stopped')}</span> : null) : isSending && index === messages.length - 1 ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <span className="text-muted-foreground">{t('chat.emptyResponse')}</span>}
-                      {message.status === 'error' && <p role="alert" className="mt-2 whitespace-pre-wrap break-words text-sm text-destructive">{<ErrorText error={message.error || t('chat.failedMessage')} />}</p>}
+                      {message.status === 'error' && <p role="alert" className="mt-2 whitespace-pre-wrap break-words text-sm text-destructive"><ErrorText error={message.error || t('chat.failedMessage')} rateLimitMessage={message.model?.startsWith('opencode-free/') ? t('chat.openCode.rateLimit') : undefined} /></p>}
                       {!!message.tools?.length && <WorkspaceAgentStatus snapshot={{ sessionId: '', running: isSending && index === messages.length - 1, text: message.content, error: '', tools: message.tools, permissions: [] }} />}
                       {(message.content || message.status || message.reasoning) && !isSending && (
                         <div className={cn('mt-2 flex items-center gap-3 text-xs', message.role === 'assistant' ? 'text-muted-foreground' : 'text-primary-foreground/75')}>

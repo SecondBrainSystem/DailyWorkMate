@@ -11,7 +11,7 @@ let module
 before(async () => {
   await mkdir(path.dirname(output), { recursive: true })
   await build({
-    stdin: { contents: `export * from './src/main/inference/service.ts'; export * from './src/main/inference/ipc.ts'; export { state, reset } from 'inference-test-state'; export { ipcMain } from 'electron'`, resolveDir: process.cwd() },
+    stdin: { contents: `export * from './src/main/inference/service.ts'; export * from './src/main/inference/ipc.ts'; export { state, reset } from 'inference-test-state'; export { ipcMain } from 'electron'; export { kiloFreeModels } from './src/main/inference/kiloModels.ts'`, resolveDir: process.cwd() },
     outfile: output, bundle: true, format: 'esm', platform: 'node', packages: 'external',
     plugins: [{ name: 'isolate-inference', setup(builder) {
       builder.onResolve({ filter: /^(?:electron|inference-test-state)$/ }, args => ({ path: args.path, namespace: 'qa' }))
@@ -36,6 +36,7 @@ before(async () => {
     } }],
   })
   module = await import(pathToFileURL(output).href)
+  test.mock.method(module.kiloFreeModels, 'get', async () => ({ models: [], stale: false, updatedAt: 1000 }))
 })
 beforeEach(() => module.reset())
 after(async () => { await rm(output, { force: true }) })

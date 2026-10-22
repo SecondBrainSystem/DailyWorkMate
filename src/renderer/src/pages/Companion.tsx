@@ -6,6 +6,7 @@ import { CompanionMessageItem } from '@/components/companion/CompanionMessageIte
 import { useErrorText } from '@/lib/errors'
 
 import { Button } from '@/components/ui/button'
+import { useConfirm } from '@/components/ui/confirmation-provider'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Avatar } from '@/components/companion/Avatar'
@@ -38,6 +39,7 @@ import { DEFAULT_COMPANION_SETTINGS } from '../../../shared/companion'
 import type { AgentEngine, AvatarState, CompanionMessage, CompanionMode, CompanionSettings as Settings, CompanionSnapshot, WorkspaceEntry, OpenCodeFreeCatalogue } from '@shared/companion'
 import { fetchWithHeaderTimeout, readChatCompletionStream } from '@/lib/chatClient'
 import { internalInferenceFetch } from '@/lib/internalInferenceClient'
+import { isKiloFreeModel } from '@shared/freeModels'
 import '@/components/companion/companion.css'
 
 // xterm loads the first time the Terminal view opens.
@@ -56,6 +58,7 @@ const readStageOptions = () => { try { return localStorage.getItem(STAGE_OPTIONS
 const saveView = (view: 'chat' | 'agent' | 'terminal') => { try { localStorage.setItem(VIEW_KEY, view) } catch { /* per-viewer convenience only */ } }
 
 export function Companion({ visible = true }: { visible?: boolean }) {
+  const confirm = useConfirm(visible)
   const { t, i18n } = useTranslation()
   const errorText = useErrorText()
   const copy = useCompanionCopy()
@@ -67,6 +70,8 @@ export function Companion({ visible = true }: { visible?: boolean }) {
   const [settings, setSettings] = useState<Settings>(structuredClone(DEFAULT_COMPANION_SETTINGS))
   const [messages, setMessages] = useState<CompanionMessage[]>([])
   const [models, setModels] = useState<string[]>([])
+  const [modelNames, setModelNames] = useState<Record<string, string>>({})
+  const [kiloModelsError, setKiloModelsError] = useState('')
   const [selectedModel, setSelectedModel] = useState('')
   const [toolRecovery, setToolRecovery] = useState<ToolRecoveryCandidate | null>(null)
   const [recoveryOpen, setRecoveryOpen] = useState(false)
@@ -251,18 +256,22 @@ export function Companion({ visible = true }: { visible?: boolean }) {
     } catch (error) { showError(String(error)) }
   }
 
-  const loadModels = async (signal?: AbortSignal) => {
+  const loadModels = async (signal?: AbortSignal, refresh = false) => {
     const version = ++modelLoadVersion.current
     signal?.throwIfAborted()
-    const response = await internalInferenceFetch('/v1/models', { signal })
+    const response = await internalInferenceFetch('/v1/models', { signal, headers: refresh ? { 'X-Refresh-Free-Models': 'true' } : {} })
     if (!response.ok) throw new Error(t('companion.page.catalogHttp', { status: response.status }))
-    const { data } = await response.json() as { data?: Array<{ id: string }> }
+    const { data, kilo } = await response.json() as { data?: Array<{ id: string; name?: string }>; kilo?: { stale: boolean; error?: string } }
     signal?.throwIfAborted()
     if (!Array.isArray(data) || data.some(item => !item || typeof item.id !== 'string' || !item.id.trim())) {
       throw new Error(t('companion.page.invalidCatalog'))
     }
     const ids = [...new Set(data.map(item => item.id))]
-    if (mounted.current && version === modelLoadVersion.current) setModels(ids)
+    if (mounted.current && version === modelLoadVersion.current) {
+      setModels(ids)
+      setModelNames(Object.fromEntries(data.map(item => [item.id, item.name || item.id])))
+      setKiloModelsError(kilo?.stale ? kilo.error || t('freeModels.kiloUnavailable') : '')
+    }
     return ids
   }
   const loadFreeModels = async (refresh = false) => {
@@ -358,7 +367,15 @@ export function Companion({ visible = true }: { visible?: boolean }) {
   const chatView = visible && mode === 'chat' && !terminalOpen
   const dailyTodo = useDailyTodo({ api, workspaces: snapshot?.workspaces || [], messages, workspaceId: chatWorkspace.workspaceId, active: chatView && !!snapshot, busy })
   canSpeak.current = chatView
-  useEffect(() => { if (!visible) { setContinuous(false); voice.stop() } }, [visible])
+  useEffect(() => {
+    if (!visible) {
+      setContinuous(false); voice.stop()
+      // This page stays mounted for its terminals. Portalled dialogs must not
+      // retain an input lock over the page the user navigates to.
+      setSettingsOpen(false); setGroupsOpen(false); setFoldersOpen(false)
+      setOpenCodeOpen(false); setHistoryOpen(false); setBrowserId(''); setDropped(null)
+    }
+  }, [visible])
   useEffect(() => {
     if (!visible) {
       recoveryRef.current = null
@@ -598,7 +615,7 @@ export function Companion({ visible = true }: { visible?: boolean }) {
   const refreshModels = async () => {
     setConnecting(true); setError('')
     try {
-      const results = await Promise.allSettled([loadModels(), loadFreeModels(true)])
+      const results = await Promise.allSettled([loadModels(undefined, true), loadFreeModels(true)])
       const ids = results[0].status === 'fulfilled' ? results[0].value : []
       const free = results[1].status === 'fulfilled' ? results[1].value.models : []
       if (!ids.length && !free.length) {
@@ -613,7 +630,15 @@ export function Companion({ visible = true }: { visible?: boolean }) {
   // In Work the model picker belongs to the open session (or to the next new one).
   const shownModel = workView ? work.active?.model ?? work.model : selectedModel
   // In Terminal the picker sets the default model (used by chat and passed to new Work sessions).
-  const chooseModel = (model: string) => { if (!model) return; if (workView) { if (work.active && !window.confirm(t('companion.page.changeModelConfirm'))) return; work.setModel(model, work.active?.id); } else setSelectedModel(model); setError(''); setNotice('') }
+  const chooseModel = async (model: string) => {
+    if (!model) return
+    if (workView) {
+      const sessionId = work.active?.id
+      if (sessionId && !await confirm(t('companion.page.changeModelConfirm'))) return
+      work.setModel(model, sessionId)
+    } else setSelectedModel(model)
+    setError(''); setNotice('')
+  }
   const modelCheck = useModelPreverification(shownModel, !!snapshot && models.length > 0)
   const state: AvatarState = voice.recording ? 'listening' : voice.speaking ? 'speaking' : busy ? 'thinking' : voice.transcribing ? 'thinking' : 'idle'
   const replyPhase = busy && workspaceAgent.running ? workspaceAgent.snapshot?.phase : undefined
@@ -701,7 +726,7 @@ export function Companion({ visible = true }: { visible?: boolean }) {
     <div className={'companion-layout' + (!chatView || (!avatarVisible && !dailyTodo.visible) ? ' is-avatar-hidden' : '') + (chatView && dailyTodo.visible ? ' has-daily-todo' : '')}>
       {chatView && (avatarVisible || dailyTodo.visible) && <aside className={dailyTodo.visible ? 'companion-daily-sidebar' : undefined}>
       {avatarVisible && <section className="companion-stage">
-        <div className="companion-stage-header"><span className="companion-eyebrow" aria-hidden="true"><span className="companion-online" /></span><button className="companion-icon-button" title={copy.avatar + ' · ' + copy.avatarHint} aria-label={copy.avatar} disabled={locked || !snapshot} onClick={() => { void control(() => settings.avatarMode === '3d' ? api.pickAvatarModel() : api.pickAvatar()) }}><Sparkles size={16} /></button><button className="companion-icon-button" aria-label={t('companion.page.resetAvatar')} title={t('companion.page.resetAvatar')} disabled={locked || !snapshot} onClick={() => { if (window.confirm(t('companion.page.resetAvatarConfirm'))) void control(() => settings.avatarMode === '3d' ? api.resetAvatarModel() : api.resetAvatar()) }}><RefreshCw size={16} /></button></div>
+        <div className="companion-stage-header"><span className="companion-eyebrow" aria-hidden="true"><span className="companion-online" /></span><button className="companion-icon-button" title={copy.avatar + ' · ' + copy.avatarHint} aria-label={copy.avatar} disabled={locked || !snapshot} onClick={() => { void control(() => settings.avatarMode === '3d' ? api.pickAvatarModel() : api.pickAvatar()) }}><Sparkles size={16} /></button><button className="companion-icon-button" aria-label={t('companion.page.resetAvatar')} title={t('companion.page.resetAvatar')} disabled={locked || !snapshot} onClick={async () => { if (await confirm(t('companion.page.resetAvatarConfirm'))) void control(() => settings.avatarMode === '3d' ? api.resetAvatarModel() : api.resetAvatar()) }}><RefreshCw size={16} /></button></div>
         <Avatar state={state} image={snapshot?.avatarUrl || ''} name={settings.name} level={voice.level} avatarMode={settings.avatarMode} modelUrl={snapshot?.avatarModelUrl || ''} />
         <h2 className="companion-name flex max-w-full items-center justify-center gap-2"><span className="min-w-0 break-words">{settings.name}</span><button type="button" className="companion-icon-button shrink-0" aria-label={t('companion.page.editName')} title={copy.name} disabled={locked || !snapshot} onClick={() => { setContinuous(false); voice.stop(); setSettingsOpen(true) }}><Pencil size={14} /></button></h2>
         <div className={'companion-status ' + (state !== 'idle' ? 'companion-active' : '')}><div className="companion-voice-bars"><span /><span /><span /></div>{snapshot ? copy[state] : copy.loading}</div>
@@ -720,8 +745,9 @@ export function Companion({ visible = true }: { visible?: boolean }) {
         <div className="companion-chat-header"><div className="companion-tabs" role="tablist" aria-label={copy.title} onKeyDown={event => { if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return; const buttons = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')]; const index = buttons.indexOf(document.activeElement as HTMLButtonElement); const next = event.key === 'Home' ? 0 : event.key === 'End' ? buttons.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + buttons.length) % buttons.length; event.preventDefault(); buttons[next]?.focus(); buttons[next]?.click() }}>{(['chat', 'agent'] as const).map(item => <button role="tab" aria-selected={!terminalOpen && mode === item} key={item} disabled={busy || voice.transcribing || historyBusy || !conversation} {...(item === 'agent' ? activityDescription(workActivity) : {})} onClick={() => showView(item)}>{item === 'chat' ? <Bot size={14} /> : <Briefcase size={14} />}{copy[item]}{item === 'agent' && <ActivityMark state={workActivity} announce={false} />}</button>)}<button role="tab" aria-selected={terminalOpen} disabled={busy || voice.transcribing || historyBusy || !conversation} {...activityDescription(terminalActivity)} onClick={() => showView('terminal')}><Terminal size={14} />{t('companion.page.terminal')}<ActivityMark state={terminalActivity} announce={false} /></button></div>
           <div className="companion-session-controls flex min-w-0 flex-wrap items-center gap-1"><select className="companion-select companion-model-select" aria-label={copy.model} title={workView && work.active ? t('companion.page.sessionModel') : undefined} value={shownModel} disabled={workView ? !snapshot || !work.ready : locked || !snapshot} onChange={event => chooseModel(event.target.value)}><option value="" disabled>{copy.model}</option>
             {shownModel && !models.includes(shownModel) && !freeCatalogue.models.some(item => item.id === shownModel) && <option value={shownModel}>{shownModel}</option>}
-            <optgroup label={copy.proxyModels}>{models.map(model => <option key={model} value={model}>{model}</option>)}</optgroup>
+            <optgroup label={copy.proxyModels}>{models.filter(model => !isKiloFreeModel(model)).map(model => <option key={model} value={model}>{model}</option>)}</optgroup>
             <optgroup label={copy.freeModels}>{freeCatalogue.models.map(model => <option key={model.id} value={model.id}>{model.name} · Free</option>)}</optgroup>
+            {!!models.some(isKiloFreeModel) && <optgroup label={t('freeModels.kilo')}>{models.filter(isKiloFreeModel).map(model => <option key={model} value={model}>{modelNames[model] || model}</option>)}</optgroup>}
           </select>
           <ModelCheckBadge state={modelCheck} onRecheck={modelCheck.recheck} className="shrink-0 whitespace-nowrap" />
           <button className="companion-icon-button" aria-label="OpenCode" title="OpenCode" onClick={() => { setContinuous(false); voice.stop(); setOpenCodeOpen(true) }}><Settings2 size={15} /></button>
@@ -753,14 +779,16 @@ export function Companion({ visible = true }: { visible?: boolean }) {
               onClick={toggleCompactHeader}>{compactHeader ? <ChevronsDown size={16} aria-hidden="true" /> : <ChevronsUp size={16} aria-hidden="true" />}</button>}
           </div>
         </div>
+        {kiloModelsError && <p role="status" className="companion-notice">{kiloModelsError}</p>}
+        {isKiloFreeModel(shownModel) && <p className="companion-notice">{t('freeModels.kiloPrivacy')}</p>}
         {focusMode.failed && !chatView && <p className="companion-error" role="alert">{t('companion.page.focusFailed')}</p>}
         {historyError && <div className="companion-error" role="alert"><AlertCircle size={15} className="mt-0.5 shrink-0" /><span className="flex-1">{copy.historyLoadFailed} <ErrorText error={historyError} /></span><Button size="sm" variant="outline" disabled={historyBusy || busy} onClick={() => { void initialize() }}>{historyBusy ? <LoaderCircle size={13} className="mr-1 animate-spin" /> : null}{copy.retry}</Button></div>}
         {workView && notice && <p className="companion-notice" role="status">{notice}</p>}
         {(workView || terminalOpen) && !browserId && !historyOpen && error && <div className="companion-error" role="alert"><AlertCircle size={15} className="mt-0.5 shrink-0" /><span className="flex-1"><ErrorText error={error} /></span><button aria-label={copy.cancel} onClick={() => setError('')}><X size={13} /></button></div>}
-        {snapshot && <WorkSessions onActivity={setWorkActivity} work={work} snapshot={snapshot} copy={copy} models={[...models, ...freeCatalogue.models.map(item => item.id)]} visible={workView} screenReaderMode={!!snapshot.accessibilitySupportEnabled} prepare={prepareWorkTerminal}
+        {snapshot && <WorkSessions onActivity={setWorkActivity} work={work} snapshot={snapshot} copy={copy} models={[...models, ...freeCatalogue.models.map(item => item.id)]} visible={visible && workView} screenReaderMode={!!snapshot.accessibilitySupportEnabled} prepare={prepareWorkTerminal}
           loadHistory={async id => (await companionHistory.get(id))?.messages.filter(message => (message.role === 'user' || message.role === 'assistant') && message.content.trim()).map(({ role, content }) => ({ role: role as 'user' | 'assistant', content }))}
           onFolders={openFolders} onAddFolder={() => { void control(() => api.addWorkspace()) }} onError={showError} />}
-        {(window.electronAPI?.terminal || terminalOpen) && terminalMounted && <div className="companion-terminal-panel" hidden={!terminalOpen}><Suspense fallback={null}><TerminalPanel optionsSlot={terminalToolsSlot} onActivity={setTerminalActivity} createdTerminalId={createdTerminalId} visible={terminalOpen} workspaces={snapshot?.workspaces || []} model={selectedModel} onOpenWork={() => { showView('agent'); if (snapshot?.workspaces[0]) openWorkSession({ workspaceId: snapshot.workspaces[0].id, groupId: '', accessScope: 'group', relativePath: '' }); else openFolders() }} screenReaderMode={!!snapshot?.accessibilitySupportEnabled} /></Suspense></div>}
+        {(window.electronAPI?.terminal || terminalOpen) && terminalMounted && <div className="companion-terminal-panel" hidden={!terminalOpen}><Suspense fallback={null}><TerminalPanel optionsSlot={terminalToolsSlot} onActivity={setTerminalActivity} createdTerminalId={createdTerminalId} visible={visible && terminalOpen} workspaces={snapshot?.workspaces || []} model={selectedModel} onOpenWork={() => { showView('agent'); if (snapshot?.workspaces[0]) openWorkSession({ workspaceId: snapshot.workspaces[0].id, groupId: '', accessScope: 'group', relativePath: '' }); else openFolders() }} screenReaderMode={!!snapshot?.accessibilitySupportEnabled} /></Suspense></div>}
         {chatView && <><div className="border-b px-5 py-3"><ChatWorkspaceAccess
  selection={chatWorkspace} onChange={chooseChatWorkspace} disabled={locked || voice.speaking} snapshot={snapshot || undefined} onSnapshot={applySnapshot}
           collapsible summary={engineLabel(chatEngine)} trailing={<select className="companion-select" aria-label={copy.agentEngine} title={copy.agentEngine} value={chatEngine} disabled={locked || voice.speaking} onChange={event => chooseChatEngine(event.target.value as ChatEngine)}>
@@ -814,7 +842,7 @@ export function Companion({ visible = true }: { visible?: boolean }) {
     {dropped && snapshot && <FolderDropDialog paths={dropped.paths} target={dropped.target} snapshot={snapshot} onClose={() => setDropped(null)} onImported={next => { applySnapshot(next); setFoldersOpen(true) }} onTerminal={id => { setCreatedTerminalId(id); showView('terminal') }} />}
     <Dialog open={foldersOpen} onOpenChange={setFoldersOpen}><DialogContent className="companion-settings max-h-[88vh] max-w-3xl overflow-y-auto">
       <DialogHeader><DialogTitle className="flex items-center gap-2"><FolderCog size={18} />{copy.folderAccess}</DialogTitle><DialogDescription>{copy.folderAccessHint}</DialogDescription></DialogHeader>
-      <AuthorizedFolders onError={showError} embedded workspaces={snapshot?.workspaces || []} groups={snapshot?.groups || []} sessionCounts={sessionCounts} disabled={savingControl || !snapshot} onAdd={() => { void control(() => api.addWorkspace()) }} onGroups={() => { setFoldersOpen(false); setContinuous(false); voice.stop(); setGroupsOpen(true) }} onBrowse={id => { setFoldersOpen(false); void openFolder(id, '') }} onAccess={(id, writable) => { if (!window.confirm(t('companion.page.changeAccessConfirm'))) return; void control(() => api.updateWorkspace(id, writable)) }} onRemove={id => { if (!window.confirm(t('companion.page.removeAccessConfirm'))) return; void control(() => api.updateWorkspace(id, null)) }} onWork={openWorkSession} />
+      <AuthorizedFolders onError={showError} embedded workspaces={snapshot?.workspaces || []} groups={snapshot?.groups || []} sessionCounts={sessionCounts} disabled={savingControl || !snapshot} onAdd={() => { void control(() => api.addWorkspace()) }} onGroups={() => { setFoldersOpen(false); setContinuous(false); voice.stop(); setGroupsOpen(true) }} onBrowse={id => { setFoldersOpen(false); void openFolder(id, '') }} onAccess={async (id, writable) => { if (!await confirm(t('companion.page.changeAccessConfirm'))) return; void control(() => api.updateWorkspace(id, writable)) }} onRemove={async id => { if (!await confirm(t('companion.page.removeAccessConfirm'))) return; void control(() => api.updateWorkspace(id, null)) }} onWork={openWorkSession} />
     </DialogContent></Dialog>
     {settingsOpen && snapshot && <CompanionSettings settings={settings} home={snapshot.home} copy={copy} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />}
     {groupsOpen && snapshot && <WorkspaceGroupsPanel groups={snapshot.groups || []} workspaces={snapshot.workspaces} onClose={() => setGroupsOpen(false)} onSave={group => updateGroup(() => api.saveWorkspaceGroup(group))} onDelete={id => updateGroup(() => api.deleteWorkspaceGroup(id))} />}

@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { registerWindowInputFocus } from '../../src/main/window/inputFocus.ts'
+import { registerWindowInputFocus, withWindowInputFocus } from '../../src/main/window/inputFocus.ts'
 
 function fixture() {
   let state = { visible: true, active: true, enabled: true, destroyed: false, pageDestroyed: false, pageFocused: false, devTools: false }
@@ -38,8 +38,51 @@ test('focus recovery respects other applications, hidden windows, DevTools and d
     const f = fixture()
     f.window.emit('focus'); f.set(patch); await tick()
     assert.equal(f.calls(), 0, JSON.stringify(patch))
+    f.window.emit('closed')
   }
   const f = fixture()
   f.window.emit('focus'); f.window.emit('closed'); await tick()
   assert.equal(f.calls(), 0)
+})
+
+test('native teardown may re-enable the window without sending another focus event', async () => {
+  const f = fixture()
+  f.set({ enabled: false })
+  f.window.emit('focus')
+  await tick()
+  assert.equal(f.calls(), 0)
+  f.set({ enabled: true })
+  await new Promise(resolve => setTimeout(resolve, 80))
+  assert.equal(f.calls(), 1)
+  f.window.emit('closed')
+})
+
+test('picker selection, cancellation and errors restore focus even without an activation event', async () => {
+  for (const outcome of ['selected', 'cancelled', 'error']) {
+    const f = fixture()
+    const operation = withWindowInputFocus(f.window as unknown as Parameters<typeof withWindowInputFocus>[0], async () => {
+      if (outcome === 'error') throw new Error('Picker failed')
+      return outcome
+    })
+    if (outcome === 'error') await assert.rejects(operation, /Picker failed/)
+    else assert.equal(await operation, outcome)
+    await tick()
+    assert.equal(f.calls(), 1, outcome)
+    f.window.emit('closed')
+  }
+})
+
+test('a delayed retry neither steals focus nor runs after the window closes', async () => {
+  for (const close of [true, false]) {
+    const f = fixture()
+    f.set({ enabled: false })
+    f.window.emit('focus')
+    await tick()
+    if (close) f.window.emit('closed')
+    else f.set({ active: false })
+    f.set({ enabled: true })
+    await new Promise(resolve => setTimeout(resolve, 80))
+    assert.equal(f.calls(), 0)
+    if (!close) f.window.emit('closed')
+  }
 })

@@ -24,6 +24,10 @@ app.disableHardwareAcceleration()
 
 const calls = [], requests = [], results = [], errors = [], commandExecutions = [], sessions = new Map()
 let window, config, snapshot, job, agentSerial = 0, shuttingDown = false
+let freeCatalogueStale = false, proxyCatalogueUnavailable = false
+let kiloCatalogueStale = false
+let workspacePickerOutcome = 'cancel'
+const kiloId = 'kilo-free/qa/model:free'
 let agent = { sessionId: '', running: false, text: '', error: '', tools: [], permissions: [] }
 const prompt = { id: 'qa-prompt', name: 'QA workspace task', description: '', emoji: '', prompt: 'QA_SYSTEM_PROMPT: inspect the selected authorized workspace.', type: 'system', createdAt: 0, updatedAt: 0 }
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -34,9 +38,9 @@ const proxyRequests = () => requests.filter(request => request.url === '/v1/chat
 const server = http.createServer(async (req, res) => {
   try {
     res.setHeader('Access-Control-Allow-Origin', '*')
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-DailyWorkMate-Model-Selection')
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-DailyWorkMate-Model-Selection, X-Refresh-Free-Models')
     if (req.method === 'OPTIONS') { res.writeHead(204).end(); return }
-    if (req.url === '/v1/models') { res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify({ data: [{ id: 'qa-model', owned_by: 'QA node' }, { id: 'qa-model-alt', owned_by: 'QA node' }] })); return }
+    if (req.url === '/v1/models') { res.setHeader('Content-Type', 'application/json'); if (proxyCatalogueUnavailable) { res.writeHead(503).end('{}'); return }; res.end(JSON.stringify({ data: [{ id: 'qa-model', owned_by: 'QA node' }, { id: 'qa-model-alt', owned_by: 'QA node' }, ...(!kiloCatalogueStale ? [{ id: kiloId, name: 'QA Kilo Free', owned_by: 'Kilo Free' }] : [])], kilo: { stale: kiloCatalogueStale, ...(kiloCatalogueStale ? { error: 'QA_KILO_CATALOGUE_UNAVAILABLE' } : {}) } })); return }
     let raw = ''; for await (const chunk of req) raw += chunk
     const body = JSON.parse(raw)
     requests.push({ url: req.url, body, headers: req.headers })
@@ -114,7 +118,12 @@ const operations = {
   'companion:get': async () => snapshot,
   'companion:saveSettings': async settings => { snapshot = { ...snapshot, settings }; return snapshot },
   'companion:saveMessages': async messages => { snapshot = { ...snapshot, messages } },
-  'companion:addWorkspace': async () => snapshot,
+  'companion:addWorkspace': async () => {
+    await delay(150)
+    if (workspacePickerOutcome === 'error') throw new Error('QA_PICKER_FAILED')
+    if (workspacePickerOutcome === 'add') snapshot = { ...snapshot, workspaces: [...snapshot.workspaces, { id: 'qa-added', name: 'QA added folder', path: scratch, writable: false }] }
+    return snapshot
+  },
   'companion:updateWorkspace': async (id, writable) => { snapshot = { ...snapshot, workspaces: writable === null ? snapshot.workspaces.filter(item => item.id !== id) : snapshot.workspaces.map(item => item.id === id ? { ...item, writable } : item) }; return snapshot },
   'companion:saveWorkspaceGroup': async group => { snapshot = { ...snapshot, groups: [...snapshot.groups.filter(item => item.id !== group.id), { ...group, id: group.id || 'qa-group-new' }] }; return snapshot },
   'companion:deleteWorkspaceGroup': async id => { snapshot = { ...snapshot, groups: snapshot.groups.filter(item => item.id !== id) }; return snapshot },
@@ -126,7 +135,7 @@ const operations = {
   'companion:readFile': async (id, relativePath) => { const grant = snapshot.workspaces.find(item => item.id === id); assert.ok(grant); assert.ok(!relativePath.split(/[\\/]/).includes('..')); return fs.readFileSync(path.join(grant.path, relativePath), 'utf8') },
   'companion:startAgent': async input => {
     assert.equal(agent.running, false, 'Renderer must stop the prior task before starting a new task')
-    assert.ok(['qa-model', 'qa-model-alt', 'opencode-free/qa-free'].includes(input.model))
+    assert.ok(['qa-model', 'qa-model-alt', 'opencode-free/qa-free', kiloId].includes(input.model))
     assert.equal(typeof input.prompt, 'string'); assert.ok(input.prompt.trim())
     assert.equal(typeof input.systemPrompt, 'string', 'The active Chat task / Companion persona must reach the agent')
     if (input.history) assert.ok(input.history.every(message => ['user', 'assistant'].includes(message.role) && typeof message.content === 'string'))
@@ -135,10 +144,11 @@ const operations = {
     const sessionId = input.sessionId || 'v2:0123456789abcdef:qa-' + ++agentSerial
     sessions.set(sessionId, identity)
     if (!input.workspaceId) {
-      assert.equal(input.prompt, 'PLAIN_COMPANION_QA: regular chat without filesystem tools')
+      assert.ok(input.prompt === 'PLAIN_COMPANION_QA: regular chat without filesystem tools' || input.model === kiloId || /^FREE_CHAT_(FIRST|FOLLOWUP|LIMIT|WAIT)_QA$/.test(input.prompt))
       assert.ok(!input.groupId && !input.relativePath, 'Ordinary chat must not inherit a prior workspace scope')
       job = undefined
-      agent = { sessionId, running: false, text: 'QA_PLAIN_CHAT_REPLY', error: '', tools: [], permissions: [] }
+      agent = { sessionId, running: input.prompt === 'FREE_CHAT_WAIT_QA', text: 'QA_PLAIN_CHAT_REPLY ' + input.prompt,
+        error: input.prompt === 'FREE_CHAT_LIMIT_QA' ? 'HTTP 429: QA_FREE_RATE_LIMIT' : '', tools: [], permissions: [] }
       return agent
     }
     const grant = selectedGrant(input)
@@ -159,7 +169,7 @@ const operations = {
   'companion:stopAgent': async () => { agent = { ...agent, running: false, permissions: [], tools: agent.tools.map(tool => ({ ...tool, status: 'cancelled' })) }; job = undefined },
   'companion:replyPermission': async () => { throw new Error('Authorized chat commands must not require a permission reply') },
   'companion:openCodeStatus': async () => ({ currentVersion: '2.0.23', latestVersion: '', checkedAt: 0, releaseUrl: '', updateAvailable: false, checking: false, installing: false, error: '', source: 'bundled' }),
-  'companion:openCodeModels': async () => ({ models: [{ id: 'opencode-free/qa-free', apiModel: 'qa-free', name: 'QA Free Native', contextLimit: 128000, outputLimit: 16000, toolCall: true }], updatedAt: Date.now(), stale: false }),
+  'companion:openCodeModels': async () => ({ models: [{ id: 'opencode-free/qa-free', apiModel: 'qa-free', name: 'QA Free Native', contextLimit: 128000, outputLimit: 16000, toolCall: true }], updatedAt: Date.now(), stale: freeCatalogueStale }),
   'companion:localSpeechStatus': async () => ({ available: true, recognitionAvailable: true, engine: 'sherpa-onnx', model: 'QA voice', fastAvailable: true, ready: true, warming: false, readyEngine: 'fast' }),
   'companion:warmupSpeech': async () => ({ available: true, recognitionAvailable: true, fastAvailable: true, ready: true, warming: false, readyEngine: 'fast' }),
   'companion:cancelSpeech': async () => {},
@@ -174,7 +184,7 @@ for (const [operation, handler] of Object.entries(operations)) ipcMain.handle('w
   if (shuttingDown) return undefined
   assert.equal(event.sender, window.webContents)
   record(operation, args)
-  try { return await handler(...args) } catch (error) { errors.push(operation + ': ' + error.message); throw error }
+  try { return await handler(...args) } catch (error) { if (error.message !== 'QA_PICKER_FAILED') errors.push(operation + ': ' + error.message); throw error }
 })
 
 const js = code => window.webContents.executeJavaScript(code, true)
@@ -233,11 +243,120 @@ async function screenshot(name) {
 async function loadSurface(surface) {
   await window.loadFile(process.env.WORKSPACE_CHAT_QA_RENDERER || path.join(root, 'out/renderer/index.html'), { hash: surface === 'CHAT' ? '/chat' : '/' })
   await wait(ready(surface), surface + ' ready')
-  await js('window.confirm = () => true; void 0')
+  await js('window.confirm = () => { throw new Error("Native synchronous confirmation must not be used") }; void 0')
+}
+async function selectChatModel(label) {
+  // Radix Select opens on pointer-down, not a synthetic click.
+  await js(`document.querySelector('[role="combobox"][aria-label="Select a model"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))`)
+  await click(`[...document.querySelectorAll('[role="option"]')].find(element => element.textContent.includes(${JSON.stringify(label)}))`)
+  await wait(`!document.querySelector('[role="listbox"]')`, 'model menu closed')
+}
+async function checkFreeChat() {
+  await selectChatModel('QA Free Native')
+  const requestsBefore = requests.length
+  const startsBefore = starts().length
+  await fill('CHAT', 'FREE_CHAT_FIRST_QA')
+  await click(sendButton('CHAT'))
+  await finish('CHAT', 'QA_PLAIN_CHAT_REPLY FREE_CHAT_FIRST_QA')
+  const first = starts().at(-1).args[0]
+  assert.equal(first.model, 'opencode-free/qa-free')
+  assert.equal(first.workspaceId, '')
+  assert.equal(first.sessionId, '')
+  assert.equal(first.systemPrompt, prompt.prompt)
+  assert.equal(starts().length, startsBefore + 1)
+  assert.equal(requests.length, requestsBefore, 'Free chat never verifies or sends through the proxy')
+  const sessionId = agent.sessionId
+  await delay(650)
+  await window.reload()
+  await wait(ready('CHAT'), 'free chat restored')
+  await fill('CHAT', 'FREE_CHAT_FOLLOWUP_QA')
+  await click(sendButton('CHAT'))
+  await finish('CHAT', 'QA_PLAIN_CHAT_REPLY FREE_CHAT_FOLLOWUP_QA')
+  assert.equal(starts().at(-1).args[0].sessionId, sessionId)
+  assert.ok(starts().at(-1).args[0].history.some(message => message.content === 'FREE_CHAT_FIRST_QA'))
+  results.push('CHAT: free models use native IPC without proxy verification, preserve the task prompt and resume after reload')
+
+  await fill('CHAT', 'FREE_CHAT_LIMIT_QA')
+  await click(sendButton('CHAT'))
+  await finish('CHAT', "OpenCode's free service reached a rate or quota limit")
+  assert.ok(await js(`document.body.textContent.includes('QA_FREE_RATE_LIMIT')`), 'The original error remains available in Details')
+  const limitedStarts = starts().length
+  await delay(800)
+  assert.equal(starts().length, limitedStarts, 'Rate limits must not trigger automatic retries or account switching')
+  assert.equal(requests.length, requestsBefore)
+  await fill('CHAT', 'FREE_CHAT_WAIT_QA')
+  await click(sendButton('CHAT'))
+  await wait(`!!(${stopButton('CHAT')}) && document.body.innerText.includes('QA_PLAIN_CHAT_REPLY FREE_CHAT_WAIT_QA')`, 'free chat running')
+  await click(stopButton('CHAT'))
+  await wait(`!(${stopButton('CHAT')})`, 'free chat stopped')
+  assert.equal(agent.running, false)
+  results.push('CHAT: free rate limits surface without resubmission; Stop cancels the owned native request')
+
+  freeCatalogueStale = true
+  await click(`document.querySelector('button[title="Refresh models"]')`)
+  await wait(`!document.querySelector('button[title="Refresh models"]').disabled && document.body.textContent.includes('The OpenCode free model catalogue could not be verified')`, 'stale free catalogue')
+  await fill('CHAT', 'FREE_CHAT_FIRST_QA')
+  assert.equal(await js(`(${sendButton('CHAT')}).disabled`), true, 'Stale free models cannot be sent')
+  assert.equal(calls.filter(call => call.operation === 'companion:openCodeModels').at(-1).args[0], true)
+  await selectChatModel('qa-model ·')
+  await fill('CHAT', 'Normal model remains available')
+  await click(sendButton('CHAT'))
+  await finish('CHAT', 'QA_PLAIN_CHAT_REPLY')
+  assert.equal(proxyRequests().at(-1).body.model, 'qa-model')
+
+  freeCatalogueStale = false
+  proxyCatalogueUnavailable = true
+  await click(`document.querySelector('button[title="Refresh models"]')`)
+  await wait(`!document.querySelector('button[title="Refresh models"]').disabled && document.body.textContent.includes('HTTP 503')`, 'proxy catalogue unavailable')
+  await selectChatModel('QA Free Native')
+  await fill('CHAT', 'FREE_CHAT_FIRST_QA')
+  await click(sendButton('CHAT'))
+  await finish('CHAT', 'QA_PLAIN_CHAT_REPLY FREE_CHAT_FIRST_QA')
+  assert.equal(starts().at(-1).args[0].model, 'opencode-free/qa-free')
+  results.push('CHAT: refresh revalidates the catalogue; stale free models are blocked and either catalogue can fail independently')
+  proxyCatalogueUnavailable = false
+  await screenshot('chat-opencode-free')
 }
 async function historyRecord(surface) {
   if (surface === 'CHAT') return js(`JSON.parse(localStorage.getItem('dailyworkmate.chat.workspace.v1'))`)
   return js(`new Promise((resolve,reject) => {const request=indexedDB.open('dailyworkmate.companion.history.v1');request.onerror=()=>reject(request.error);request.onsuccess=()=>{const db=request.result;const get=db.transaction('conversations').objectStore('conversations').getAll();get.onsuccess=()=>{resolve(get.result.sort((a,b)=>b.savedAt-a.savedAt)[0]);db.close()};get.onerror=()=>reject(get.error)}})`)
+}
+
+async function checkKilo(surface) {
+  await click(`document.querySelector('button[title="Refresh models"]')`)
+  await wait(`!document.querySelector('button[title="Refresh models"]').disabled`, surface + ' Kilo catalogue loaded')
+  await selectWorkspace('none')
+  if (surface === 'CHAT') await selectChatModel('QA Kilo Free')
+  else await js(`(() => { const element = document.querySelector('.companion-model-select'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype,'value').set.call(element,${JSON.stringify(kiloId)}); element.dispatchEvent(new Event('change',{bubbles:true})); })()`)
+  await wait(`document.body.innerText.includes('may log prompts')`, surface + ' Kilo privacy notice')
+  if (surface === 'COMPANION') assert.ok(await js(`!![...document.querySelectorAll('.companion-model-select optgroup')].find(group => group.label === 'Kilo free models' && group.querySelector('option').textContent === 'QA Kilo Free')`))
+  const before = starts().length, plain = proxyRequests().length
+  await fill(surface, 'KILO_SELECTION_' + surface)
+  await click(sendButton(surface))
+  await finish(surface, 'QA_PLAIN_CHAT_REPLY')
+  if (surface === 'CHAT') { assert.equal(starts().length, before); assert.equal(proxyRequests().length, plain + 1); assert.equal(proxyRequests().at(-1).body.model, kiloId) }
+  else { assert.equal(starts().at(-1).args[0].model, kiloId); assert.equal(starts().at(-1).args[0].workspaceId, '') }
+  for (const width of [1360, 540]) {
+    window.setSize(width, 920)
+    for (const theme of ['light', 'dark']) {
+      await js(`document.documentElement.setAttribute('data-theme', ${JSON.stringify(theme)}); document.documentElement.classList.toggle('dark', ${JSON.stringify(theme)} === 'dark')`)
+      await screenshot(surface.toLowerCase() + '-kilo-' + width + '-' + theme)
+      assert.ok(await js('document.documentElement.scrollWidth <= innerWidth + 2'), surface + ' horizontal overflow')
+      if (surface === 'CHAT' && width === 540) assert.ok(await js(`document.querySelector('[role="combobox"][aria-label="Select a model"]').getBoundingClientRect().width > 120`), 'Narrow model selector must remain readable')
+    }
+  }
+  window.setSize(1360, 920)
+  await js("document.documentElement.setAttribute('data-theme', 'light'); document.documentElement.classList.remove('dark')")
+  kiloCatalogueStale = true
+  const refresh = `document.querySelector('button[title="Refresh models"]')`
+  await click(refresh)
+  await wait(`document.body.textContent.includes('QA_KILO_CATALOGUE_UNAVAILABLE')`, surface + ' Kilo refresh outage')
+  if (surface === 'CHAT') await selectChatModel('qa-model · QA node')
+  else assert.ok(await js("[...document.querySelector('.companion-model-select').options].some(option => option.value === 'qa-model')"))
+  kiloCatalogueStale = false
+  await click(refresh)
+  await wait(`!document.body.textContent.includes('QA_KILO_CATALOGUE_UNAVAILABLE')`, surface + ' Kilo refresh recovery')
+  results.push(surface + ': Kilo source group, privacy, explicit selection, isolated catalogue outage/recovery and responsive themes')
 }
 
 async function checkSurface(surface) {
@@ -356,8 +475,92 @@ async function checkSurface(surface) {
     assert.equal(proxyRequests().length, plainRequests + 1)
     assert.equal(proxyRequests().at(-1).body.messages.at(-1).content, 'PLAIN_CHAT_QA: regular chat without filesystem tools')
     results.push(surface + ': no-workspace selection retains the normal OpenAI chat route')
+    await checkFreeChat()
   }
   snapshot = { ...snapshot, workspaces: initialWorkspaces }
+}
+
+async function nativeClick(code) {
+  await wait(`!!(${code}) && !(${code}).disabled`, 'native clickable ' + code.slice(0, 80))
+  const point = await js(`(() => { const element = (${code}); element.scrollIntoView({block:'nearest'}); const rect = element.getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) }; })()`)
+  window.webContents.sendInputEvent({ type: 'mouseDown', button: 'left', clickCount: 1, ...point })
+  window.webContents.sendInputEvent({ type: 'mouseUp', button: 'left', clickCount: 1, ...point })
+  await delay(100)
+}
+async function keyboardText(selector, text) {
+  await nativeClick(`document.querySelector(${JSON.stringify(selector)})`)
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control'] })
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'A', modifiers: ['control'] })
+  for (const character of text) window.webContents.sendInputEvent({ type: 'char', keyCode: character })
+  await wait(`document.querySelector(${JSON.stringify(selector)}).value === ${JSON.stringify(text)}`, 'keyboard text ' + text)
+  assert.equal(await js(`document.activeElement === document.querySelector(${JSON.stringify(selector)})`), true)
+}
+const noModal = `!document.querySelector('[role="dialog"][data-state="open"]') && getComputedStyle(document.body).pointerEvents !== 'none'`
+const topDialogButton = text => `[...document.querySelectorAll('[role="dialog"][data-state="open"]')].at(-1) && [...[...document.querySelectorAll('[role="dialog"][data-state="open"]')].at(-1).querySelectorAll('button')].find(el => el.textContent.trim() === ${JSON.stringify(text)})`
+async function navigate(surface) {
+  await js(`location.hash = ${JSON.stringify(surface === 'CHAT' ? '/chat' : '/')}`)
+  await wait(`${ready(surface)} && ${noModal}`, 'navigation released dialogs: ' + surface)
+}
+async function checkInputRecovery() {
+  // Keep Assistant mounted while changing routes, exactly as the app does.
+  await loadSurface('COMPANION')
+  await keyboardText('.companion-composer textarea', 'before workspace dialogs')
+  for (const outcome of ['cancel', 'add', 'error']) {
+    workspacePickerOutcome = outcome
+    await nativeClick(`document.querySelector('.companion-folder-button')`)
+    const before = calls.filter(call => call.operation === 'companion:addWorkspace').length
+    await nativeClick(button('Add folder'))
+    await wait(`!(${button('Add folder')}).disabled`, 'folder picker releases busy state: ' + outcome)
+    assert.equal(calls.filter(call => call.operation === 'companion:addWorkspace').length, before + 1)
+    await keyboardText('input[aria-label="Search authorized folders"]', 'QA')
+    await nativeClick(topDialogButton('Close'))
+    await wait(noModal, 'folder dialog closed: ' + outcome)
+    await keyboardText('.companion-composer textarea', 'after folder ' + outcome)
+  }
+  results.push('Assistant: folder selection, cancellation and failure release Add folder and accept keyboard input again')
+
+  await nativeClick(`document.querySelector('.companion-folder-button')`)
+  const original = snapshot.workspaces.find(folder => folder.id === 'qa-folder').writable
+  const access = `document.querySelector('[data-authorized-folder="qa-folder"] select')`
+  const changeAccess = () => js(`(() => { const element = ${access}; element.value = ${JSON.stringify(original ? 'read' : 'write')}; element.dispatchEvent(new Event('change', {bubbles:true})); })()`)
+  await changeAccess()
+  await wait(`document.querySelectorAll('[role="dialog"]').length === 2`, 'nested access confirmation')
+  await nativeClick(topDialogButton('Cancel'))
+  await wait(`document.querySelectorAll('[role="dialog"]').length === 1`, 'nested confirmation cancelled')
+  assert.equal(snapshot.workspaces.find(folder => folder.id === 'qa-folder').writable, original)
+  await keyboardText('input[aria-label="Search authorized folders"]', 'QA workspace')
+  await changeAccess()
+  await wait(`document.querySelectorAll('[role="dialog"]').length === 2`, 'nested access confirmation again')
+  await nativeClick(topDialogButton('Confirm'))
+  await wait(`document.querySelectorAll('[role="dialog"]').length === 1 && !(${button('Add folder')}).disabled`, 'nested confirmation applied')
+  assert.equal(snapshot.workspaces.find(folder => folder.id === 'qa-folder').writable, !original)
+  // Hiding a kept-alive page must also remove its portalled folder dialog.
+  await navigate('CHAT')
+  await keyboardText('[data-chat-ready] textarea', 'draft before leaving confirmation')
+  const chatId = await js(`JSON.parse(localStorage.getItem('dailyworkmate.chat.workspace.v1')).conversationId`)
+  await nativeClick(button('Clear chat'))
+  await wait(`!!document.querySelector('[role="dialog"][data-state="open"]')`, 'clear pending before route change')
+  await navigate('COMPANION')
+  await keyboardText('.companion-composer textarea', 'assistant after cancelled clear')
+  await navigate('CHAT')
+  assert.equal(await js(`JSON.parse(localStorage.getItem('dailyworkmate.chat.workspace.v1')).conversationId`), chatId, 'Leaving a pending confirmation must not delete its conversation')
+  assert.equal(await js(`document.querySelector('[data-chat-ready] textarea').value`), 'draft before leaving confirmation')
+  await nativeClick(button('Clear chat'))
+  await wait(`!!document.querySelector('[role="dialog"][data-state="open"]')`, 'clear after returning')
+  await nativeClick(topDialogButton('Confirm'))
+  await wait(`${ready('CHAT')} && ${noModal}`, 'clear complete')
+  await keyboardText('[data-chat-ready] textarea', 'chat after clear')
+  await expandWorkspace()
+  await nativeClick(button('Manage access'))
+  workspacePickerOutcome = 'cancel'
+  await nativeClick(button('Add folder'))
+  await wait(`!(${button('Add folder')}).disabled`, 'Chat folder picker cancelled')
+  await nativeClick(topDialogButton('Close'))
+  await wait(noModal, 'Chat workspace dialog released input')
+  await keyboardText('[data-chat-ready] textarea', 'chat after workspace picker')
+  await navigate('COMPANION')
+  await keyboardText('.companion-composer textarea', 'assistant after chat clear')
+  results.push('Nested permission dialogs, pending-confirmation navigation, Chat clear and retained Assistant pages release all modal locks and accept real keyboard input')
 }
 
 async function run() {
@@ -371,8 +574,13 @@ async function run() {
   }
   window = new BrowserWindow({ show: false, width: 1360, height: 920, webPreferences: { offscreen: true, preload: path.join(root, 'tests/renderer/fixtures/workspace-chat-preload.cjs'), contextIsolation: true, sandbox: false, nodeIntegration: false, backgroundThrottling: false } })
   window.webContents.on('console-message', (_event, level, message) => { if (level >= 3 && !message.includes('Content Security Policy')) errors.push(message) })
-  await checkSurface('CHAT')
-  await checkSurface('COMPANION')
+  if (!process.argv.includes('--focus-only')) {
+    await checkSurface('CHAT')
+    await checkKilo('CHAT')
+    await checkSurface('COMPANION')
+    await checkKilo('COMPANION')
+  }
+  await checkInputRecovery()
   assert.deepEqual(errors, [])
   fs.writeFileSync(path.join(scratch, 'report.json'), JSON.stringify({ passed: true, results, calls, requests, commandExecutions }, null, 2))
   console.log('PASS: ' + results.join('\nPASS: '))
@@ -381,7 +589,9 @@ async function run() {
 run().catch(async error => {
   console.error(error)
   process.exitCode = 1
-  fs.writeFileSync(path.join(scratch, 'failure.json'), JSON.stringify({ error: error.message, results, calls, requests, errors, text: window && !window.isDestroyed() ? await js('document.body.innerText').catch(() => '') : '' }, null, 2))
+  fs.writeFileSync(path.join(scratch, 'failure.json'), JSON.stringify({ error: error.message, results, calls, requests, errors,
+    inputState: window && !window.isDestroyed() ? await js(`({ pointerEvents: document.body.style.pointerEvents, chatReady: document.querySelector('[data-chat-ready]')?.dataset.chatReady, dialogs: [...document.querySelectorAll('[role="dialog"]')].map(el => ({state:el.dataset.state,text:el.textContent.slice(0,300)})), focus: document.activeElement?.outerHTML.slice(0,400) })`).catch(() => null) : null,
+    text: window && !window.isDestroyed() ? await js('document.body.innerText').catch(() => '') : '' }, null, 2))
   if (window && !window.isDestroyed()) await screenshot('failure').catch(() => {})
   console.error('QA output: ' + scratch)
 }).finally(() => { shuttingDown = true; window?.destroy(); server.closeAllConnections(); server.close(); app.exit(process.exitCode || 0) })

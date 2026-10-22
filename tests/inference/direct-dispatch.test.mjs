@@ -15,7 +15,7 @@ let module, upstream
 before(async () => {
   await mkdir(path.dirname(output), { recursive: true })
   await build({
-    stdin: { contents: `export { executeInternalInference } from './src/main/inference/service.ts'; export { proxyStatusManager } from './src/main/proxy/status.ts'; export { setup, state } from './src/main/store/store'`, resolveDir: process.cwd() },
+    stdin: { contents: `export { executeInternalInference } from './src/main/inference/service.ts'; export { kiloFreeModels } from './src/main/inference/kiloModels.ts'; export { proxyStatusManager } from './src/main/proxy/status.ts'; export { setup, state } from './src/main/store/store'`, resolveDir: process.cwd() },
     outfile: output, bundle: true, platform: 'node', format: 'esm', packages: 'external',
     plugins: [{ name: 'isolate-storage-only', setup(builder) {
       builder.onResolve({ filter: /(?:^electron$|\/store\/store(?:\.ts)?$)/ }, args => ({ path: args.path === 'electron' ? 'electron' : 'store', namespace: 'qa' }))
@@ -120,6 +120,51 @@ test('public fixed-model routing cannot override desktop selection even when the
     assert.equal(received.at(-1).body.model, 'gpt-direct-test')
     assert.equal(result.response.body.model, 'gpt-direct-test')
     assert.equal(module.state.requests.at(-1).providerId, 'official-openai')
+  }
+  assert.deepEqual(listenAttempts, [])
+})
+
+test('desktop free models are listed and verified without accounts; forced refresh and outages preserve configured models', async t => {
+  const model = { id: 'kilo-free/test/free', apiModel: 'test/free', name: 'Kilo QA' }
+  let force
+  t.mock.method(module.kiloFreeModels, 'get', async refresh => { force = refresh; return { models: [model], stale: false, updatedAt: 1000 } })
+  t.mock.method(module.kiloFreeModels, 'resolve', async id => { assert.equal(id, model.id); return model })
+  const listing = await module.executeInternalInference({ id: 'kilo-list', path: '/v1/models', headers: { 'x-refresh-free-models': 'true' } }, new AbortController().signal)
+  assert.equal(force, true)
+  assert.ok(listing.response.body.data.some(item => item.id === 'gpt-direct-test'))
+  assert.equal(listing.response.body.data.find(item => item.id === model.id).owned_by, 'Kilo Free')
+  const checked = await module.executeInternalInference({ id: 'kilo-verify', path: '/v1/models/verify', body: { model: model.id } }, new AbortController().signal)
+  assert.equal(checked.response.body.model, model.id)
+  assert.equal(checked.response.body.skipped, true)
+  assert.equal(checked.response.body.recovered, false)
+  t.mock.method(module.kiloFreeModels, 'get', async () => ({ models: [model], stale: true, updatedAt: 1000, error: 'QA Kilo outage' }))
+  const offline = await module.executeInternalInference({ id: 'kilo-offline', path: '/v1/models' }, new AbortController().signal)
+  assert.ok(offline.response.body.data.some(item => item.id === 'gpt-direct-test'))
+  assert.ok(!offline.response.body.data.some(item => item.id === model.id))
+  assert.equal(offline.response.body.kilo.error, 'QA Kilo outage')
+})
+
+test('Kilo desktop requests use real dispatch and logs while ignoring public fixed-model defaults', async t => {
+  const model = { id: 'kilo-free/test/free', apiModel: 'test/free', name: 'Kilo QA', contextLimit: 100000, outputLimit: 1000,
+    toolCall: true, vision: false, reasoning: true, parameters: ['tools', 'max_tokens', 'reasoning'] }
+  t.mock.method(module.kiloFreeModels, 'resolve', async id => { assert.equal(id, model.id); return model })
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    assert.equal(url, 'https://api.kilo.ai/api/gateway/chat/completions')
+    assert.equal(init.headers.Authorization, undefined)
+    assert.equal(JSON.parse(init.body).model, model.apiModel)
+    return new Response('data: ' + JSON.stringify({ id: 'kilo-test', choices: [{ index: 0, delta: { content: 'Kilo desktop answer' }, finish_reason: 'stop' }], usage: { total_tokens: 8 } }) + '\n\ndata: [DONE]\n\n')
+  })
+  for (const stream of [false, true]) {
+    const result = await request(model.id, stream)
+    assert.equal(result.response.status, 200)
+    if (stream) { let body = ''; for await (const chunk of result.output) body += chunk; assert.match(body, /Kilo desktop answer/); assert.match(body, /\[DONE\]/) }
+    else assert.equal(result.response.body.choices[0].message.content, 'Kilo desktop answer')
+    assert.equal(module.state.requests.at(-1).providerId, 'kilo-free')
+    assert.equal(module.state.requests.at(-1).model, model.id)
+    assert.equal(module.state.requests.at(-1).actualModel, model.apiModel)
+    assert.deepEqual(module.state.tokens.at(-1), [model.id, 8])
+    assert.equal(module.state.stats.at(-1)[3], 'kilo-free')
+    assert.equal(module.proxyStatusManager.getStatistics().activeConnections, 0)
   }
   assert.deepEqual(listenAttempts, [])
 })

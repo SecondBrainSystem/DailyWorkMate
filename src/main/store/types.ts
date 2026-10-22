@@ -727,6 +727,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   modelMappings: createDefaultModelMappings(),
   ollamaRouting: {
     forceModel: false,
+    routeOriginalModel: false,
     model: '',
     autoSelectUrl: false,
     providerId: '',

@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
+import { useConfirm } from '@/components/ui/confirmation-provider'
 import { Input } from '@/components/ui/input'
 import { toast } from '@/hooks/use-toast'
 
 type Entry = Awaited<ReturnType<typeof window.electronAPI.logs.get>>[number]
 export function ApplicationLogs() {
   const { t, i18n } = useTranslation()
+  const confirm = useConfirm()
   const [entries, setEntries] = useState<Entry[]>([])
   const [keyword, setKeyword] = useState('')
   const [page, setPage] = useState(0)
@@ -39,7 +41,7 @@ export function ApplicationLogs() {
       <Button variant="outline" onClick={() => setRevision(value => value + 1)}>{t('dashboard.refresh')}</Button>
       <Button variant="outline" onClick={() => void exportLogs()}>{t('logs.export')}</Button>
       <Button variant="outline" onClick={async () => {
-        if (!window.confirm(t('logs.app.clearConfirm'))) return
+        if (!await confirm(t('logs.app.clearConfirm'))) return
         try { await window.electronAPI.logs.clear(); setRevision(value => value + 1) }
         catch (failure) { toast({ title: t('common.error'), description: String(failure), variant: 'destructive' }) }
       }}>{t('logs.clearLogs')}</Button>

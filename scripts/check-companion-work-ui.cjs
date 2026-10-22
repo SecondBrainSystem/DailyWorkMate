@@ -171,10 +171,10 @@ app.whenReady().then(async () => {
   const before = await saved()
   const [projectSession, , docsSession] = before.open
   const otherTerminal = calls.filter(call => call.operation === 'openTerminal').filter(call => call.input[0].workspaceId === 'qa-folder-1').at(-1).input[0].terminalId
-  // Changing access and closing a connected tab both ask for confirmation; a native dialog would block the hidden window.
-  await js('window.confirm = () => true; void 0')
+  // Exercise the application confirmation, including its nested folder dialog.
   await click(openFolders)
   await select('select[aria-label="Project access"]', 'write')
+  await click(button('Confirm'))
   await click(button('Close'))
   const reconnectDeadline = Date.now() + 60000
   while (calls.filter(call => call.operation === 'openTerminal').length < openCount + 2) { if (Date.now() > reconnectDeadline) throw new Error('Timed out: sessions reconnect after a permission change'); await sleep(100) }
@@ -189,6 +189,7 @@ app.whenReady().then(async () => {
   await click(tab('docs')); await wait(`${visibleState} === 'Connected'`, 'docs session shown')
   const docsTerminal = calls.filter(call => call.operation === 'openTerminal').filter(call => call.input[0].relativePath === 'docs').at(-1).input[0].terminalId
   await click(`document.querySelector('.work-session-tab.is-active .work-session-close')`)
+  await click(button('Confirm'))
   await wait(`document.querySelectorAll('.work-session-tab').length === 2`, 'tab closed')
   assert.ok(calls.some(call => call.operation === 'closeTerminal' && call.input[0] === docsTerminal))
   await click(`[...document.querySelectorAll('button')].find(el => el.textContent.trim().startsWith('Recent sessions'))`)

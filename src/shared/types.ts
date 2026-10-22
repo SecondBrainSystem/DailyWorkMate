@@ -52,9 +52,21 @@ export interface OllamaImportResult {
 
 export interface OllamaRoutingConfig {
   forceModel: boolean
+  /** Route the client's model to Ollama without applying the global model override. */
+  routeOriginalModel?: boolean
   model: string
   autoSelectUrl: boolean
   providerId: string
+}
+
+export interface OllamaRoutingTestResult {
+  success: boolean
+  requestedModel: string
+  routedModel: string
+  providerName?: string
+  latency: number
+  response?: string
+  error?: string
 }
 
 // Provider vendor type (for OAuth adapters)

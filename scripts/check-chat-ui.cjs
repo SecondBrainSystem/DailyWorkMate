@@ -20,7 +20,7 @@ const results = []
 let window
 const server = http.createServer(async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*')
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-DailyWorkMate-Model-Selection')
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-DailyWorkMate-Model-Selection, X-Refresh-Free-Models')
   if (req.method === 'OPTIONS') { res.writeHead(204).end(); return }
   if (req.url === '/v1/models') {
     res.setHeader('Content-Type', 'application/json')
@@ -107,6 +107,24 @@ async function newChat() {
   await click(button('New chat'))
   await waitFor(`${ready} && ${backup}.conversationId !== ${JSON.stringify(id)}`, 'new conversation saved')
 }
+async function clearChat(answer = 'Confirm') {
+  await click(button('Clear chat'))
+  await waitFor(`!!document.querySelector('[role="dialog"]')`, 'clear confirmation opened')
+  if (answer === 'Escape') window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Escape' })
+  else await click(`[...document.querySelectorAll('[role="dialog"] button')].find(el => el.textContent.trim() === ${JSON.stringify(answer)})`)
+  await waitFor(`${ready} && !document.querySelector('[role="dialog"]') && getComputedStyle(document.body).pointerEvents !== 'none'`, 'clear confirmation released input')
+}
+async function typeWithKeyboard(text) {
+  // Sending real Chromium input catches lost focus and leftover modal locks;
+  // setting textarea.value + dispatchEvent can pass while the UI is unusable.
+  await click(`document.querySelector('textarea')`)
+  const before = await js(`document.querySelector('textarea').value`)
+  window.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'End', modifiers: ['control'] })
+  window.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'End', modifiers: ['control'] })
+  for (const character of text) window.webContents.sendInputEvent({ type: 'char', keyCode: character })
+  await waitFor(`document.querySelector('textarea').value === ${JSON.stringify(before + text)}`, 'keyboard input after dialog')
+  assert.equal(await js(`document.activeElement === document.querySelector('textarea')`), true)
+}
 async function readHistoryRecord(id) {
   return js(`new Promise((resolve, reject) => { const open = indexedDB.open('dailyworkmate.chat.history.v1'); open.onerror = () => reject(open.error); open.onsuccess = () => { const db = open.result; const request = db.transaction('conversations').objectStore('conversations').get(${JSON.stringify(id)}); request.onsuccess = () => { resolve(request.result || null); db.close() }; request.onerror = () => { reject(request.error); db.close() } } })`)
 }
@@ -139,7 +157,7 @@ async function run() {
   window.webContents.on('console-message', (_event, level, message) => { if (level >= 3 && !message.includes('Content Security Policy')) errors.push(message) })
   await window.loadFile(rendererEntry, { hash: '/chat' })
   await waitFor(ready, 'chat loaded')
-  await js('window.confirm = () => true; void 0')
+  await js('window.confirm = () => { throw new Error("Native synchronous confirmation must not be used") }; void 0')
   const legacyId = await js(`${backup}.conversationId`)
   assert.equal((await readHistoryRecord(legacyId)).messages.length, 120)
   assert.equal(await js(`document.querySelector('textarea').value`), 'Legacy draft')
@@ -158,10 +176,19 @@ async function run() {
   assert.equal(await js(`document.body.innerText.includes('STALE RESPONSE')`), false)
   results.push('New chat aborts streaming; old callbacks cannot affect the next request; DONE releases UI before HTTP close')
 
-  await click(button('Clear chat'))
-  await typeMessage('draft only')
-  await click(button('Clear chat'))
+  await clearChat()
+  await typeWithKeyboard('draft only')
+  const beforeCancel = await js(`${backup}.conversationId`)
+  await clearChat('Cancel')
+  assert.equal(await js(`${backup}.conversationId`), beforeCancel)
+  assert.equal(await js(`document.querySelector('textarea').value`), 'draft only')
+  await typeWithKeyboard(' after cancel')
+  await clearChat('Escape')
+  await typeWithKeyboard(' after escape')
+  for (let i = 0; i < 3; i++) { await clearChat(); await typeWithKeyboard('repeat ' + i) }
+  await clearChat()
   assert.equal(await js(`document.querySelector('textarea').value`), '')
+  results.push('Real keyboard input survives repeated clear confirmations, cancellation and Escape; modal input locks are released')
   await window.reload()
   await waitFor(ready, 'reload')
   assert.equal(await js(`document.body.innerText.includes('QA answer')`), false)

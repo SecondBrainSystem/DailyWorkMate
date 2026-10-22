@@ -15,6 +15,7 @@ import { proxyServer as sharedProxyServer } from '../proxy/server'
 import { proxyStatusManager } from '../proxy/status'
 import { internalProxyKey } from '../proxy/internalAuth'
 import { listAvailableModels } from '../proxy/modelCatalog'
+import { listFreeRoutingModels } from '../inference/modelListing'
 import { sessionManager } from '../proxy/sessionManager'
 import { ConfigManager } from '../store/config'
 import { generateManagementSecret } from '../proxy/middleware/managementAuth'
@@ -29,6 +30,7 @@ import { QwenAdapter } from '../proxy/adapters/qwen'
 import { QwenAiAdapter } from '../proxy/adapters/qwen-ai'
 import { ZaiAdapter } from '../proxy/adapters/zai'
 import { OllamaNodeManager } from '../ollama/manager'
+import { testOllamaRouting } from '../ollama/routingTest'
 import type { Provider, Account, ProxyStatus, ProviderCheckResult, OAuthResult, AuthType, CredentialField, LogLevel, LogEntry, ProviderVendor, AppConfig, OllamaAuthInput } from '../../shared/types'
 import type { SystemPrompt, SessionConfig, SessionRecord, ManagementApiConfig } from '../store/types'
 import type { ProviderType } from '../oauth/types'
@@ -463,6 +465,11 @@ export async function registerIpcHandlers(mainWindow: BrowserWindow | null): Pro
   })
 
   ipcMain.handle(IpcChannels.OLLAMA_LIST, async () => OllamaNodeManager.list())
+  ipcMain.handle(IpcChannels.OLLAMA_ROUTING_MODELS, async (_, refresh = false) => {
+    if (typeof refresh !== 'boolean') throw new Error('Invalid catalogue refresh flag')
+    return listFreeRoutingModels(refresh)
+  })
+  ipcMain.handle(IpcChannels.OLLAMA_TEST_ROUTING, (_, model: unknown) => testOllamaRouting(model))
 
   ipcMain.handle(IpcChannels.OLLAMA_IMPORT_TEXT, async (_, text: string) => {
     return OllamaNodeManager.importText(text)

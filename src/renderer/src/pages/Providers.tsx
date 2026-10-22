@@ -29,6 +29,7 @@ import { FilterType, StatusFilter } from '@/components/providers/ProviderFilter'
 import { Server, ArrowLeft } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Button } from '@/components/ui/button'
+import { useConfirm } from '@/components/ui/confirmation-provider'
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AddApiProviderDialog } from '@/components/providers/AddApiProviderDialog'
 import type { ApiProviderResult } from '@shared/apiProviders'
@@ -42,6 +43,7 @@ const sectionOf = (provider: Provider): Section | null => provider.upstreamKind 
 
 export function Providers() {
   const { t } = useTranslation()
+  const confirm = useConfirm()
   const { toast } = useToast()
   const store = useProvidersStore()
   useProviderRefresh(error => toast({ title: t('common.error'), description: String(error), variant: 'destructive' }))
@@ -186,7 +188,7 @@ export function Providers() {
   }
 
   const handleDeleteProvider = async (id: string) => {
-    if (!window.confirm(t('providers.deleteProvider') + '? ' + t('providers.accountManagement'))) return
+    if (!await confirm(t('providers.deleteProvider') + '? ' + t('providers.accountManagement'))) return
     try {
       const success = await window.electronAPI.providers.delete(id)
       if (success) {
@@ -488,7 +490,7 @@ export function Providers() {
   }
 
   const handleDeleteAccount = async (id: string) => {
-    if (!window.confirm(t('providers.deleteAccount') + '?')) return
+    if (!await confirm(t('providers.deleteAccount') + '?')) return
     try {
       const success = await window.electronAPI.accounts.delete(id)
       if (success) {

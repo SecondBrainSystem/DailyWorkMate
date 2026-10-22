@@ -3,7 +3,7 @@ import type { Readable } from 'node:stream'
 import type { InternalInferenceRequest, InternalInferenceResponse } from '../../shared/inference'
 import type { ChatCompletionRequest } from '../proxy/types'
 import { dispatchChatCompletion } from '../proxy/dispatch'
-import { listAvailableModels } from '../proxy/modelCatalog'
+import { listInferenceModels } from './modelListing'
 import { verifyModelSelection } from '../proxy/modelVerification'
 import { ModelFeatureError, normalizeFeatureRequest } from '../proxy/modelFeatures'
 import { streamHandler } from '../proxy/stream'
@@ -11,11 +11,12 @@ import { relayResponseStream } from '../proxy/responseStream'
 import { extractTokenCount } from '../proxy/tokenUsage'
 import { isAnthropicToolFormat, transformResponseToAnthropic } from '../proxy/utils/toolFormatConverter'
 import { storeManager } from '../store/store'
+import { freeModelSource } from '../../shared/freeModels'
 
 const MAX_REQUEST_BYTES = 50 * 1024 * 1024
 const allowedHeaders = new Set([
   'content-type', 'x-enable-thinking', 'x-enable-vision', 'x-reasoning-effort',
-  'x-web-search', 'x-deep-research', 'x-dailyworkmate-model-selection', 'x-opencode-session',
+  'x-web-search', 'x-deep-research', 'x-dailyworkmate-model-selection', 'x-opencode-session', 'x-refresh-free-models',
 ])
 const jsonHeaders = { 'content-type': 'application/json' }
 
@@ -70,7 +71,11 @@ export async function executeInternalInference(input: InternalInferenceRequest, 
   // Desktop users choose their model explicitly; public API routing defaults cannot replace it.
   const checked: InternalInferenceRequest = { ...validated, headers: { ...validated.headers, 'x-dailyworkmate-model-selection': 'explicit' } }
   if (signal.aborted) return failure(499, 'Inference request cancelled', 'request_cancelled')
-  if (checked.path === '/v1/models') return { response: { status: 200, headers: jsonHeaders, body: { object: 'list', data: listAvailableModels() } } }
+  if (checked.path === '/v1/models') {
+    const body = await listInferenceModels(checked.headers?.['x-refresh-free-models'] === 'true', signal)
+    if (signal.aborted) return failure(499, 'Inference request cancelled', 'request_cancelled')
+    return { response: { status: 200, headers: jsonHeaders, body } }
+  }
   if (checked.path === '/v1/models/verify') {
     const body = checked.body as { model?: unknown; recover?: unknown } | undefined
     if (!body || typeof body.model !== 'string' || !body.model.trim() || body.model.length > 512
@@ -98,7 +103,7 @@ export async function executeInternalInference(input: InternalInferenceRequest, 
   }
   const dispatched = await dispatchChatCompletion(request, requestId, 'desktop', checked.headers, signal)
   const { result, selection } = dispatched
-  const actualModel = selection?.actualModel || request.model
+  const actualModel = selection?.actualModel || (freeModelSource(request.model)?.apiModel || request.model)
   const errorResponse = failure(result.status || 500, result.error || 'Request failed', result.errorCode || 'api_error')
   const responseBody = result.success
     ? !request.stream && isAnthropicToolFormat(request.tool_format) ? transformResponseToAnthropic(result.body) : result.body
@@ -108,7 +113,7 @@ export async function executeInternalInference(input: InternalInferenceRequest, 
   const log = storeManager.addRequestLog({
     timestamp: startTime, status: result.success ? 'success' : 'error', statusCode: result.success ? 200 : result.status || 500,
     method: 'POST', url: '/v1/chat/completions', model: request.model, actualModel,
-    providerId: selection?.provider.id, providerName: selection?.provider.name,
+    providerId: selection?.provider.id || freeModelSource(request.model)?.id, providerName: selection?.provider.name || freeModelSource(request.model)?.name,
     accountId: selection?.account.id, accountName: selection?.account.name,
     requestBody: keepBodies ? JSON.stringify(request) : undefined, userInput: extractUserInput(request),
     webSearch: request.web_search, reasoningEffort: request.reasoning_effort,

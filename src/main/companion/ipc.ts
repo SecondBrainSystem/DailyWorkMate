@@ -2,6 +2,7 @@ import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron'
 import path from 'node:path'
 import { readdir } from 'node:fs/promises'
 import { IpcChannels } from '../ipc/channels'
+import { withWindowInputFocus } from '../window/inputFocus'
 import { CompanionStorage } from './storage'
 import { OpenCodeService, runtimeExecutable } from './opencode'
 import { OpenCodeTerminalService } from './terminal'
@@ -71,7 +72,7 @@ export function registerCompanionHandlers(window: BrowserWindow) {
     } })
   const manager = terminalManager
   const baseTerminalOperations = manager.api(async () => {
-    const selected = await dialog.showOpenDialog(window, { properties: ['openDirectory'] })
+    const selected = await withWindowInputFocus(window, () => dialog.showOpenDialog(window, { properties: ['openDirectory'] }))
     return selected.canceled ? null : selected.filePaths[0] || null
   })
   const terminalOperations = { ...baseTerminalOperations, create: async (input: import('../../shared/terminal').TerminalCreateInput) => {
@@ -161,19 +162,19 @@ export function registerCompanionHandlers(window: BrowserWindow) {
     saveSettings: async (settings: CompanionSettings) => { await storage.saveSettings(settings); return snapshot(false) },
     saveMessages: (messages: CompanionMessage[]) => storage.saveMessages(messages),
     pickAvatar: async () => {
-      const result = await dialog.showOpenDialog(window, { properties: ['openFile'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }] })
+      const result = await withWindowInputFocus(window, () => dialog.showOpenDialog(window, { properties: ['openFile'], filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'gif', 'webp'] }] }))
       if (!result.canceled && result.filePaths[0]) await storage.setAvatar(result.filePaths[0])
       return snapshot()
     },
     pickAvatarModel: async () => {
-      const result = await dialog.showOpenDialog(window, { properties: ['openFile'], filters: [{ name: '3D model (GLB)', extensions: ['glb'] }] })
+      const result = await withWindowInputFocus(window, () => dialog.showOpenDialog(window, { properties: ['openFile'], filters: [{ name: '3D model (GLB)', extensions: ['glb'] }] }))
       if (!result.canceled && result.filePaths[0]) await storage.setAvatarModel(result.filePaths[0])
       return snapshot()
     },
     resetAvatar: async () => { await storage.resetAvatar(); return snapshot() },
     resetAvatarModel: async () => { await storage.resetAvatarModel(); return snapshot() },
     addWorkspace: async () => {
-      const result = await dialog.showOpenDialog(window, { properties: ['openDirectory'] })
+      const result = await withWindowInputFocus(window, () => dialog.showOpenDialog(window, { properties: ['openDirectory'] }))
       if (!result.canceled && result.filePaths[0]) { await storage.addWorkspace(result.filePaths[0]); await refreshAccess(); await manager.synchronize() }
       return snapshot(false)
     },

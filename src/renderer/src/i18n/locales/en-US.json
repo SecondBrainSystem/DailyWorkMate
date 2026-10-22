@@ -1,4 +1,11 @@
 {
+  "freeModels": {
+    "configured": "Configured models",
+    "openCode": "OpenCode free models",
+    "kilo": "Kilo free models",
+    "kiloUnavailable": "Could not refresh Kilo free models. Models from other sources remain available.",
+    "kiloPrivacy": "Kilo free models need no account or key. Upstream providers may log prompts and use them to improve their services. Avoid sensitive content. Models and limits are controlled upstream."
+  },
   "dailyTodo": {
     "pinned": "KEEP IN SIGHT",
     "refresh": "Refresh daily notes",
@@ -174,6 +181,13 @@
     "workspace": {
       "imagesUnsupported": "Workspace chat does not support image attachments yet. Remove the images or select “No workspace access”.",
       "defaultCapabilities": "Workspace chat uses the model’s default capabilities."
+    },
+    "openCode": {
+      "rateLimit": "OpenCode's free service reached a rate or quota limit. Please try again later.",
+      "note": "Use official free models through OpenCode v2 without importing an account. Availability and limits are set by the provider; wait before retrying a rate limit.",
+      "catalogueError": "The OpenCode free model catalogue could not be verified. Refresh to retry. Other models remain available.",
+      "imagesUnsupported": "The OpenCode chat connection does not support image attachments yet. Remove the images or choose another model that supports images.",
+      "defaultCapabilities": "OpenCode chat uses the model's default capabilities and currently supports text and text attachments."
     },
     "collapseTasks": "Collapse tasks",
     "showTasks": "Show tasks",
@@ -1349,10 +1363,19 @@
       "urlLabel": "Node base URL"
     },
     "routing": {
-      "title": "Global Ollama Routing",
-      "description": "Control client model requests and upstream node selection in one place.",
+      "title": "Global Model Routing",
+      "description": "Route API requests to an Ollama model or a free OpenCode / Kilo model.",
       "forceModel": "Force selected model",
       "forceModelHint": "API requests use the model below. AI Chat uses the model selected in the chat window.",
+      "originalModel": "Route original request model",
+      "originalModelHint": "Keep the client's model and use a fixed or automatically selected Ollama node. Enabling either routing mode turns the other off; the saved model is kept.",
+      "test": "Test routing",
+      "testing": "Testing routing…",
+      "testModel": "Request model for test",
+      "testModelPlaceholder": "Enter the model your client requests",
+      "testHint": "Send a short request using the saved routing settings. With forced routing, this field may be left blank. This tests upstream routing, not whether the local port is listening.",
+      "testSuccess": "Routing test succeeded",
+      "testFailed": "Routing test failed",
       "selectModel": "Select a model",
       "autoUrl": "Automatically select URL",
       "autoUrlHint": "Use the load-balancing strategy across available nodes that support the model.",
@@ -1361,7 +1384,12 @@
       "clientModel": "Client-requested model",
       "automaticNode": "Automatic node",
       "nodeRequired": "Select a fixed node",
-      "noModels": "Add and scan at least one usable model first",
+      "noModels": "Refresh free models or add and scan an Ollama node first",
+      "modelUnavailable": "The saved model is unavailable. Refresh the list or choose another model.",
+      "refreshFreeModels": "Refresh free models",
+      "loadingFreeModels": "Loading free models…",
+      "freeModelsFailed": "Unable to load free models",
+      "freeRouteHint": "Connect directly to the official free service without an Ollama node. Kilo uses anonymous access; OpenCode uses public credentials. Shared networks may encounter upstream limits; free does not mean unlimited.",
       "saving": "Saving routing settings…",
       "saveFailed": "Routing settings could not be saved."
     },
@@ -2009,6 +2037,7 @@
     }
   },
   "errorText": {
+    "freeLimit": "The upstream free service reached a usage or rate limit, which may also affect shared networks. Wait for recovery or choose another service; this does not establish your personal usage in this app.",
     "required": "Complete the required fields and retry.",
     "storage": "Cannot save local data. Your current content is preserved. Check available disk space and retry.",
     "timeout": "The response timed out. Check the connection or increase the request timeout and retry.",

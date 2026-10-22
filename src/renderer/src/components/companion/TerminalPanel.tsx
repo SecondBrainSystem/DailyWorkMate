@@ -5,6 +5,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { createPortal } from 'react-dom'
 import { Columns2, FolderOpen, LoaderCircle, Plus, RefreshCcw, RotateCw, Rows2, SlidersHorizontal, Terminal as TerminalIcon, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useConfirm } from '@/components/ui/confirmation-provider'
 import { observeTerminalLayout } from '@/lib/terminalLayout'
 import { combineActivity, trackActivity, type ActivityState } from '@/lib/terminalActivity'
 import { ActivityMark } from './ActivityMark'
@@ -298,8 +299,9 @@ export function TerminalPanel({ visible, workspaces, model, onOpenWork, createdT
     for (const session of targets) next = await api.close(session.id)
     return next
   })
-  const closePane = (session: TerminalSession) => {
-    if (working(session) && !window.confirm(t('terminal.pane.closeConfirm'))) return
+  const confirm = useConfirm(visible)
+  const closePane = async (session: TerminalSession) => {
+    if (working(session) && !await confirm(t('terminal.pane.closeConfirm'))) return
     void closeSessions([session])
   }
   const moveDivider = (tab: TerminalTab, path: string, ratio: number) => {
@@ -374,7 +376,7 @@ export function TerminalPanel({ visible, workspaces, model, onOpenWork, createdT
           }} title={lead.title + ' · ' + lead.directory + (panes.length > 1 ? ' · ' + t('terminal.pane.count', { n: panes.length }) : '') + (tabState !== 'idle' ? ' · ' + t('terminal.activity.' + tabState) : '')}><TerminalIcon size={14} /><span className="terminal-task">{label(lead)}</span><span className="terminal-kind">{badges[lead.kind]}</span>
             {panes.length > 1 && <span className="terminal-pane-count" aria-hidden="true">{panes.length}</span>}
             <ActivityMark state={tabState} idle={<i className={'terminal-dot ' + lead.status} aria-hidden="true" />} /></button>
-          <button type="button" className="terminal-close" aria-label={t('terminal.tabs.close', { title: lead.title })} title={panes.length > 1 ? t('terminal.tabs.closeTabTitle') : t('terminal.tabs.closeTitle')} disabled={busy} onClick={() => { if (panes.some(session => session.status === 'running') && !window.confirm(t('terminal.tabs.closeConfirm'))) return; void closeSessions(panes) }}><X size={13} /></button>
+          <button type="button" className="terminal-close" aria-label={t('terminal.tabs.close', { title: lead.title })} title={panes.length > 1 ? t('terminal.tabs.closeTabTitle') : t('terminal.tabs.closeTitle')} disabled={busy} onClick={async () => { if (panes.some(session => session.status === 'running') && !await confirm(t('terminal.tabs.closeConfirm'))) return; void closeSessions(panes) }}><X size={13} /></button>
         </div>
       })}</div>
       <Button variant="ghost" size="sm" aria-label={t('terminal.tabs.newLabel')} disabled={busy || !state || state.sessions.length >= 16} onClick={() => setCreating(value => !value)}><Plus size={15} /><span className="terminal-tool-label">{t('terminal.tabs.new')}</span></Button>

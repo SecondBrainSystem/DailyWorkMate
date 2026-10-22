@@ -26,6 +26,7 @@ interface ConfirmDialogProps {
   /** Shows a spinner and blocks both buttons while the action runs. */
   busy?: boolean
   onConfirm: () => void | Promise<void>
+  onCloseAutoFocus?: React.ComponentPropsWithoutRef<typeof DialogContent>['onCloseAutoFocus']
   /** Extra content between the description and the buttons. */
   children?: React.ReactNode
 }
@@ -44,13 +45,14 @@ export function ConfirmDialog({
   destructive = false,
   busy = false,
   onConfirm,
+  onCloseAutoFocus,
   children,
 }: ConfirmDialogProps) {
   const { t } = useTranslation()
 
   return (
     <Dialog open={open} onOpenChange={next => { if (!busy) onOpenChange(next) }}>
-      <DialogContent className="sm:max-w-[440px]">
+      <DialogContent className="sm:max-w-[440px]" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2.5">
             {destructive && (

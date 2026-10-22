@@ -5,6 +5,7 @@ import { Card, CardContent, CardHeading } from '@/components/ui/card'
 import { SettingList, SettingRow } from '@/components/ui/setting-row'
 import { CommitNumberInput } from '@/components/ui/commit-number-input'
 import { Button } from '@/components/ui/button'
+import { useConfirm } from '@/components/ui/confirmation-provider'
 import { useSettingsStore, LogLevel } from '@/stores/settingsStore'
 import { useToast } from '@/hooks/use-toast'
 import { ChatHistoryStorage } from '@/lib/chatHistory'
@@ -27,6 +28,7 @@ import {
 
 export function DataManagement() {
   const { t } = useTranslation()
+  const confirm = useConfirm()
   const { logLevel, setLogLevel, logRetentionDays, setLogRetentionDays, config, updateConfig, isSaving } = useSettingsStore(useShallow(state => ({ logLevel: state.logLevel, setLogLevel: state.setLogLevel, logRetentionDays: state.logRetentionDays, setLogRetentionDays: state.setLogRetentionDays, config: state.config, updateConfig: state.updateConfig, isSaving: state.isSaving })))
   const { toast } = useToast()
   const [isExporting, setIsExporting] = useState(false)
@@ -113,7 +115,7 @@ export function DataManagement() {
   }
 
   const handleClearCache = async () => {
-    if (!window.confirm(t('settings.clearCache'))) return
+    if (!await confirm(t('settings.clearCache'))) return
     setIsClearing(true)
     try {
       sessionStorage.clear()

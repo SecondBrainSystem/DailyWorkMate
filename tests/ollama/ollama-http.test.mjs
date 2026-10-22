@@ -17,18 +17,18 @@ const emptied = new Set()
 before(async () => {
   await mkdir(path.dirname(output), { recursive: true })
   await build({
-    stdin: { contents: `export { default as chat } from './src/main/proxy/routes/chat.ts'; export { default as ollama } from './src/main/proxy/routes/ollama.ts'; export { default as completions } from './src/main/proxy/routes/completions.ts'; export { setup, state } from './src/main/store/store'; export { proxyStatusManager } from './src/main/proxy/status.ts'; export { OllamaAdapter } from './src/main/proxy/adapters/ollama.ts'`, resolveDir: process.cwd() },
+    stdin: { contents: `export { default as chat } from './src/main/proxy/routes/chat.ts'; export { default as ollama } from './src/main/proxy/routes/ollama.ts'; export { default as completions } from './src/main/proxy/routes/completions.ts'; export { setup, state } from './src/main/store/store'; export { proxyStatusManager } from './src/main/proxy/status.ts'; export { OllamaAdapter } from './src/main/proxy/adapters/ollama.ts'; export { testOllamaRouting } from './src/main/ollama/routingTest.ts'`, resolveDir: process.cwd() },
     outfile: output, bundle: true, platform: 'node', format: 'esm', packages: 'external',
     plugins: [{ name: 'isolate-http-storage', setup(builder) {
       builder.onResolve({ filter: /(?:^electron$|\/store\/store(?:\.ts)?$)/ }, args => ({ path: args.path === 'electron' ? 'electron' : 'store', namespace: 'qa' }))
       builder.onLoad({ filter: /.*/, namespace: 'qa' }, args => ({ contents: args.path === 'electron'
         ? 'export const app = { isPackaged:false }; export const net = {}; export const shell = {}; export class BrowserWindow {}'
         : `import { DEFAULT_CONFIG } from './src/main/store/types.ts';
-          export const state = { logs: [], requests: [], outcomes: [], tokens: [], account: {id: 'account', providerId: 'node', name: 'QA', status: 'active', credentials: {authType:'none'}} };
-          export const setup = endpoint => { state.provider = {id:'node', name:'QA', enabled:true, type:'custom', upstreamKind:'ollama', apiEndpoint:endpoint, headers:{}, supportedModels:['model'], ollamaModels:{model:{name:'model',endpoint:'ollama_chat',vision:'unknown'}}} };
+          export const state = { config: {...DEFAULT_CONFIG,retryCount:0}, logs: [], requests: [], outcomes: [], tokens: [], account: {id: 'account', providerId: 'node', name: 'QA', status: 'active', credentials: {authType:'none'}} };
+          export const setup = endpoint => { state.provider = {id:'node', name:'QA', enabled:true, type:'custom', upstreamKind:'ollama', apiEndpoint:endpoint, headers:{}, supportedModels:['model','second-model'], ollamaModels:Object.fromEntries(['model','second-model'].map(name=>[name,{name,endpoint:'ollama_chat',vision:'unknown'}]))} };
           export const storeManager = {
-            getConfig: () => ({...DEFAULT_CONFIG,retryCount:0}), getSessionConfig: () => DEFAULT_CONFIG.sessionConfig,
-            getProviders: () => [state.provider], getEffectiveModels: () => [{displayName:'model',actualModelId:'model'}],
+            getConfig: () => state.config, getSessionConfig: () => DEFAULT_CONFIG.sessionConfig,
+            getProviders: () => [state.provider], getEffectiveModels: () => state.provider.supportedModels.map(id=>({displayName:id,actualModelId:id})),
             getAccountsByProviderId: () => [state.account], getAccountById: () => state.account,
             updateAccount: (_id, updates) => {state.account = {...state.account,...updates}},
             addLog: (...args) => state.logs.push(args), recordRequestInStats: (...args) => state.outcomes.push(args),
@@ -93,6 +93,33 @@ after(async () => {
   await rm(output, { force: true })
 })
 const post = (route, mode, stream = true, signal) => fetch(endpoint + route, {method:'POST',headers:{'Content-Type':'application/json'},signal,body:JSON.stringify({model:'model',messages:[{role:'user',content:mode}],stream})})
+
+test('fixed and original routing reach the actual upstream and the route test follows the saved policy', async () => {
+  const saved = module.state.config
+  try {
+    for (const autoSelectUrl of [false, true]) for (const forceModel of [false, true]) {
+      module.state.config = { ...saved, ollamaRouting: { forceModel, routeOriginalModel: !forceModel, model: 'second-model', providerId: 'node', autoSelectUrl } }
+      for (const route of ['/v1/chat/completions', '/api/chat', '/v1/completions']) for (const stream of [false, true]) {
+        const response = await fetch(endpoint + route, {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:'model',messages:[{role:'user',content:'routing'}],prompt:'routing',stream})})
+        assert.equal(response.status, 200, await response.text())
+        assert.equal(received.at(-1).body.model, forceModel ? 'second-model' : 'model')
+      }
+      const tested = await module.testOllamaRouting(forceModel ? 'arbitrary-client-model' : 'model')
+      assert.equal(tested.success, true, tested.error)
+      assert.equal(tested.routedModel, forceModel ? 'second-model' : 'model')
+      assert.equal(received.at(-1).body.model, tested.routedModel)
+      assert.equal(tested.providerName, 'QA')
+      assert.equal(tested.response, 'answer')
+    }
+    module.state.config = { ...saved, ollamaRouting: { forceModel: false, routeOriginalModel: true, model: 'second-model', providerId: 'node', autoSelectUrl: true } }
+    const before = received.length
+    const missing = await module.testOllamaRouting('not-installed')
+    assert.equal(missing.success, false)
+    assert.match(missing.error, /No available/)
+    assert.equal(received.length, before, 'No substitution for an unavailable original model')
+    for (const value of [null, {}, '', ' ', 'x'.repeat(513)]) await assert.rejects(module.testOllamaRouting(value), /request model/)
+  } finally { module.state.config = saved }
+})
 async function waitUntil(predicate) {
   for (let attempt = 0; attempt < 100; attempt++) {
     if (predicate()) return

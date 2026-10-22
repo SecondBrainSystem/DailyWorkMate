@@ -10,9 +10,13 @@ import type { ChatCompletionRequest, ForwardResult, AccountSelection, ProxyConte
 import { ModelFeatureError, normalizeFeatureRequest } from './modelFeatures'
 import { openCodeAffinityKey, openCodeSessionAffinity } from './sessionAffinity'
 import { UPSTREAM_EMPTY, isTransportFailure, sameAccountRetryDelay } from './upstreamFailure'
+import { freeModelSource } from '../../shared/freeModels'
+import { forwardKiloCompletion } from '../inference/kiloTransport'
+import { forwardOpenCodeCompletion } from '../inference/opencodeTransport'
 
 export interface DispatchResult {
   selection?: AccountSelection
+  routedModel?: string
   result: ForwardResult
   finishStream?: (error?: Error) => void
 }
@@ -38,6 +42,35 @@ export async function dispatchChatCompletion(
   }
   const routing = resolveOllamaRouting(request.model, config.ollamaRouting, headers['x-dailyworkmate-model-selection'] === 'explicit')
   if (routing.error) return { result: { success: false, status: 503, error: routing.error } }
+  const free = freeModelSource(routing.model)
+  if (free) {
+    const start = Date.now()
+    proxyStatusManager.recordRequestStart(request.model, free.id)
+    let finished = false
+    const finish = (error?: Error) => {
+      if (finished) return
+      finished = true
+      const latency = Date.now() - start
+      if (error) proxyStatusManager.recordRequestFailure(latency)
+      else proxyStatusManager.recordRequestSuccess(latency)
+      storeManager.recordRequestInStats(!error, latency, request.model, free.id)
+      storeManager.addLog(error ? 'error' : 'debug', error ? `${free.name} request failed: ${error.message}` : `${free.name} request succeeded`, { requestId, providerId: free.id, model: request.model, latency })
+    }
+    try {
+      const normalized = normalizeFeatureRequest({ ...request, model: routing.model }, config.modelFeatureDefaults, headers)
+      const result = free.id === 'kilo-free'
+        ? await forwardKiloCompletion(normalized, signal, config.requestTimeout || 120_000)
+        : await forwardOpenCodeCompletion(normalized, headers, signal, config.requestTimeout || 120_000)
+      if (result.success && request.stream && result.stream) return { result, routedModel: routing.model, finishStream: finish }
+      finish(result.success ? undefined : new Error(result.error || `${free.name} request failed`))
+      if (result.success) storeManager.recordTokenUsage(request.model, extractTokenCount(result.body))
+      return { result, routedModel: routing.model }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : `${free.name} request failed`
+      finish(new Error(message))
+      return { routedModel: routing.model, result: { success: false, status: error instanceof ModelFeatureError ? 400 : 502, error: message } }
+    }
+  }
   const modelPin = modelMapper.getPreferredProvider(routing.model)
   if (routing.preferredProviderId && modelPin && routing.preferredProviderId !== modelPin) return { result: { success: false, status: 400, error: '固定节点规则冲突，请在 Ollama 页面取消模型固定或调整全局固定节点。 / Node pin rules conflict. Unpin the model or change the global fixed node on the Ollama page.' } }
   const preferredProviderId = routing.ollamaOnly

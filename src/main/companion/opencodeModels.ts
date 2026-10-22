@@ -1,9 +1,10 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { OPENCODE_FREE_MODEL_PREFIX, isOpenCodeFreeModel } from '../../shared/freeModels.ts'
+export { OPENCODE_FREE_MODEL_PREFIX, isOpenCodeFreeModel } from '../../shared/freeModels.ts'
 
 export const OPENCODE_FREE_PROVIDER_ID = 'opencode-free'
-export const OPENCODE_FREE_MODEL_PREFIX = OPENCODE_FREE_PROVIDER_ID + '/'
 export const OPENCODE_INFERENCE_BASE_URL = 'https://opencode.ai/inference/v1'
 export const OPENCODE_OPENAI_BASE_URL = 'https://opencode.ai/inference/openai/v1'
 export const OPENCODE_ANTHROPIC_BASE_URL = 'https://opencode.ai/inference/anthropic/v1'
@@ -83,7 +84,6 @@ function interleaved(value: unknown): boolean | { field: string } | undefined {
   return typeof field === 'string' && /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(field) ? { field } : undefined
 }
 
-export function isOpenCodeFreeModel(model: string): boolean { return model.startsWith(OPENCODE_FREE_MODEL_PREFIX) }
 
 /** Use the official live listing and pricing catalogue together; never infer free from a name. */
 export function parseOpenCodeFreeModels(catalogue: unknown, liveModels: unknown): OpenCodeFreeModel[] {

@@ -2,6 +2,10 @@ import { storeManager } from '../store/store'
 import { loadBalancer } from './loadbalancer'
 import { modelMapper } from './modelMapper'
 import type { AccountSelection } from './types'
+import { freeModelSource } from '../../shared/freeModels'
+import { KiloModelError } from '../inference/kiloModels'
+import { OpenCodeModelError } from '../companion/opencodeModels'
+import { resolveProxyFreeModel } from '../inference/modelListing'
 
 export interface VerifiedModelResult {
   model: string
@@ -24,6 +28,18 @@ export async function verifyModelSelection(model: string, recover: boolean, sign
   { success: true; value: VerifiedModelResult } | { success: false; result: ModelRoutingFailure }
 > {
   if (signal?.aborted) return { success: false, result: { success: false, status: 499, error: 'Model verification cancelled' } }
+  const source = freeModelSource(model)
+  if (source) {
+    try {
+      await resolveProxyFreeModel(model, signal)
+      if (signal?.aborted) return { success: false, result: { success: false, status: 499, error: 'Model verification cancelled' } }
+      return { success: true, value: { model, providerName: source.name, verified: false, skipped: true, recovered: false } }
+    } catch (error) {
+      if (signal?.aborted) return { success: false, result: { success: false, status: 499, error: 'Model verification cancelled' } }
+      return { success: false, result: { success: false, status: error instanceof KiloModelError || error instanceof OpenCodeModelError ? error.status : 503,
+        error: error instanceof Error ? error.message : `${source.name} catalogue unavailable`, errorCode: 'free_model_unavailable' } }
+    }
+  }
   const config = storeManager.getConfig()
   const failure: ModelRoutingFailure = { success: false, status: 503, errorCode: 'model_unavailable', error: `没有可用节点支持模型 ${model}。` }
   const value = (selected: AccountSelection, selectedModel: string): VerifiedModelResult => ({

@@ -8,6 +8,7 @@ import { storeManager } from '../../store/store'
 import { ModelFeatureError, normalizeFeatureRequest } from '../modelFeatures'
 import { clientAbortSignal, relayResponseStream } from '../responseStream'
 import { isAnthropicToolFormat, transformResponseToAnthropic } from '../utils/toolFormatConverter'
+import { freeModelSource } from '../../../shared/freeModels'
 
 const router = new Router({ prefix: '/v1/chat' })
 
@@ -45,18 +46,21 @@ router.post('/completions', async (ctx: Context) => {
   const signal = clientAbortSignal(ctx)
   const dispatched = await dispatchChatCompletion(request, requestId, ctx.ip, ctx.headers, signal)
   const { result, selection } = dispatched
-  const actualModel = selection?.actualModel || request.model
+  ctx.state.dispatchSelection = selection
+  ctx.state.routedModel = dispatched.routedModel
+  const free = freeModelSource(dispatched.routedModel || selection?.actualModel || request.model)
+  const actualModel = selection?.actualModel || (free?.apiModel || request.model)
   const latency = Date.now() - startTime
   const errorBody = { error: { message: result.error || 'Request failed', type: 'api_error', param: null, code: result.errorCode || null } }
   // Bodies can be up to 50MB; serialize them only when request logging keeps bodies.
   const keepBodies = Boolean(config.requestLogConfig?.enabled && config.requestLogConfig.includeBodies)
-  const log = selection ? storeManager.addRequestLog({
+  const log = selection || free ? storeManager.addRequestLog({
     timestamp: startTime,
     status: result.success ? 'success' : 'error',
     statusCode: result.success ? 200 : result.status || 500,
     method: 'POST', url: '/v1/chat/completions', model: request.model, actualModel,
-    providerId: selection.provider.id, providerName: selection.provider.name,
-    accountId: selection.account.id, accountName: selection.account.name,
+    providerId: selection?.provider.id || free?.id, providerName: selection?.provider.name || free?.name,
+    accountId: selection?.account.id, accountName: selection?.account.name,
     requestBody: keepBodies ? JSON.stringify(request) : undefined, userInput: extractUserInput(request),
     webSearch: request.web_search, reasoningEffort: request.reasoning_effort,
     responseStatus: result.success ? 200 : result.status || 500,
@@ -66,6 +70,7 @@ router.post('/completions', async (ctx: Context) => {
 
   ctx.state.requestLogged = Boolean(log)
   if (!result.success) {
+    if (result.retryAfterMs && Number.isFinite(result.retryAfterMs) && result.retryAfterMs > 0) ctx.set('Retry-After', String(Math.ceil(result.retryAfterMs / 1000)))
     ctx.status = result.status || 500
     ctx.body = errorBody
     return

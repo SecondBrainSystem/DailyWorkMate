@@ -18,6 +18,7 @@ import { isInternalProxyKey } from './internalAuth'
 import { describeProxyListenError } from './listenError'
 import { authorizeApiKey } from './apiKeyAuth'
 import { isLoopbackAddress } from '../../shared/proxyListeners'
+import { freeModelSource } from '../../shared/freeModels'
 
 const SLOW_REQUEST_THRESHOLD_MS = 1500
 
@@ -78,7 +79,7 @@ export class ProxyServer {
       if (!allowed) { ctx.status = 403; ctx.body = { error: { code: 'origin_not_allowed', message: 'This browser origin cannot access the local proxy' } }; return }
       if (origin) { ctx.set('Access-Control-Allow-Origin', origin); ctx.vary('Origin') }
       ctx.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
-      ctx.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-API-Key, X-Enable-Vision, X-Enable-Thinking, X-Reasoning-Effort, X-Web-Search, X-Deep-Research, X-DailyWorkMate-Model-Selection')
+      ctx.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, X-API-Key, X-Enable-Vision, X-Enable-Thinking, X-Reasoning-Effort, X-Web-Search, X-Deep-Research, X-DailyWorkMate-Model-Selection, X-Refresh-Free-Models, X-OpenCode-Session-Id, X-OpenCode-Session, X-Session-Id')
       ctx.set('Access-Control-Max-Age', '86400')
 
       if (ctx.method === 'OPTIONS') {
@@ -145,6 +146,8 @@ export class ProxyServer {
           recorded = true
           const request = ctx.request.body as Record<string, any> | undefined
           const selected = ctx.state.dispatchSelection
+          const model = typeof request?.model === 'string' ? request.model : ''
+          const free = freeModelSource(ctx.state.routedModel || selected?.actualModel || model)
           const failure = ctx.state.streamError || (disconnected ? 'Client disconnected before completion' : undefined)
           const failed = Boolean(failure) || ctx.status >= 400
           // Bodies can be up to 50MB; serialize them only when the log will keep them.
@@ -154,7 +157,9 @@ export class ProxyServer {
           storeManager.addRequestLog({
             timestamp: startTime, status: failed ? 'error' : 'success', statusCode: failure ? 502 : ctx.status,
             method: ctx.method, url: ctx.path, model: String(request?.model || ''),
-            actualModel: selected?.actualModel, providerId: selected?.provider.id, providerName: selected?.provider.name,
+            actualModel: selected?.actualModel || free?.apiModel,
+            providerId: selected?.provider.id || free?.id,
+            providerName: selected?.provider.name || free?.name,
             accountId: selected?.account.id, accountName: selected?.account.name,
             requestBody: request && keepBodies ? JSON.stringify(request) : undefined,
             userInput: typeof request?.prompt === 'string' ? request.prompt : JSON.stringify(request?.messages?.filter((message: any) => message.role === 'user').slice(-1) || []),

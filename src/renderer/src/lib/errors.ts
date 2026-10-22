@@ -8,6 +8,8 @@ const CJK = /[㐀-鿿豈-﫿]/
  * half that matches the UI language; text that is not split that way is returned as is.
  */
 export function localizeBilingual(text: string, chinese: boolean): string {
+  // Keep upstream details on following lines when localizing a bilingual summary.
+  if (text.includes('\n')) return text.split(/\r?\n/).map(line => localizeBilingual(line, chinese)).join('\n')
   let from = 0
   for (;;) {
     const index = text.indexOf(' / ', from)

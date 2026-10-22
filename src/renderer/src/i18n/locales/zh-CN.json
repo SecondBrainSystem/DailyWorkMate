@@ -1,4 +1,11 @@
 {
+  "freeModels": {
+    "configured": "已配置模型",
+    "openCode": "OpenCode 免费模型",
+    "kilo": "Kilo 免费模型",
+    "kiloUnavailable": "暂时无法刷新 Kilo 免费模型。其他来源的模型仍可使用。",
+    "kiloPrivacy": "Kilo 免费模型无需账号或 Key。上游可能记录提示词并用于改进服务，请勿发送敏感内容。可用模型和限额由上游决定。"
+  },
   "dailyTodo": {
     "pinned": "把今天放在眼前",
     "refresh": "刷新每日待办",
@@ -174,6 +181,13 @@
     "workspace": {
       "imagesUnsupported": "工作区聊天暂不支持图片附件。请移除图片，或选择“不访问工作区”后发送。",
       "defaultCapabilities": "工作区聊天使用模型的默认能力。"
+    },
+    "openCode": {
+      "rateLimit": "OpenCode 免费服务已达到频率或额度限制，请稍后重试。",
+      "note": "通过 OpenCode v2 使用官方免费模型，无需导入账号。可用性和限额由服务商决定；遇到限流请稍后重试。",
+      "catalogueError": "暂时无法确认 OpenCode 免费模型目录，请刷新后重试。其他模型仍可使用。",
+      "imagesUnsupported": "OpenCode 聊天通道暂不支持图片附件。请移除图片，或选择支持图片的其他模型。",
+      "defaultCapabilities": "OpenCode 聊天使用模型的默认能力，目前支持文字和文本附件。"
     },
     "collapseTasks": "收起任务栏",
     "showTasks": "展开任务栏",
@@ -1349,10 +1363,19 @@
       "urlLabel": "节点基础地址"
     },
     "routing": {
-      "title": "全局 Ollama 路由",
-      "description": "集中控制客户端模型请求和上游节点选择。",
+      "title": "全局模型路由",
+      "description": "将 API 请求统一转发到 Ollama 模型或 OpenCode / Kilo 免费模型。",
       "forceModel": "强制使用指定模型",
       "forceModelHint": "API 请求统一使用下方模型；AI Chat 使用聊天界面中选择的模型。",
+      "originalModel": "路由原始请求模型",
+      "originalModelHint": "保留客户端请求的模型，使用固定或自动选择的 Ollama 节点。两种路由模式切换时互斥，已选模型会保留。",
+      "test": "测试路由",
+      "testing": "正在测试路由…",
+      "testModel": "测试用的请求模型",
+      "testModelPlaceholder": "输入客户端实际请求的模型名",
+      "testHint": "按已保存的路由设置发送一条简短请求，强制模型模式下可留空。测试上游路由，不检查本地端口是否已启动。",
+      "testSuccess": "路由测试成功",
+      "testFailed": "路由测试失败",
       "selectModel": "选择模型",
       "autoUrl": "自动选择 URL",
       "autoUrlHint": "从支持当前模型的可用节点中按负载策略自动选择。",
@@ -1361,7 +1384,12 @@
       "clientModel": "客户端请求模型",
       "automaticNode": "自动节点",
       "nodeRequired": "请选择固定节点",
-      "noModels": "请先添加并扫描出至少一个可用模型",
+      "noModels": "请先刷新免费模型，或添加并扫描 Ollama 节点",
+      "modelUnavailable": "已保存的模型暂不可用，请刷新列表或选择其他模型。",
+      "refreshFreeModels": "刷新免费模型",
+      "loadingFreeModels": "正在加载免费模型…",
+      "freeModelsFailed": "免费模型加载失败",
+      "freeRouteHint": "直连官方免费通道，无需 Ollama 节点。Kilo 使用匿名访问，OpenCode 使用公共凭据；共享网络出口可能触发上游限制，免费不代表无限使用。",
       "saving": "正在保存路由设置…",
       "saveFailed": "路由设置保存失败。"
     },
@@ -2009,6 +2037,7 @@
     }
   },
   "errorText": {
+    "freeLimit": "上游免费服务已达到使用或频率限制，共享网络出口也可能触发。请等待恢复或选择其他服务；这不代表你已用完本应用的个人额度。",
     "required": "请补全必填字段后重试。",
     "storage": "无法保存本地数据，当前内容已保留。请检查磁盘空间后重试。",
     "timeout": "等待响应超时，请检查连接或增加请求超时后重试。",

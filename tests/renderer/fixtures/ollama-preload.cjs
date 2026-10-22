@@ -9,6 +9,10 @@ let modelTests = []
 let scans = []
 let failTest = false
 let holdTests = false
+let freeSourceOffline = ''
+let freeRefreshes = []
+let routingTests = []
+let failRoutingTest = false
 let cancellations = []
 const operations = new Map()
 const testDelay = signal => new Promise((resolve, reject) => {
@@ -56,6 +60,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
   proxy: { getStatus: async () => ({isRunning:true,port:11434,host:'127.0.0.1'}), onStatusChanged: () => () => {} },
   statistics: { get: async () => ({dailyStats:{},accountUsage:{}}) },
   ollama: {
+    testRouting: async requestedModel => {
+      const routing = {...config.ollamaRouting}
+      routingTests = [...routingTests, { requestedModel, routing }]
+      await delay(350)
+      return { success: !failRoutingTest, requestedModel, routedModel: routing.forceModel ? routing.model : requestedModel,
+        providerName: routing.forceModel && routing.model.startsWith('kilo-free/') ? 'Kilo Free' : 'QA node', latency: 350,
+        ...(failRoutingTest ? { error: 'QA routing upstream unavailable' } : { response: 'OK' }) }
+    },
+    routingModels: async refresh => {
+      freeRefreshes = [...freeRefreshes, refresh]
+      await delay(120)
+      if (freeSourceOffline === 'all') throw new Error('QA free catalogue failed')
+      return {
+        models: [
+          { id: 'opencode-free/qa-free', name: 'OpenCode QA' },
+          { id: 'kilo-free/qa/free', name: 'Kilo QA' },
+          ...Array.from({length:60}, (_,i) => ({id:`kilo-free/qa-${i}/free`,name:`Kilo QA long-model-name-for-scroll-regression-${i}`})),
+        ].filter(model => !freeSourceOffline || !model.id.startsWith(freeSourceOffline)),
+        sources: ['opencode-free', 'kilo-free'].map(id => ({ id, name: id === 'opencode-free' ? 'OpenCode Free' : 'Kilo Free', stale: id === freeSourceOffline, ...(id === freeSourceOffline ? { error: 'QA source offline' } : {}) })),
+      }
+    },
     list: async () => { await delay(60); if(failList) {failList=false;throw new Error('QA initial load failed')};return nodes },
     importText: async text => {
       await delay(100)
@@ -110,5 +135,8 @@ contextBridge.exposeInMainWorld('ollamaQA', {
   failSave: value => {failSave=value},
   failTest: value => {failTest=value},
   holdTests: value => {holdTests=value},
-  state: () => ({config,saveCount,authInputs,modelTests,scans,cancellations,operations:operations.size}),
+  freeSourceOffline: value => {freeSourceOffline=value},
+  failRoutingTest: value => {failRoutingTest=value},
+  clearNodes: () => {nodes=[]},
+  state: () => ({config,saveCount,authInputs,modelTests,scans,cancellations,freeRefreshes,routingTests,operations:operations.size}),
 })

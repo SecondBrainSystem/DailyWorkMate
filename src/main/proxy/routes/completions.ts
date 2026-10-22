@@ -155,6 +155,7 @@ router.post('/completions', async (ctx: Context) => {
   const signal = clientAbortSignal(ctx)
   const dispatched = await dispatchChatCompletion(chatRequest, requestId, ctx.ip, ctx.headers, signal)
   ctx.state.dispatchSelection = dispatched.selection
+  ctx.state.routedModel = dispatched.routedModel
   if (!dispatched.result.success) {
     ctx.status = dispatched.result.status || 500
     ctx.body = {
@@ -166,7 +167,7 @@ router.post('/completions', async (ctx: Context) => {
     return
   }
 
-  const actualModel = dispatched.selection?.actualModel || request.model
+  const actualModel = dispatched.selection?.actualModel || dispatched.routedModel || request.model
   if (request.stream && dispatched.result.stream) {
     ctx.set('Content-Type', 'text/event-stream')
     ctx.set('Cache-Control', 'no-cache')

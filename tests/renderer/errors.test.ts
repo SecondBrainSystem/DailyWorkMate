@@ -20,4 +20,7 @@ test('bilingual main-process messages show the half matching the UI language', (
   assert.equal(localizeBilingual('分组 A / B 不存在。 / Group A / B does not exist.', false), 'Group A / B does not exist.')
   assert.equal(errorText(new Error("Error invoking remote method 'x': Error: 最多同时打开 8 个工作标签。 / At most 8 work tabs can be open at once."), false), 'At most 8 work tabs can be open at once.')
   assert.equal(errorText('', true, '操作失败'), '操作失败')
+  const quota = '免费通道受上游限制。 / Free service is limited.\nFree usage limit reached.'
+  assert.equal(localizeBilingual(quota, true), '免费通道受上游限制。\nFree usage limit reached.')
+  assert.equal(localizeBilingual(quota, false), 'Free service is limited.\nFree usage limit reached.')
 })

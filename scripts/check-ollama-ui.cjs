@@ -12,7 +12,10 @@ let window
 const errors=[]
 const results=[]
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms))
-const js=code=>window.webContents.executeJavaScript(code,true)
+const js=async code=>{
+  try { return await window.webContents.executeJavaScript(code,true) }
+  catch(error) { throw new Error(`${error.message}\nRenderer code: ${code}`) }
+}
 const button=text=>`[...document.querySelectorAll('button')].find(el=>el.textContent.trim()===${JSON.stringify(text)})`
 async function waitFor(code,label) {
   for(let i=0;i<100;i++){if(await js(code))return;await delay(40)}
@@ -22,6 +25,8 @@ async function click(selector) {
   await js(`(${selector}).scrollIntoView({block:'center',behavior:'instant'})`)
   await delay(120)
   const point=await js(`(()=>{const el=(${selector});if(!el)throw new Error('Missing control');const r=el.getBoundingClientRect();return {x:Math.round(r.x+r.width/2),y:Math.round(r.y+r.height/2)}})()`)
+  const hit=await js(`(()=>{const el=(${selector});const hit=document.elementFromPoint(${point.x},${point.y});return el===hit||el.contains(hit)?null:{target:el.outerHTML,hit:hit?.outerHTML.slice(0,500),pointerEvents:document.body.style.pointerEvents}})()`)
+  assert.equal(hit,null,JSON.stringify(hit))
   window.webContents.sendInputEvent({type:'mouseDown',button:'left',clickCount:1,...point})
   window.webContents.sendInputEvent({type:'mouseUp',button:'left',clickCount:1,...point})
   await delay(60)
@@ -53,7 +58,7 @@ app.whenReady().then(async()=>{
   await waitFor(`document.body.textContent.includes('These addresses could not be imported')`,'invalid URL detail')
   results.push('import failures preserve input and show invalid addresses')
   // Locate by translation fallback so label wording changes remain reviewable.
-  const forceControl=`document.querySelector('[role="switch"]')`
+  const forceControl=`document.querySelector('[data-ollama-ready] [role="switch"][aria-label="Force selected model"]')`
   await js('window.ollamaQA.failSave(true)')
   await click(forceControl)
   assert.equal(await js(`${forceControl}.disabled`),true)
@@ -63,6 +68,89 @@ app.whenReady().then(async()=>{
   await click(forceControl)
   await waitFor(`${forceControl}.getAttribute('aria-checked')==='true' && !${forceControl}.disabled`,'routing saved')
   results.push('routing controls lock while saving and retain the saved value after failure')
+  const modelPicker=`document.querySelector('[role="combobox"][aria-label="Select a model"]')`
+  const chooseModel=async label=>{
+    await click(modelPicker)
+    await waitFor(`document.querySelector('[role="option"]')`,'model options')
+    await click(`[...document.querySelectorAll('[role="option"]')].find(el=>el.textContent===${JSON.stringify(label)})`)
+    await waitFor(`!${modelPicker}.disabled`,'model selection saved')
+    await waitFor(`!document.querySelector('[role="listbox"]') && document.body.style.pointerEvents!=='none'`,'picker closed')
+  }
+  await click(modelPicker)
+  assert.ok(await js(`document.querySelector('[role="listbox"]').textContent.includes('OpenCode Free') && document.querySelector('[role="listbox"]').textContent.includes('Kilo Free')`))
+  const viewport = `document.querySelector('[data-radix-select-viewport]')`
+  await js(`${viewport}.scrollTop=${viewport}.scrollHeight`)
+  await delay(250)
+  for(let i=0;i<6;i++) {
+    const position = await js(`(()=>{const el=${viewport};return {top:el.scrollTop,max:el.scrollHeight-el.clientHeight}})()`)
+    assert.ok(position.max>500,'Long model catalogue scrolls')
+    assert.ok(Math.abs(position.top-position.max)<=1,`Model list jumped at bottom: ${JSON.stringify(position)}`)
+    await delay(1000)
+  }
+  results.push('long model list stays at the bottom across background refreshes')
+  await screenshot('ollama-free-picker.png')
+  window.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'})
+  window.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'})
+  await waitFor(`!document.querySelector('[role="listbox"]') && document.body.style.pointerEvents!=='none'`,'desktop picker closed')
+  window.setSize(390,1050)
+  await delay(350)
+  await click(modelPicker)
+  await waitFor(`document.querySelector('[role="listbox"]')`,'mobile picker open')
+  await screenshot('ollama-free-picker-mobile.png')
+  assert.equal(await js(`(()=>{const el=document.querySelector('[role="listbox"]');const rect=el.getBoundingClientRect();return rect.left>=0&&rect.right<=innerWidth&&el.scrollWidth<=el.clientWidth+1})()`),true,'long model names fit the mobile picker')
+  window.webContents.sendInputEvent({type:'keyDown',keyCode:'Escape'})
+  window.webContents.sendInputEvent({type:'keyUp',keyCode:'Escape'})
+  await delay(150)
+  window.setSize(1280,1050);await delay(200)
+  for(const [label,id] of [['OpenCode QA','opencode-free/qa-free'],['Kilo QA','kilo-free/qa/free']]) {
+    await chooseModel(label)
+    assert.equal(await js('window.ollamaQA.state().config.ollamaRouting.model'),id)
+    assert.equal(await js('window.ollamaQA.state().config.ollamaRouting.providerId'),'')
+    assert.equal(await js(`document.querySelector('[aria-label="Select a fixed node"]')`),null)
+  }
+  await js(`window.ollamaQA.freeSourceOffline('kilo-free')`)
+  await click(button('Refresh free models'))
+  await waitFor(`document.body.textContent.includes('QA source offline')`,'source failure visible')
+  assert.equal(await js('window.ollamaQA.state().config.ollamaRouting.model'),'kilo-free/qa/free')
+  assert.ok(await js(`document.body.textContent.includes('The saved model is unavailable')`))
+  await chooseModel('OpenCode QA')
+  await js(`window.ollamaQA.freeSourceOffline('all')`)
+  await click(button('Refresh free models'))
+  await waitFor(`document.body.textContent.includes('QA free catalogue failed')`,'IPC error visible')
+  await js(`window.ollamaQA.freeSourceOffline('')`)
+  await click(button('Refresh free models'))
+  await waitFor(`!document.body.textContent.includes('QA free catalogue failed') && ${button('Refresh free models')} && !${button('Refresh free models')}.disabled`,'free catalogue recovered')
+  assert.ok(await js('window.ollamaQA.state().freeRefreshes.slice(1).every(Boolean)'))
+  await chooseModel('qwen3:8b')
+  assert.equal(await js('window.ollamaQA.state().config.ollamaRouting.providerId'),'node-a')
+  results.push('three routing groups; both free selections clear node pins; source/IPC failures preserve selection and refresh recovers')
+  const originalControl=`document.querySelector('[role="switch"][aria-label="Route original request model"]')`
+  const setTestModel=async value=>js(`(()=>{const el=document.getElementById('routing-test-model');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(el,${JSON.stringify(value)});el.dispatchEvent(new Event('input',{bubbles:true}))})()`)
+  await setTestModel('client-alias')
+  await click(button('Test routing'))
+  assert.equal(await js(`${forceControl}.disabled`),true)
+  await waitFor(`document.querySelector('[data-routing-test-result="success"]')`,'forced routing test')
+  assert.equal(await js('window.ollamaQA.state().routingTests.at(-1).requestedModel'),'client-alias')
+  assert.ok(await js(`document.querySelector('[data-routing-test-result]').textContent.includes('client-alias → qwen3:8b')`))
+  await click(originalControl)
+  await waitFor(`${originalControl}.getAttribute('aria-checked')==='true' && !${originalControl}.disabled`,'original model mode saved')
+  assert.equal(await js(`${forceControl}.getAttribute('aria-checked')`),'false')
+  assert.equal(await js(`document.querySelector('[aria-label="Select a fixed node"]').disabled`),false)
+  assert.equal(await js('window.ollamaQA.state().config.ollamaRouting.model'),'qwen3:8b')
+  await setTestModel('original-model')
+  await js('window.ollamaQA.failRoutingTest(true)')
+  await click(button('Test routing'))
+  await waitFor(`document.querySelector('[data-routing-test-result="error"]')`,'routing failure shown')
+  assert.ok(await js(`document.querySelector('[data-routing-test-result]').textContent.includes('QA routing upstream unavailable')`))
+  await js('window.ollamaQA.failRoutingTest(false)')
+  await click(button('Test routing'))
+  await waitFor(`document.querySelector('[data-routing-test-result="success"]')`,'routing retry success')
+  assert.ok(await js(`document.querySelector('[data-routing-test-result]').textContent.includes('original-model → original-model')`))
+  await click(forceControl)
+  await waitFor(`${forceControl}.getAttribute('aria-checked')==='true' && !${forceControl}.disabled`,'forced mode restored')
+  assert.equal(await js(`${originalControl}.getAttribute('aria-checked')`),'false')
+  assert.equal(await js(`document.querySelector('[data-routing-test-result]')`),null)
+  results.push('routing tests show actual models and failures; original and forced modes switch without losing the saved model')
   await click(`document.querySelector('[data-node-id="node-a"] button[aria-expanded]')`)
   assert.equal(await js(`document.querySelectorAll('[data-model-test-status="untested"]').length`),3)
   assert.equal(await js(`document.querySelectorAll('[data-model-test-status="failed"]').length`),0)
@@ -165,6 +253,36 @@ app.whenReady().then(async()=>{
   fs.writeFileSync(path.join(output,'ollama-accessibility.json'),JSON.stringify(controls.map(node=>({role:node.role.value,name:node.name.value})),null,2))
   window.webContents.debugger.detach()
   results.push('light/dark at 1280, 760 and 390px: screenshots, reflow and control names checked')
+  await click(`document.querySelector('button[title="Switch to English"]')`)
+  await waitFor(`${modelPicker}`,'English model picker')
+  await chooseModel('Kilo QA')
+  await js('window.ollamaQA.clearNodes()')
+  // Remount the page to verify that persisted routing survives and free models need no nodes.
+  await js(`location.hash='/';`)
+  await waitFor(`!document.querySelector('[data-ollama-ready]')`,'left Ollama page')
+  await js(`location.hash='/ollama'`)
+  await waitFor(`document.querySelector('[data-ollama-ready="true"]') && ${button('Refresh free models')} && !${button('Refresh free models')}.disabled`,'remounted routing')
+  assert.equal(await js(`${modelPicker}.textContent`),'Kilo QA')
+  assert.equal(await js(`document.querySelectorAll('[data-node-id]').length`),0)
+  await click(forceControl)
+  await waitFor(`!${forceControl}.disabled && ${forceControl}.getAttribute('aria-checked')==='false'`,'disabled free routing')
+  await click(forceControl)
+  await waitFor(`!${forceControl}.disabled && ${forceControl}.getAttribute('aria-checked')==='true'`,'enabled free routing without nodes')
+  // Exercise the model picker with keyboard only.
+  await js(`(${modelPicker}).scrollIntoView({block:'center'}); (${modelPicker}).focus()`)
+  for(const keyCode of ['Space','Home','Enter']) {
+    window.webContents.sendInputEvent({type:'keyDown',keyCode})
+    window.webContents.sendInputEvent({type:'keyUp',keyCode});await delay(160)
+  }
+  await waitFor(`window.ollamaQA.state().config.ollamaRouting.model==='opencode-free/qa-free' && !${modelPicker}.disabled`,'keyboard selected OpenCode')
+  for(const theme of ['light','dark']) for(const width of [1280,390]) {
+    window.setSize(width,1050)
+    await js(`document.documentElement.dataset.theme=${JSON.stringify(theme)};document.querySelector('main').scrollTo({top:0,behavior:'instant'})`)
+    if(width===390) await js(`(${modelPicker}).closest('.glass-card').scrollIntoView({block:'start',behavior:'instant'})`)
+    await screenshot(`ollama-free-${theme}-${width}.png`)
+    assert.equal(await js(`document.documentElement.scrollWidth>innerWidth+1 || [...document.querySelectorAll('main')].some(el=>el.scrollWidth>el.clientWidth+1)`),false)
+  }
+  results.push('saved free routing survives remount; toggles and keyboard selection work with no Ollama nodes; free route screenshots checked in both themes and widths')
   assert.deepEqual(errors,[])
   fs.writeFileSync(path.join(output,'ollama-ui-results.json'),JSON.stringify({results,errors},null,2))
   console.log(JSON.stringify({results,errors},null,2))

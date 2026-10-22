@@ -37,13 +37,16 @@ router.post('/messages', async (ctx: Context) => {
     signal,
   )
   ctx.state.dispatchSelection = dispatched.selection
+  ctx.state.routedModel = dispatched.routedModel
   if (!dispatched.result.success) {
+    const retry = dispatched.result.retryAfterMs
+    if (retry && Number.isFinite(retry) && retry > 0) ctx.set('Retry-After', String(Math.ceil(retry / 1000)))
     ctx.status = dispatched.result.status || 500
     ctx.body = { type: 'error', error: { type: 'api_error', message: dispatched.result.error || 'Request failed' } }
     return
   }
 
-  const model = dispatched.selection?.actualModel || request.model
+  const model = dispatched.selection?.actualModel || dispatched.routedModel || request.model
   if (request.stream && dispatched.result.stream) {
     ctx.set('Content-Type', 'text/event-stream')
     ctx.set('Cache-Control', 'no-cache')

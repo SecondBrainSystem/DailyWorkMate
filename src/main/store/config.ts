@@ -34,7 +34,7 @@ function validateFields(errors: string[], name: string, value: unknown, fields: 
 /** Imported backups and API callers may send any JSON; routing and chat code trust these shapes. */
 function validateNestedConfig(config: Partial<AppConfig>, errors: string[]): void {
   if (config.ollamaRouting !== undefined) {
-    validateFields(errors, 'ollamaRouting', config.ollamaRouting, { forceModel: 'boolean', model: 'string', autoSelectUrl: 'boolean', providerId: 'string' })
+    validateFields(errors, 'ollamaRouting', config.ollamaRouting, { forceModel: 'boolean', routeOriginalModel: 'boolean', model: 'string', autoSelectUrl: 'boolean', providerId: 'string' })
   }
   if (config.sessionConfig !== undefined && validateFields(errors, 'sessionConfig', config.sessionConfig, {
     sessionTimeout: 'count', maxMessagesPerSession: 'count', deleteAfterTimeout: 'boolean', maxSessionsPerAccount: 'count',

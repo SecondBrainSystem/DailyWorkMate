@@ -24,13 +24,15 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Card, CardContent, CardDescription, CardHeader, CardHeading, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Select, SelectContent, SelectGroup, SelectLabel, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { OllamaLogMonitor } from '@/components/ollama/OllamaLogMonitor'
 import { useToast } from '@/hooks/use-toast'
 import { cn } from '@/lib/utils'
 import type { AppConfig, OllamaAuthInput, OllamaAuthType, OllamaNodeSummary } from '@/types/electron'
 import { isOllamaModelUsable } from '../../../shared/ollamaAvailability'
+import { freeModelSource, type FreeRoutingModels } from '../../../shared/freeModels'
+import type { OllamaRoutingTestResult } from '../../../shared/types'
 
 type AuthDraft = OllamaAuthInput
 
@@ -75,11 +77,41 @@ export function OllamaNodes() {
   const [pollError, setPollError] = useState('')
   const [importErrors, setImportErrors] = useState<string[]>([])
   const [savingRouting, setSavingRouting] = useState(false)
+  const [testingRouting, setTestingRouting] = useState(false)
+  const [routingTestModel, setRoutingTestModel] = useState('')
+  const [routingTestResult, setRoutingTestResult] = useState<OllamaRoutingTestResult | null>(null)
+  const testingRoutingRef = useRef(false)
+  const [freeCatalogue, setFreeCatalogue] = useState<FreeRoutingModels>({ models: [], sources: [] })
+  const [loadingFreeModels, setLoadingFreeModels] = useState(true)
+  const [freeModelsError, setFreeModelsError] = useState('')
+  const freeLoadVersion = useRef(0)
   const busyRef = useRef(new Set<string>())
   const importingRef = useRef(false)
   const savingRoutingRef = useRef(false)
   const loadVersion = useRef(0)
   const fileInput = useRef<HTMLInputElement>(null)
+
+  const loadFreeModels = useCallback(async (refresh = false) => {
+    const version = ++freeLoadVersion.current
+    setLoadingFreeModels(true)
+    setFreeModelsError('')
+    try {
+      const catalogue = await window.electronAPI.ollama.routingModels(refresh)
+      if (version === freeLoadVersion.current) setFreeCatalogue(catalogue)
+    } catch (error) {
+      if (version === freeLoadVersion.current) {
+        setFreeCatalogue({ models: [], sources: [] })
+        setFreeModelsError(error instanceof Error ? error.message : String(error))
+      }
+    } finally {
+      if (version === freeLoadVersion.current) setLoadingFreeModels(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadFreeModels()
+    return () => { freeLoadVersion.current++ }
+  }, [loadFreeModels])
 
   const load = useCallback(async () => {
     const version = ++loadVersion.current
@@ -184,19 +216,32 @@ export function OllamaNodes() {
     providerId: '',
   }
 
-  const availableModels = useMemo(() => Array.from(new Set(nodes
+  const ollamaModels = useMemo(() => Array.from(new Set(nodes
     .filter(node => node.enabled)
     .flatMap(node => Object.values(node.ollamaModels || {})
       .filter(model => isOllamaModelUsable(node, model) && !node.disabledModels.includes(model.name))
       .map(model => model.name))))
     .sort((left, right) => left.localeCompare(right)), [nodes])
 
+  const modelGroups = useMemo(() => [
+    { id: 'ollama', name: 'Ollama', models: ollamaModels.map(id => ({ id, name: id })) },
+    ...['opencode-free', 'kilo-free'].map(id => ({
+      id, name: id === 'opencode-free' ? 'OpenCode Free' : 'Kilo Free',
+      models: freeCatalogue.models.filter(model => freeModelSource(model.id)?.id === id),
+    })),
+  ], [ollamaModels, freeCatalogue])
+  const availableModels = modelGroups.flatMap(group => group.models.map(model => model.id))
+  const selectedFreeSource = routing.forceModel ? freeModelSource(routing.model) : undefined
+  const routingBusy = savingRouting || testingRouting
+  const routingActive = routing.forceModel || Boolean(routing.routeOriginalModel)
+  const testRequestModel = routingTestModel.trim() || (routing.forceModel ? routing.model : '')
+
   const fixedNodeOptions = useMemo(() => nodes.filter(node => {
     if (!node.enabled || node.status === 'offline') return false
-    if (!routing.model) return true
+    if (!routing.forceModel || !routing.model) return true
     const model = node.ollamaModels?.[routing.model]
     return isOllamaModelUsable(node, model) && !node.disabledModels.includes(routing.model)
-  }), [nodes, routing.model])
+  }), [nodes, routing.forceModel, routing.model])
 
   const onlineCount = nodes.filter(node => node.enabled && node.status === 'online').length
   const totalModelCount = new Set(nodes.flatMap(node => Object.keys(node.ollamaModels || {}))).size
@@ -285,7 +330,7 @@ export function OllamaNodes() {
   }
 
   const saveRouting = async (updates: Partial<AppConfig['ollamaRouting']>) => {
-    if (!config || savingRoutingRef.current) return
+    if (!config || savingRoutingRef.current || testingRoutingRef.current) return
     savingRoutingRef.current = true
     setSavingRouting(true)
     const nextRouting = { ...routing, ...updates }
@@ -293,6 +338,7 @@ export function OllamaNodes() {
       const saved = await window.electronAPI.config.update({ ollamaRouting: nextRouting })
       if (saved === false) throw new Error(t('ollama.routing.saveFailed'))
       setConfig(current => current ? { ...current, ollamaRouting: nextRouting } : current)
+      setRoutingTestResult(null)
     } catch (error) {
       toast({
         title: t('common.error'),
@@ -306,11 +352,13 @@ export function OllamaNodes() {
   }
 
   const toggleForceModel = async (enabled: boolean) => {
-    const model = availableModels.includes(routing.model) ? routing.model : availableModels[0] || ''
-    if (enabled && !model) {
-      toast({ title: t('ollama.routing.noModels'), variant: 'destructive' })
+    if (!enabled) { await saveRouting({ forceModel: false }); return }
+    const model = routing.model || availableModels[0] || ''
+    if (!model || !availableModels.includes(model)) {
+      toast({ title: t(model ? 'ollama.routing.modelUnavailable' : 'ollama.routing.noModels'), variant: 'destructive' })
       return
     }
+    if (freeModelSource(model)) { await saveRouting({ forceModel: true, routeOriginalModel: false, model, providerId: '' }); return }
     const compatibleNodes = nodes.filter(node => {
       const metadata = node.ollamaModels?.[model]
       return node.enabled && isOllamaModelUsable(node, metadata) && !node.disabledModels.includes(model)
@@ -318,10 +366,35 @@ export function OllamaNodes() {
     const providerId = compatibleNodes.some(node => node.id === routing.providerId)
       ? routing.providerId
       : compatibleNodes[0]?.id || ''
-    await saveRouting({ forceModel: enabled, model, providerId })
+    await saveRouting({ forceModel: enabled, routeOriginalModel: false, model, providerId })
+  }
+
+  const toggleOriginalModel = async (enabled: boolean) => {
+    if (!enabled) { await saveRouting({ routeOriginalModel: false }); return }
+    const compatibleNodes = nodes.filter(node => node.enabled && node.status !== 'offline')
+    const providerId = compatibleNodes.some(node => node.id === routing.providerId)
+      ? routing.providerId : compatibleNodes[0]?.id || ''
+    await saveRouting({ routeOriginalModel: true, forceModel: false, providerId, autoSelectUrl: routing.autoSelectUrl || !providerId })
+  }
+
+  const testRouting = async () => {
+    if (!config || !testRequestModel || savingRoutingRef.current || testingRoutingRef.current) return
+    testingRoutingRef.current = true
+    setTestingRouting(true)
+    setRoutingTestResult(null)
+    try {
+      setRoutingTestResult(await window.electronAPI.ollama.testRouting(testRequestModel))
+    } catch (error) {
+      setRoutingTestResult({ success: false, requestedModel: testRequestModel, routedModel: routing.forceModel ? routing.model : testRequestModel,
+        latency: 0, error: error instanceof Error ? error.message : String(error) })
+    } finally {
+      testingRoutingRef.current = false
+      setTestingRouting(false)
+    }
   }
 
   const selectRoutingModel = async (model: string) => {
+    if (freeModelSource(model)) { await saveRouting({ model, providerId: '' }); return }
     const compatibleNodes = nodes.filter(node => {
       const metadata = node.ollamaModels?.[model]
       return node.enabled && isOllamaModelUsable(node, metadata) && !node.disabledModels.includes(model)
@@ -398,39 +471,75 @@ export function OllamaNodes() {
               <div className="space-y-3 rounded-xl border bg-muted/25 p-4">
                 <div className="flex items-center justify-between gap-4">
                   <div><Label>{t('ollama.routing.forceModel')}</Label><p className="mt-1 text-xs text-muted-foreground">{t('ollama.routing.forceModelHint')}</p></div>
-                  <Switch aria-label={t('ollama.routing.forceModel')} disabled={loading || !config || savingRouting} checked={routing.forceModel} onCheckedChange={enabled => void toggleForceModel(enabled)} />
+                  <Switch aria-label={t('ollama.routing.forceModel')} disabled={loading || !config || routingBusy} checked={routing.forceModel} onCheckedChange={enabled => void toggleForceModel(enabled)} />
                 </div>
-                <Select value={routing.model} onValueChange={model => void selectRoutingModel(model)} disabled={savingRouting || !routing.forceModel || availableModels.length === 0}>
-                  <SelectTrigger aria-label={t('ollama.routing.selectModel')}><SelectValue placeholder={t('ollama.routing.selectModel')} /></SelectTrigger>
-                  <SelectContent>
+                <div className="flex items-center justify-between gap-4">
+                  <div><Label>{t('ollama.routing.originalModel')}</Label><p className="mt-1 text-xs text-muted-foreground">{t('ollama.routing.originalModelHint')}</p></div>
+                  <Switch aria-label={t('ollama.routing.originalModel')} disabled={loading || !config || routingBusy} checked={Boolean(routing.routeOriginalModel)} onCheckedChange={enabled => void toggleOriginalModel(enabled)} />
+                </div>
+                <Select value={routing.model} onValueChange={model => void selectRoutingModel(model)} disabled={loading || !config || routingBusy || routing.routeOriginalModel || availableModels.length === 0}>
+                  <SelectTrigger aria-label={t('ollama.routing.selectModel')} title={routing.model}><SelectValue placeholder={t('ollama.routing.selectModel')} /></SelectTrigger>
+                  <SelectContent scrollButtons={false} className="w-[var(--radix-select-trigger-width)] max-w-[calc(100vw-2rem)] [&_[role=option]]:break-all">
                     {routing.model && !availableModels.includes(routing.model) ? <SelectItem value={routing.model} disabled>{routing.model} · {t('ollama.unavailable')}</SelectItem> : null}
-                    {availableModels.map(model => <SelectItem key={model} value={model}>{model}</SelectItem>)}
+                    {modelGroups.filter(group => group.models.length).map(group => <SelectGroup key={group.id}>
+                      <SelectLabel>{group.name}</SelectLabel>
+                      {group.models.map(model => <SelectItem key={model.id} value={model.id}>{model.name}</SelectItem>)}
+                    </SelectGroup>)}
                   </SelectContent>
                 </Select>
+                <Button size="sm" variant="ghost" disabled={loadingFreeModels} onClick={() => void loadFreeModels(true)} className="max-w-full gap-2">
+                  <RefreshCw className={cn('h-4 w-4 shrink-0', loadingFreeModels && 'animate-spin')} />
+                  {t(loadingFreeModels ? 'ollama.routing.loadingFreeModels' : 'ollama.routing.refreshFreeModels')}
+                </Button>
+                {routing.forceModel && routing.model && !availableModels.includes(routing.model) && !loadingFreeModels ? <p role="status" className="text-xs text-danger">{t('ollama.routing.modelUnavailable')}</p> : null}
+                {freeModelsError ? <p role="alert" className="break-words text-xs text-danger">{t('ollama.routing.freeModelsFailed')} · {freeModelsError}</p> : null}
+                {freeCatalogue.sources.filter(source => source.stale).map(source => <p key={source.id} role="status" className="break-words text-xs text-danger">{source.name} · {t('ollama.unavailable')}{source.error ? ` · ${source.error}` : ''}</p>)}
               </div>
               <div className="space-y-3 rounded-xl border bg-muted/25 p-4">
+                {selectedFreeSource ? <div className="space-y-2">
+                  <Label>{selectedFreeSource.name}</Label>
+                  <p className="text-xs text-muted-foreground">{t('ollama.routing.freeRouteHint')}</p>
+                </div> : <>
                 <div className="flex items-center justify-between gap-4">
                   <div><Label>{t('ollama.routing.autoUrl')}</Label><p className="mt-1 text-xs text-muted-foreground">{t('ollama.routing.autoUrlHint')}</p></div>
-                  <Switch aria-label={t('ollama.routing.autoUrl')} disabled={loading || !config || savingRouting} checked={routing.autoSelectUrl} onCheckedChange={autoSelectUrl => void saveRouting({ autoSelectUrl })} />
+                  <Switch aria-label={t('ollama.routing.autoUrl')} disabled={loading || !config || routingBusy || !routingActive} checked={routing.autoSelectUrl} onCheckedChange={autoSelectUrl => void saveRouting({ autoSelectUrl })} />
                 </div>
-                <Select value={routing.providerId} onValueChange={providerId => void saveRouting({ providerId })} disabled={savingRouting || routing.autoSelectUrl || !routing.forceModel || fixedNodeOptions.length === 0}>
+                <Select value={routing.providerId} onValueChange={providerId => void saveRouting({ providerId })} disabled={loading || !config || routingBusy || routing.autoSelectUrl || !routingActive || fixedNodeOptions.length === 0}>
                   <SelectTrigger aria-label={t('ollama.routing.selectNode')}><SelectValue placeholder={t('ollama.routing.selectNode')} /></SelectTrigger>
                   <SelectContent>
                     {routing.providerId && !fixedNodeOptions.some(node => node.id === routing.providerId) ? <SelectItem value={routing.providerId} disabled>{t('ollama.unavailable')}</SelectItem> : null}
                     {fixedNodeOptions.map(node => <SelectItem key={node.id} value={node.id}>{node.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
+                </>}
               </div>
             </div>
-            {(routing.forceModel || routing.autoSelectUrl) ? (
+            {routingActive ? (
               <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2 text-sm">
                 <Badge>{t('ollama.routing.active')}</Badge>
                 <span className="min-w-0 break-all text-muted-foreground">{routing.forceModel ? routing.model : t('ollama.routing.clientModel')}</span>
                 <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                <span>{routing.autoSelectUrl ? t('ollama.routing.automaticNode') : fixedNodeOptions.find(node => node.id === routing.providerId)?.name || t('ollama.routing.nodeRequired')}</span>
+                <span>{routing.forceModel && selectedFreeSource ? selectedFreeSource.name : routing.autoSelectUrl ? t('ollama.routing.automaticNode') : fixedNodeOptions.find(node => node.id === routing.providerId)?.name || t('ollama.routing.nodeRequired')}</span>
               </div>
             ) : null}
             {savingRouting ? <p role="status" className="text-xs text-muted-foreground">{t('ollama.routing.saving')}</p> : null}
+            <div className="space-y-3 border-t pt-4">
+              <Label htmlFor="routing-test-model">{t('ollama.routing.testModel')}</Label>
+              <div className="flex flex-wrap gap-2">
+                <Input id="routing-test-model" className="min-w-0 flex-1 basis-48" maxLength={512} value={routingTestModel} disabled={routingBusy}
+                  placeholder={routing.forceModel ? routing.model : t('ollama.routing.testModelPlaceholder')}
+                  onChange={event => { setRoutingTestModel(event.target.value); setRoutingTestResult(null) }} />
+                <Button variant="outline" disabled={loading || !config || routingBusy || !testRequestModel} onClick={() => void testRouting()}>
+                  <Activity className={cn('mr-2 h-4 w-4', testingRouting && 'animate-pulse')} />{t(testingRouting ? 'ollama.routing.testing' : 'ollama.routing.test')}
+                </Button>
+              </div>
+              <p className="text-xs text-muted-foreground">{t('ollama.routing.testHint')}</p>
+              {routingTestResult ? <div role={routingTestResult.success ? 'status' : 'alert'} data-routing-test-result={routingTestResult.success ? 'success' : 'error'} className={cn('space-y-2 rounded-lg border p-3 text-xs', routingTestResult.success ? SUCCESS_PILL : DANGER_PILL)}>
+                <p className="font-medium">{t(routingTestResult.success ? 'ollama.routing.testSuccess' : 'ollama.routing.testFailed')} · {routingTestResult.latency} ms</p>
+                <p className="break-all">{routingTestResult.requestedModel} → {routingTestResult.routedModel}{routingTestResult.providerName ? ` · ${routingTestResult.providerName}` : ''}</p>
+                <p className="whitespace-pre-wrap break-words">{routingTestResult.response || routingTestResult.error}</p>
+              </div> : null}
+            </div>
           </CardContent>
         </Card>
 

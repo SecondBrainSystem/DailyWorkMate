@@ -64,7 +64,7 @@ test('disabled keys remain unauthorized and valid keys update usage immutably', 
 test('CORS preflight permits the documented feature and authentication headers', async () => {
   const response = await fetch(`${endpoint}/v1/chat/completions`, { method: 'OPTIONS' })
   assert.equal(response.status, 204)
-  for (const header of ['X-Enable-Vision', 'X-Enable-Thinking', 'X-Reasoning-Effort', 'X-API-Key', 'X-DailyWorkMate-Model-Selection']) {
+  for (const header of ['X-Enable-Vision', 'X-Enable-Thinking', 'X-Reasoning-Effort', 'X-API-Key', 'X-DailyWorkMate-Model-Selection', 'X-Refresh-Free-Models', 'X-OpenCode-Session-Id']) {
     assert.ok(response.headers.get('access-control-allow-headers').includes(header))
   }
 })

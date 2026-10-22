@@ -143,6 +143,10 @@ const providersAPI = {
 }
 
 const ollamaAPI = {
+  testRouting: (model: string): Promise<import('../shared/types').OllamaRoutingTestResult> =>
+    ipcRenderer.invoke(IpcChannels.OLLAMA_TEST_ROUTING, model),
+  routingModels: (refresh = false): Promise<import('../shared/freeModels').FreeRoutingModels> =>
+    ipcRenderer.invoke(IpcChannels.OLLAMA_ROUTING_MODELS, refresh),
   list: (): Promise<OllamaNodeSummary[]> =>
     ipcRenderer.invoke(IpcChannels.OLLAMA_LIST),
   importText: (text: string): Promise<OllamaImportResult> =>

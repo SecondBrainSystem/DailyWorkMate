@@ -4,6 +4,7 @@ import { MainLayout } from '@/components/layout/MainLayout'
 import { TrayView } from '@/components/Tray/TrayView'
 import { Toaster } from '@/components/ui/toaster'
 import { Skeleton } from '@/components/ui/skeleton'
+import { ConfirmationProvider } from '@/components/ui/confirmation-provider'
 
 const Dashboard = lazy(() => import('@/pages/Dashboard').then(m => ({ default: m.Dashboard })))
 const Providers = lazy(() => import('@/pages/Providers').then(m => ({ default: m.Providers })))
@@ -31,7 +32,7 @@ function PageLoader() {
 
 function App() {
   return (
-    <>
+    <ConfirmationProvider>
       <Routes>
         <Route path="/tray" element={<TrayView />} />
         <Route element={<MainLayout />}>
@@ -50,7 +51,7 @@ function App() {
         </Route>
       </Routes>
       <Toaster />
-    </>
+    </ConfirmationProvider>
   )
 }
 

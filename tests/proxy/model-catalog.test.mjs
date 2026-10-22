@@ -12,7 +12,7 @@ let api, server, endpoint
 before(async () => {
   await mkdir(path.dirname(output), { recursive: true })
   await build({
-    stdin: { contents: "export { default as models } from './src/main/proxy/routes/models.ts'; export { listAvailableModels } from './src/main/proxy/modelCatalog.ts'; export { loadBalancer } from './src/main/proxy/loadbalancer.ts'; export { state } from './src/main/store/store'", resolveDir: process.cwd() },
+    stdin: { contents: "export { default as models } from './src/main/proxy/routes/models.ts'; export { listAvailableModels } from './src/main/proxy/modelCatalog.ts'; export { loadBalancer } from './src/main/proxy/loadbalancer.ts'; export { state } from './src/main/store/store'; export { KiloFreeModelCatalogue } from './src/main/inference/kiloModels.ts'; export { OpenCodeFreeModelCatalogue } from './src/main/companion/opencodeModels.ts'", resolveDir: process.cwd() },
     outfile: output, bundle: true, platform: 'node', format: 'esm', packages: 'external',
     plugins: [{ name: 'isolate-model-catalog', setup(builder) {
       builder.onResolve({ filter: /\/store\/store(?:\.ts)?$/ }, () => ({ path: 'store', namespace: 'qa' }))
@@ -20,6 +20,9 @@ before(async () => {
     } }],
   })
   api = await import(pathToFileURL(output))
+  for (const catalogue of [api.KiloFreeModelCatalogue, api.OpenCodeFreeModelCatalogue]) {
+    test.mock.method(catalogue.prototype, 'get', async () => ({ models: [], stale: false, updatedAt: 1000 }))
+  }
   const app = new Koa()
   app.use(api.models.routes())
   server = createServer(app.callback())

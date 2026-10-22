@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { ChevronLeft, Folder, FolderCog, FolderOpen, FolderPlus, History, Pencil, Layers, LoaderCircle, Plus, Terminal as TerminalIcon, Trash2, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { useConfirm } from '@/components/ui/confirmation-provider'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import type { TerminalPhase } from './OpenCodeTerminal'
 import { ActivityMark } from './ActivityMark'
@@ -45,6 +46,7 @@ export function WorkSessions({ work, snapshot, copy, visible, screenReaderMode, 
   onError: (message: string) => void
 }) {
   const { t } = useTranslation()
+  const confirm = useConfirm(visible)
   const [mounted, setMounted] = useState<Set<string>>(() => new Set())
   const [phases, setPhases] = useState<Record<string, TerminalPhase>>({})
   const [activity, setActivity] = useState<Record<string, ActivityState>>({})
@@ -59,6 +61,10 @@ export function WorkSessions({ work, snapshot, copy, visible, screenReaderMode, 
   const strip = useRef<HTMLDivElement>(null)
   const full = work.open.length >= MAX_OPEN_WORK_SESSIONS
   const workspaces = snapshot?.workspaces || []
+
+  useEffect(() => {
+    if (!visible) { setCreating(false); setRename(null); setRecentOpen(false) }
+  }, [visible])
 
   // A tab connects the first time it is shown, then stays connected until closed.
   useEffect(() => {
@@ -89,8 +95,8 @@ export function WorkSessions({ work, snapshot, copy, visible, screenReaderMode, 
     }))
   }, [work.open, snapshot])
   const openNew = () => { if (full) onError(copy.workSessionLimit); else setCreating(true) }
-  const closeSession = (id: string) => {
-    if (['starting', 'running', 'recovering', 'disconnected'].includes(phases[id] || '') && !window.confirm(t('companion.work.closeConfirm'))) return
+  const closeSession = async (id: string) => {
+    if (['starting', 'running', 'recovering', 'disconnected'].includes(phases[id] || '') && !await confirm(t('companion.work.closeConfirm'))) return
     work.close(id)
   }
   const reopen = (id: string) => { if (!work.reopen(id)) onError(copy.workSessionLimit); else setRecentOpen(false) }
