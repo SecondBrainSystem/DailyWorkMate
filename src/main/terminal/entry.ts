@@ -54,7 +54,7 @@ async function run() {
         case 'sync': result = await host.sync(value.context as TerminalContext); break
         case 'state': result = host.state(); break
         case 'create': result = await host.create(value.input as TerminalCreateInput); break
-        case 'select': result = host.select(value.id); break
+        case 'select': result = await host.select(value.id); break
         case 'close': result = await host.close(value.id); break
         case 'restart': result = await host.restart(value.id); break
         case 'poll': result = host.poll(value.id, value.cursor); break

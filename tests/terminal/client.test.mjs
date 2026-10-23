@@ -2,7 +2,7 @@ import test, { before } from 'node:test'
 import assert from 'node:assert/strict'
 import { build } from 'esbuild'
 import { createServer } from 'node:http'
-import { mkdir, mkdtemp, writeFile, rm, unlink } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, writeFile, rm, unlink } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -56,9 +56,32 @@ test('periodic refresh reads state; the host is synced on connect and when folde
   assert.equal(host.actions.at(-1), 'sync')
   await manager.synchronize()
   assert.equal(host.actions.at(-1), 'sync', 'explicit synchronization always pushes the context')
+  await manager.synchronizeIfConnected()
+  assert.equal(host.actions.at(-1), 'sync', 'folder edits reach a connected host')
   assert.ok(requested.every(models => models.length === 0), 'model connections are never resolved for the terminal host')
   await manager.detach()
   assert.deepEqual(host.actions.slice(-3), ['state', 'preferences', 'detach'])
+})
+
+test('saved terminals and folder edits do not start a host before the Terminal view is opened', async t => {
+  const host = await fakeHost(t)
+  await unlink(path.join(host.home, 'host.json'))
+  const file = path.join(host.home, 'sessions.json')
+  const saved = JSON.stringify({ version: 1, preferences: { restoreOnStartup: true, keepRunningOnExit: false }, sessions: Array.from({ length: 6 }, (_, id) => ({ session: { id }, resume: true })) })
+  await writeFile(file, saved)
+  const manager = client(host.home)
+  assert.equal(await manager.neededAtStartup(), false)
+  await manager.synchronizeIfConnected()
+  await manager.detach()
+  assert.deepEqual(host.actions, [], 'no host command or shell startup is needed')
+  assert.equal(await readFile(file, 'utf8'), saved, 'deferred restoration preserves the saved tabs')
+
+  const running = await fakeHost(t)
+  const attached = client(running.home)
+  assert.equal(await attached.neededAtStartup(), true, 'an existing host is still rejoined')
+  await attached.synchronizeIfConnected()
+  assert.ok(running.actions.includes('sync'))
+  await attached.detach()
 })
 
 test('a live host that does not answer is never replaced by a second host', async t => {

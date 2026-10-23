@@ -34,6 +34,8 @@ export class TerminalHost {
   private preferences = { ...DEFAULT_TERMINAL_PREFERENCES }
   private activeId = ''
   private ready = false
+  private stopping = false
+  private starting = new Map<string, Promise<void>>()
   private saving: Promise<void> = Promise.resolve()
   private saveTimer?: ReturnType<typeof setTimeout>
   private shells: TerminalState['shells'] = []
@@ -107,7 +109,7 @@ export class TerminalHost {
     this.shells = this.shells.map(shell => shell.kind === 'opencode' ? { ...shell, available: openCode } : shell)
     if (!this.ready) {
       this.ready = true
-      if (this.preferences.restoreOnStartup) await Promise.all([...this.sessions.values()].filter(live => live.resume).map(live => this.start(live.session.id).catch(error => this.fail(live.session.id, error))))
+      if (this.preferences.restoreOnStartup) await this.resumeTab(this.activeId)
     }
     return this.state()
   }
@@ -122,10 +124,12 @@ export class TerminalHost {
   private fail(id: string, error: unknown) {
     const live = this.sessions.get(id)
     if (!live) return
+    console.error('[Terminal host] Unable to start ' + id + ':', message(error))
     this.sessions.set(id, { ...live, resume: false, session: { ...live.session, status: 'error', error: error instanceof Error ? error.message : 'Unable to start terminal' } })
     this.scheduleSave()
   }
   async create(value: TerminalCreateInput) {
+    if (this.stopping) throw new Error('Terminal host is stopping')
     const { split, ...input } = validateTerminalCreate(value)
     if (input.kind === 'opencode') throw new Error('OpenCode 请在“工作”标签中打开。 / OpenCode opens in a Work tab.')
     if (this.sessions.size >= 16) throw new Error('At most 16 terminals can be open')
@@ -139,19 +143,39 @@ export class TerminalHost {
     this.tabs = split && target ? this.tabs.map(tab => tab === target ? { ...tab, layout: splitPane(tab.layout, split.beside, input.id, split.direction), focused: input.id } : tab)
       : [...this.tabs, { id: input.id, layout: { pane: input.id }, focused: input.id }]
     this.activeId = input.id
-    try { await this.start(input.id) } catch (error) { this.fail(input.id, error) }
+    await this.start(input.id)
     await this.save()
     return this.state()
   }
-  private async start(id: string) {
+  /** Restore only the visible tab's panes. Other tabs retain their directories and resume intent. */
+  private async resumeTab(id: string) {
+    const tab = tabOf(this.tabs, id)
+    if (!tab) return
+    await Promise.all(panesOf(tab.layout).filter(pane => this.sessions.get(pane)?.resume).map(pane => this.start(pane)))
+  }
+  private start(id: string): Promise<void> {
+    const pending = this.starting.get(id)
+    if (pending) return pending
+    if (this.stopping || this.sessions.get(id)?.pty) return Promise.resolve()
+    const current = () => !this.stopping && this.starting.get(id) === operation && this.sessions.has(id)
+    // Install the promise before beginning async preparation so rapid selections share one startup.
+    const operation: Promise<void> = Promise.resolve().then(() => this.startProcess(id, current))
+      .catch(error => { if (current()) this.fail(id, error) })
+      .finally(() => { if (this.starting.get(id) === operation) this.starting.delete(id) })
+    this.starting.set(id, operation)
+    return operation
+  }
+  private async startProcess(id: string, current: () => boolean) {
+    if (!current()) return
     const initial = this.live(id)
     if (initial.pty) return
     if (!this.shells.find(shell => shell.kind === initial.session.kind)?.available) throw new Error(this.shells.find(shell => shell.kind === initial.session.kind)?.reason || 'Terminal is unavailable')
     if (initial.session.kind === 'opencode') throw new Error('OpenCode opens in a Work tab')
     const directory = await realpath(initial.session.directory)
     if (!(await stat(directory)).isDirectory()) throw new Error('Working directory is not a folder')
-    if (this.sessions.get(id) !== initial) throw new Error('Terminal startup cancelled')
-    this.sessions.set(id, { ...initial, resume: true, session: { ...initial.session, directory, status: 'starting', error: '' } })
+    if (!current()) return
+    const preparing = this.live(id)
+    this.sessions.set(id, { ...preparing, resume: true, session: { ...preparing.session, directory, status: 'starting', error: '' } })
     const spawn = terminalSpawner(this.helper, this.ptyModule)
     const system = process.env.SystemRoot || process.env.SYSTEMROOT || 'C:\\Windows'
     const env = { ...Object.fromEntries(Object.entries(process.env).filter(([key, value]) => value !== undefined && !key.startsWith('DAILYWORKMATE_TERMINAL_') && key !== 'ELECTRON_RUN_AS_NODE')), TERM: 'xterm-256color', COLORTERM: 'truecolor' } as Record<string, string>
@@ -175,9 +199,9 @@ export class TerminalHost {
       const linuxRc = await new Promise<string>((resolve, reject) => execFile(file, [...distribution, '--exec', 'wslpath', '-a', rc], { windowsHide: true, timeout: 10000 }, (error, stdout) => error ? reject(new Error('Unable to prepare WSL shell: ' + error.message)) : resolve(stdout.trim())))
       args = [...distribution, '--cd', startingDirectory, '--exec', 'bash', '--rcfile', linuxRc, '-i']
     }
-    if (!this.sessions.has(id)) throw new Error('Terminal startup cancelled')
-    const pty = spawn(file, args, { name: 'xterm-256color', cols: initial.session.cols, rows: initial.session.rows, cwd: directory, env, useConptyDll: process.platform === 'win32' })
+    if (!current()) return
     const live = this.live(id)
+    const pty = spawn(file, args, { name: 'xterm-256color', cols: live.session.cols, rows: live.session.rows, cwd: directory, env, useConptyDll: process.platform === 'win32' })
     this.sessions.set(id, { ...live, pty, session: { ...live.session, status: 'running' } })
     pty.onData(data => this.receive(id, pty, data))
     pty.onExit(({ exitCode }) => {
@@ -232,9 +256,10 @@ export class TerminalHost {
     live.pty?.resize(cols, rows)
     this.sessions.set(id, { ...live, session: { ...live.session, cols, rows } }); this.scheduleSave()
   }
-  select(id: string) {
+  async select(id: string) {
     this.live(id); this.activeId = id
     this.tabs = this.tabs.map(tab => tab.focused !== id && panesOf(tab.layout).includes(id) ? { ...tab, focused: id } : tab)
+    await this.resumeTab(id)
     this.scheduleSave(); return this.state()
   }
   /** Divider positions only: the tab must still hold exactly the same panes. */
@@ -247,6 +272,7 @@ export class TerminalHost {
     this.scheduleSave(); return this.state()
   }
   private async stop(id: string) {
+    this.starting.delete(id)
     const live = this.live(id)
     this.sessions.set(id, { ...live, pty: undefined, session: { ...live.session, status: 'exited' } })
     try { await closeTerminalProcess(live.pty) }
@@ -254,6 +280,8 @@ export class TerminalHost {
   }
   /** Stops every shell in parallel; `resume` stays set so the next start can restore these tabs. */
   private async stopAll() {
+    this.stopping = true
+    this.starting.clear()
     const running = [...this.sessions.values()].filter(live => live.pty)
     for (const live of running) this.sessions.set(live.session.id, { ...live, pty: undefined, session: { ...live.session, status: 'exited' } })
     await closeTerminalProcesses(running.map(live => live.pty))
@@ -266,14 +294,17 @@ export class TerminalHost {
     const layout = owner && removePane(owner.layout, id)
     const replacement = owner && layout ? { ...owner, layout, focused: owner.focused === id ? siblingPane(owner.layout, id) || panesOf(layout)[0] : owner.focused } : undefined
     this.tabs = this.tabs.flatMap(tab => tab !== owner ? [tab] : replacement ? [replacement] : [])
-    if (this.activeId === id) this.activeId = replacement?.focused || this.tabs[0]?.focused || ''
+    if (this.activeId === id) {
+      this.activeId = replacement?.focused || this.tabs[0]?.focused || ''
+      await this.resumeTab(this.activeId)
+    }
     await this.save(); return this.state()
   }
   async restart(id: string) {
     await this.stop(id)
     const live = this.live(id)
     this.sessions.set(id, { ...live, output: emptyOutput(), cwdPending: '', resume: true })
-    try { await this.start(id) } catch (error) { this.fail(id, error) }
+    await this.start(id)
     await this.save(); return this.state()
   }
   async setPreferences(value: TerminalPreferences) { this.preferences = validateTerminalPreferences(value); await this.save(); return this.state() }

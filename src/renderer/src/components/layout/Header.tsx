@@ -117,6 +117,7 @@ export function Header() {
           <button
             key={href}
             role="tab"
+            aria-label={t(labelKey)}
             aria-selected={pathname === href}
             className="workspace-switch-tab"
             onClick={() => guardedNavigate(href)}

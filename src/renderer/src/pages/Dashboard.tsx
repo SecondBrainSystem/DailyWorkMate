@@ -1,160 +1,87 @@
-import { useEffect, useCallback, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Activity, CheckCircle, Clock, Users, RefreshCw, LayoutDashboard, AlertTriangle } from 'lucide-react'
+import { Activity, ArrowDownRight, ArrowUpRight, CheckCircle2, Clock3, RefreshCw, Radio, Zap } from 'lucide-react'
 import { PageHeader } from '@/components/layout/PageHeader'
-import { Button } from '@/components/ui/button'
-import {
-  StatsCard,
-  ProviderStatusCard,
-  RequestChart,
-  RecentActivity,
-  TokenUsageCard,
-} from '@/components/dashboard'
+import { useGuardedNavigate } from '@/components/layout/navigationGuard'
+import { RecentActivity } from '@/components/dashboard/RecentActivity'
+import { TokenUsageCard } from '@/components/dashboard/TokenUsageCard'
+import { UsageTrendChart, UsageHeatmap } from '@/components/dashboard/UsageCharts'
 import { useDashboardStore } from '@/stores/dashboardStore'
-import { cn } from '@/lib/utils'
+import { compactUsage, summarizeUsage, usageDays, usageDate } from '@/lib/usageMetrics'
+import '@/components/dashboard/monitor.css'
 
-/**
- * The one place for request statistics. Proxy start/stop lives in the top bar,
- * and navigation shortcuts live in the sidebar, so neither is repeated here.
- */
 export function Dashboard() {
-  const { t } = useTranslation()
-  const navigate = useNavigate()
-  const {
-    trendDays, setTrendDays,
-    stats,
-    providers,
-    activities,
-    chartData,
-    isLoading,
-    error,
-    lastUpdated,
-    refreshData,
-  } = useDashboardStore()
-  const hasLoadedRef = useRef(false)
-
+  const { t, i18n } = useTranslation()
+  const navigate = useGuardedNavigate()
+  const { snapshot, activities, isLoading, error, activityError, lastUpdated, refreshData } = useDashboardStore()
+  const [range, setRange] = useState(30)
+  const [selectedModel, setSelectedModel] = useState<string | null>(null)
+  const summary = useMemo(() => summarizeUsage(snapshot, range), [snapshot, range, lastUpdated])
+  const history = useMemo(() => usageDays(snapshot, 91), [snapshot, lastUpdated])
+  const model = summary.models.some(item => item.model === selectedModel) ? selectedModel : null
   useEffect(() => {
-    if (!hasLoadedRef.current) {
-      hasLoadedRef.current = true
-      refreshData()
-    }
-  }, [])
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      useDashboardStore.getState().refreshData()
-    }, 60000)
-
-    return () => clearInterval(interval)
-  }, [])
-
-  useEffect(() => {
-    if (!window.electronAPI?.proxy?.onStatusChanged) return
-    return window.electronAPI.proxy.onStatusChanged((status) => {
-      useDashboardStore.getState().setProxyStatus(status)
-    })
-  }, [])
-
-  const handleActivityClick = useCallback((item: { id: string; type: string; title: string }) => {
-    navigate('/logs?tab=request&highlight=' + item.id)
-  }, [navigate])
-
-  const isElectron = !!window.electronAPI
-
+    const refresh = () => { if (!document.hidden) void refreshData() }
+    refresh()
+    const timer = window.setInterval(refresh, 10000)
+    document.addEventListener('visibilitychange', refresh)
+    window.addEventListener('focus', refresh)
+    return () => { clearInterval(timer); document.removeEventListener('visibilitychange', refresh); window.removeEventListener('focus', refresh) }
+  }, [refreshData])
+  const format = (value: number) => compactUsage(value, i18n.language)
+  const trend = summary.tokenChange
+  const TrendIcon = trend !== null && trend < 0 ? ArrowDownRight : ArrowUpRight
   return (
-    <div className="space-y-6">
-      <PageHeader
-        icon={LayoutDashboard}
-        title={t('dashboard.title')}
-        description={t('dashboard.description')}
-        actions={<>
-          <select className="rounded border bg-background p-2 text-sm" aria-label={t('dashboard.requestsTrend')} value={trendDays} onChange={event => setTrendDays(Number(event.target.value))}>{[7, 14, 30].map(days => <option key={days} value={days}>{days} {t('common.days')}</option>)}</select>
-          {lastUpdated && (
-            <span className="text-xs text-muted-foreground">
-              {t('dashboard.lastUpdated')}: {new Date(lastUpdated).toLocaleTimeString()}
-            </span>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={refreshData}
-            disabled={isLoading}
-          >
-            <RefreshCw className={cn('h-4 w-4 mr-2', isLoading && 'animate-spin')} />
-            {t('dashboard.refresh')}
-          </Button>
-        </>}
-      />
-
-      {!isElectron && (
-        <div className="flex items-start gap-3 rounded-xl border border-[color-mix(in_srgb,var(--warning)_35%,transparent)] bg-[color-mix(in_srgb,var(--warning)_8%,transparent)] p-4 text-sm">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-[var(--warning)]" />
-          <div>
-            <p className="font-medium">{t('dashboard.browserMode')}</p>
-            <p className="text-muted-foreground">{t('dashboard.browserModeDesc')}</p>
+    <div className="token-monitor" aria-busy={isLoading} data-monitor-ready={!!snapshot}>
+      <PageHeader icon={Radio} title={t('nav.monitor')} description={t('monitor.description')} actions={
+        <button className="usage-refresh" onClick={() => void refreshData()} disabled={isLoading} aria-label={t('dashboard.refresh')}>
+          <RefreshCw size={15} className={isLoading ? 'animate-spin' : ''} /><span>{t('dashboard.refresh')}</span>
+        </button>
+      } />
+      <div className="usage-toolbar">
+        <div className="usage-live" data-stale={!!error || !snapshot}><span className="usage-live-dot" />
+          <strong>{error ? t('monitor.stale') : !snapshot ? t(isLoading ? 'common.loading' : 'monitor.waiting') : t('monitor.live')}</strong>
+          <span>{lastUpdated ? new Date(lastUpdated).toLocaleTimeString(i18n.language) : '—'}</span>
+        </div>
+        <div className="usage-segmented" role="group" aria-label={t('monitor.period')}>
+          {[7, 30, 90].map(days => <button key={days} aria-pressed={range === days} onClick={() => setRange(days)}>{t('monitor.range', { count: days })}</button>)}
+        </div>
+      </div>
+      {!window.electronAPI && <p className="usage-notice" role="status">{t('dashboard.browserModeDesc')}</p>}
+      {error && <div className="usage-notice" role="alert"><strong>{t(snapshot ? 'monitor.refreshFailed' : 'monitor.loadFailed')}</strong><span>{error}</span></div>}
+      {snapshot && !summary.complete && <p className="usage-notice usage-history-notice" role="status">{t('monitor.partialHistory', { available: summary.availableDays, total: range })}</p>}
+      <div className="usage-overview">
+        <section className="usage-hero" aria-label={t('dashboard.totalTokens')}>
+          <div className="usage-hero-label"><Zap size={16} />{t(summary.complete ? 'monitor.consumption' : 'monitor.knownConsumption')}<span>TOKENS</span></div>
+          <div className="usage-total" data-token-total={summary.totalTokens} title={summary.totalTokens.toLocaleString(i18n.language)}>{summary.availableDays ? format(summary.totalTokens) : '—'}</div>
+          <div className="usage-comparison">
+            {!summary.canCompare ? <span>{t('monitor.comparisonUnavailable')}</span> : <>
+              {trend !== null ? <span className="usage-change"><TrendIcon size={14} />{Math.abs(trend).toFixed(1)}%</span> : <span className="usage-change">{t(summary.totalTokens ? 'monitor.newActivity' : 'monitor.noActivity')}</span>}
+              <span>{t('monitor.previousPeriod', { count: range })}</span>
+            </>}
           </div>
+          <div className="usage-hero-footer"><span>{summary.days[0]?.date} — {summary.days.at(-1)?.date}</span><strong>{summary.dailyAverage === null ? '—' : t(summary.complete ? 'monitor.perDay' : 'monitor.perKnownDay', { value: format(summary.dailyAverage) })}</strong></div>
+        </section>
+        <section className="usage-kpi"><Activity /><span>{t('dashboard.totalRequests')}</span><strong>{summary.availableDays ? format(summary.totalRequests) : '—'}</strong><small>{summary.availableDays ? t('monitor.failed', { count: summary.failedRequests }) : '—'}</small></section>
+        <section className="usage-kpi"><CheckCircle2 /><span>{t('dashboard.successRate')}</span><strong>{summary.successRate === null ? '—' : summary.successRate.toFixed(1) + '%'}</strong><small>{t('monitor.active', { count: summary.activeDays })}</small></section>
+        <section className="usage-kpi"><Clock3 /><span>{t('dashboard.avgResponseTime')}</span><strong>{summary.avgLatency === null ? '—' : (summary.avgLatency / 1000).toFixed(2)}<em>{summary.avgLatency === null ? '' : 's'}</em></strong><small>{t('monitor.completedRequests')}</small></section>
+      </div>
+      {snapshot && summary.complete && !summary.totalTokens && <div className="usage-empty-banner"><Zap size={18} /><div><strong>{t(summary.totalRequests ? 'monitor.tokensUnreported' : 'monitor.emptyTitle')}</strong><p>{t(summary.totalRequests ? 'monitor.tokensUnreportedHint' : 'monitor.emptyHint')}</p></div></div>}
+      <div className="usage-chart-grid">
+        <UsageTrendChart days={summary.days} model={model} />
+        <TokenUsageCard totalTokens={summary.totalTokens} models={summary.models} selectedModel={model} onSelectModel={setSelectedModel} />
+      </div>
+      <div className="usage-bottom-grid">
+        <div className="usage-history-column">
+          <UsageHeatmap days={history} />
+          <div className="usage-peak"><span>{t(summary.complete ? 'monitor.peak' : 'monitor.knownPeak')}</span><strong>{summary.peak ? format(summary.peak.tokens) + ' tokens' : '—'}</strong><span>{summary.peak ? usageDate(summary.peak.date, i18n.language) : ''}</span></div>
         </div>
-      )}
-
-      {error && (
-        <div role="alert" className="flex items-start gap-3 rounded-xl border border-destructive/40 bg-destructive/5 p-4 text-sm text-destructive">
-          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-          <span className="min-w-0 break-words">{error}</span>
+        <div className="usage-recent">
+          {activityError && <p className="usage-notice" role="alert">{t('monitor.logsFailed')} {activityError}</p>}
+          <RecentActivity activities={activities} maxVisible={4} onItemClick={item => navigate('/monitor/requests?highlight=' + encodeURIComponent(item.id))} />
+          <button className="usage-text-button" onClick={() => navigate('/monitor/requests')}>{t('monitor.viewLogs')} →</button>
         </div>
-      )}
-
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatsCard
-          title={t('dashboard.totalRequests')}
-          value={stats.totalRequests.toLocaleString()}
-          icon={Activity}
-          trend={{
-            value: stats.requestsTrend,
-            label: t('dashboard.todayVsYesterday'),
-          }}
-        />
-        <StatsCard
-          title={t('dashboard.successRate')}
-          value={`${stats.successRate}%`}
-          icon={CheckCircle}
-          trend={{
-            value: stats.successRateTrend,
-            label: t('dashboard.todayVsYesterday'),
-          }}
-        />
-        <StatsCard
-          title={t('dashboard.avgResponseTime')}
-          value={`${stats.avgLatency}ms`}
-          icon={Clock}
-          trend={{
-            value: stats.latencyTrend,
-            label: t('dashboard.todayVsYesterday'),
-            higherIsBetter: false,
-          }}
-        />
-        <StatsCard
-          title={t('dashboard.activeAccountCount')}
-          value={stats.activeAccounts}
-          icon={Users}
-        />
       </div>
-
-      <div className="grid gap-4 lg:grid-cols-3">
-        <RequestChart data={chartData} className="lg:col-span-2" />
-        <TokenUsageCard
-          totalTokens={stats.totalTokens}
-          modelTokenUsage={stats.modelTokenUsage}
-        />
-      </div>
-
-      <div className="grid gap-4 lg:grid-cols-2 items-stretch">
-        <ProviderStatusCard providers={providers} />
-        <RecentActivity
-          activities={activities}
-          onItemClick={handleActivityClick}
-        />
-      </div>
+      <p className="usage-footnote">{t('monitor.dataNote')}</p>
     </div>
   )
 }

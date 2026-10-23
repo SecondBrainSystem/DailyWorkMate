@@ -1,61 +1,54 @@
-import { useState } from 'react'
+import { useState, type CSSProperties } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Coins } from 'lucide-react'
-
-import { Card, CardContent, CardHeading } from '@/components/ui/card'
-import { Button } from '@/components/ui/button'
+import { ChartNoAxesCombined, ChevronDown } from 'lucide-react'
+import { compactUsage, type ModelUsage } from '@/lib/usageMetrics'
 
 export interface TokenUsageCardProps {
   totalTokens: number
-  modelTokenUsage: Record<string, number>
-  className?: string
+  models: ModelUsage[]
+  selectedModel: string | null
+  onSelectModel: (model: string | null) => void
 }
-
-const TOP_COUNT = 5
-
-/** Total tokens plus the per-model breakdown, shown as a ranked list with share bars. */
-export function TokenUsageCard({ totalTokens, modelTokenUsage, className }: TokenUsageCardProps) {
-  const { t } = useTranslation()
+const COLORS = ['var(--usage-accent)', 'var(--accent-primary)', '#e5a34b', '#e67bb5', '#65a7ef']
+export function TokenUsageCard({ totalTokens, models, selectedModel, onSelectModel }: TokenUsageCardProps) {
+  const { t, i18n } = useTranslation()
   const [expanded, setExpanded] = useState(false)
-  const models = Object.entries(modelTokenUsage)
-    .filter(([, tokens]) => tokens > 0)
-    .sort(([, left], [, right]) => right - left)
-  const largest = models[0]?.[1] ?? 0
-  const visible = expanded ? models : models.slice(0, TOP_COUNT)
-
+  const visible = expanded ? models : models.slice(0, 5)
+  const attributed = models.reduce((sum, model) => sum + model.tokens, 0)
+  const denominator = Math.max(totalTokens, attributed, 1)
+  const segments = models.slice(0, 5).map((model, index) => ({ tokens: model.tokens, color: COLORS[index], model: model.model }))
+  const remainder = Math.max(0, denominator - segments.reduce((sum, item) => sum + item.tokens, 0))
+  const arcs = [...segments, { tokens: totalTokens || attributed ? remainder : 0, color: 'var(--text-dim)', model: '' }]
   return (
-    <Card className={className}>
-      <CardHeading icon={Coins} title={t('dashboard.totalTokens')} description={t('dashboard.tokenModelCount', { count: models.length })} />
-      <CardContent className="space-y-4">
-        <div className="text-3xl font-bold tabular-nums tracking-tight">{totalTokens.toLocaleString()}</div>
-
-        {models.length === 0 ? (
-          <p className="text-sm text-muted-foreground">{t('dashboard.noTokenUsage')}</p>
-        ) : (
-          <ul className="space-y-3">
-            {visible.map(([model, tokens]) => (
-              <li key={model} className="space-y-1.5">
-                <div className="flex items-baseline justify-between gap-3 text-sm">
-                  <code className="min-w-0 truncate font-mono text-[0.8125rem]" title={model}>{model}</code>
-                  <span className="shrink-0 tabular-nums text-muted-foreground">{tokens.toLocaleString()}</span>
-                </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-secondary" aria-hidden="true">
-                  <div
-                    className="h-full rounded-full bg-[var(--chart-primary)]"
-                    style={{ width: `${Math.max(2, (tokens / largest) * 100)}%` }}
-                  />
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {models.length > TOP_COUNT && (
-          <Button variant="ghost" size="sm" className="-ml-2" onClick={() => setExpanded(current => !current)} aria-expanded={expanded}>
-            {expanded ? t('dashboard.collapseTokenDetails') : t('dashboard.expandTokenDetails')}
-          </Button>
-        )}
-      </CardContent>
-    </Card>
+    <section className="usage-panel usage-models" aria-label={t('monitor.modelMix')}>
+      <div className="usage-panel-heading"><h2><ChartNoAxesCombined aria-hidden="true" />{t('monitor.modelMix')}</h2>
+        {selectedModel && <button className="usage-text-button" onClick={() => onSelectModel(null)}>{t('monitor.resetFilter')}</button>}
+      </div>
+      <div className="usage-donut">
+        <svg viewBox="0 0 160 160" role="img" aria-label={t('monitor.modelMix')}>
+          <circle cx="80" cy="80" r="62" fill="none" stroke="var(--bg-tertiary)" strokeWidth="12" />
+          {arcs.map((arc, index) => {
+            const start = arcs.slice(0, index).reduce((sum, item) => sum + item.tokens, 0) / denominator * 100
+            const length = arc.tokens / denominator * 100
+            return length > 0 && <circle key={index} cx="80" cy="80" r="62" fill="none" stroke={arc.color} strokeWidth="12" pathLength="100"
+              strokeDasharray={`${Math.max(0, length - (length < 100 ? 0.8 : 0))} 100`} strokeDashoffset={-start} transform="rotate(-90 80 80)" />
+          })}
+        </svg>
+        <div><strong>{models.length}</strong><span>{t('monitor.models')}</span></div>
+      </div>
+      <p className="usage-caption">{t('monitor.filterHint')}</p>
+      {models.length === 0 ? <p className="usage-empty">{t('monitor.noModels')}</p> : <ul className="usage-model-list">
+        {visible.map((item, index) => <li key={item.model}><button aria-pressed={selectedModel === item.model} onClick={() => onSelectModel(selectedModel === item.model ? null : item.model)}
+          style={{ '--model-color': COLORS[index] || 'var(--text-dim)' } as CSSProperties} title={item.model}>
+          <span className="usage-model-name"><i /><code>{item.model}</code></span>
+          <span className="usage-model-value" title={item.tokens.toLocaleString(i18n.language)}>{compactUsage(item.tokens, i18n.language)}<small>{(item.tokens / denominator * 100).toFixed(1)}%</small></span>
+          <span className="usage-model-bar"><i style={{ width: `${item.tokens / denominator * 100}%` }} /></span>
+        </button></li>)}
+      </ul>}
+      {models.length > 5 && <button className="usage-text-button usage-expand" aria-expanded={expanded} onClick={() => setExpanded(value => !value)}>
+        {t(expanded ? 'dashboard.collapseTokenDetails' : 'dashboard.expandTokenDetails')}<ChevronDown size={14} />
+      </button>}
+      {totalTokens > attributed && <p className="usage-caption">{t('monitor.unattributed', { count: totalTokens - attributed })}</p>}
+    </section>
   )
 }

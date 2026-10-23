@@ -11,8 +11,10 @@ test('Ollama management page is connected through navigation, IPC, and preload',
   const page = readFileSync('src/renderer/src/pages/OllamaNodes.tsx', 'utf8')
   const monitor = readFileSync('src/renderer/src/components/ollama/OllamaLogMonitor.tsx', 'utf8')
 
-  assert.match(app, /path="\/ollama"/)
-  assert.match(sidebar, /href: '\/ollama'/)
+  assert.match(app, /path="\/connections"/)
+  assert.match(app, /path="ollama" element=\{<OllamaNodes/)
+  assert.match(app, /path="\/ollama" element=\{<LegacyRedirect to="\/connections\/ollama"/)
+  assert.match(sidebar, /href: '\/connections\/ollama'/)
   assert.match(channels, /OLLAMA_IMPORT_TEXT/)
   assert.match(channels, /OLLAMA_SET_MODEL_ENABLED/)
   assert.match(handlers, /OllamaNodeManager\.importText/)

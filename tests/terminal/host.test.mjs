@@ -108,7 +108,7 @@ test('split panes share a tab, keep their layout across a restart and close back
   await assert.rejects(first.create(shellInput(5, { beside: id(9), direction: 'row' })), /closed/)
   await first.create(shellInput(4, { beside: id(1), direction: 'column' }))
   await assert.rejects(first.create(shellInput(5, { beside: id(1), direction: 'row' })), /At most 4 panes/)
-  state = first.select(id(2))
+  state = await first.select(id(2))
   assert.equal(state.tabs[0].focused, id(2))
   assert.throws(() => first.saveLayout(id(1), { pane: id(1) }), /panes changed/)
   state = first.saveLayout(id(1), { ...state.tabs[0].layout, ratio: 0.99 })
@@ -127,3 +127,49 @@ test('split panes share a tab, keep their layout across a restart and close back
   assert.deepEqual([state.tabs, state.activeId], [[], ''], 'closing the last pane closes the tab')
 })
 const panesOfState = state => JSON.stringify(state.tabs[0].layout).match(/[0-9]{8}-1111-1111-1111-111111111111/g)
+
+test('six saved tabs start only on selection, share concurrent startups, and cannot start after close or exit', { skip: !windows && 'CMD terminals require Windows' }, async t => {
+  let host
+  const directory = await home(t, () => host?.shutdown())
+  const module = path.join(directory, 'fake-pty.cjs')
+  const spawnLog = path.join(directory, 'spawns.txt')
+  await writeFile(spawnLog, '')
+  await writeFile(module, fakePty.replace("  const data =", "  require('node:fs').appendFileSync(require('node:path').join(options.cwd, 'spawns.txt'), 'spawn\\n')\n  const data ="))
+  const sessions = Array.from({ length: 6 }, (_, index) => {
+    const item = shell(index + 1)
+    return { ...item, session: { ...item.session, directory }, resume: index !== 3 }
+  })
+  await writeFile(path.join(directory, 'sessions.json'), JSON.stringify({ version: 1, preferences: { restoreOnStartup: true, keepRunningOnExit: false }, activeId: id(1), sessions }))
+  host = new TerminalHost(directory, path.resolve('scripts/companion-pty-host.cjs'), module)
+  await host.initialize()
+  assert.ok(host.state().sessions.every(session => session.status === 'exited'))
+  await host.sync(context)
+  assert.deepEqual(host.state().sessions.filter(session => session.status === 'running').map(session => session.id), [id(1)])
+  assert.equal(host.state().tabs.length, 6, 'all tabs remain available without spawning all shells')
+  const selecting = Promise.all([host.select(id(2)), host.select(id(2)), host.select(id(2))])
+  host.resize(id(2), 120, 40)
+  await selecting
+  assert.equal(host.state().sessions.find(session => session.id === id(2)).status, 'running')
+  assert.equal(host.state().sessions.find(session => session.id === id(2)).cols, 120)
+  const deadline = Date.now() + 10000
+  while ((await readFile(spawnLog, 'utf8')).split('\n').filter(Boolean).length < 2) {
+    assert.ok(Date.now() < deadline, 'helpers must start')
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  await host.select(id(4))
+  assert.equal(host.state().sessions.find(session => session.id === id(4)).status, 'exited', 'a naturally exited shell stays exited')
+  const closing = host.select(id(5))
+  await host.close(id(5)); await closing
+  assert.ok(!host.state().sessions.some(session => session.id === id(5)), 'closing cancels a pending startup')
+  await host.close(id(1)); await host.close(id(2))
+  assert.equal(host.state().activeId, id(3))
+  assert.equal(host.state().sessions.find(session => session.id === id(3)).status, 'running', 'closing the active tab starts the newly visible tab')
+  const quitting = host.select(id(6))
+  await host.detach(); await quitting
+  assert.ok(host.state().sessions.every(session => session.status === 'exited'))
+  const saved = JSON.parse(await readFile(path.join(directory, 'sessions.json'), 'utf8'))
+  assert.deepEqual(saved.sessions.map(item => [item.session.id, item.resume]), [[id(3), true], [id(4), false], [id(6), true]], 'deferred tabs survive exit and can resume later')
+  // Tab 3 can be stopped before its helper reports startup; tabs 1 and 2 must each have spawned exactly once.
+  const spawns = (await readFile(spawnLog, 'utf8')).split('\n').filter(Boolean).length
+  assert.ok(spawns >= 2 && spawns <= 3, 'rapid selection and cancellation must not launch duplicate or closed shells: ' + spawns)
+})

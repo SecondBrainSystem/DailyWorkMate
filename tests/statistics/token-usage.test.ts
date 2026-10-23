@@ -50,6 +50,6 @@ test('Dashboard wires the compact token total and collapsible per-model details'
   const card = readFileSync('src/renderer/src/components/dashboard/TokenUsageCard.tsx', 'utf8')
   assert.match(dashboard, /<TokenUsageCard/)
   assert.match(card, /useState\(false\)/)
-  assert.match(card, /Object\.entries\(modelTokenUsage\)/)
+  assert.match(card, /onSelectModel/)
   assert.match(card, /aria-expanded=\{expanded\}/)
 })

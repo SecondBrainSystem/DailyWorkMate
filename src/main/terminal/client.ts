@@ -140,22 +140,18 @@ export class TerminalClient {
   }
   /** Push the current folders to the host, e.g. after authorization changes. */
   async synchronize(): Promise<TerminalState> { return await this.connect() ? this.cached! : this.refreshState(true) }
+  /** Folder edits must not start an otherwise unused terminal host. The first connect gets fresh context. */
+  async synchronizeIfConnected(): Promise<void> { if (this.info || this.connecting) await this.synchronize() }
   /** The Terminal panel's periodic refresh: state only, unless the context changed. */
   async refresh(): Promise<TerminalState> { return await this.connect() ? this.cached! : this.refreshState(false) }
   /**
-   * The host process costs ~60 MB, so startup connects only to restore saved tabs (or to rejoin a host
-   * that has not finished stopping). Otherwise it starts when the Terminal view first needs it.
+   * Rejoin an existing host at startup. Saved tabs are loaded when the Terminal view first opens;
+   * their presence must not launch shells (and user profiles) while the app is opening.
    */
   async neededAtStartup(): Promise<boolean> {
     try { this.info = await this.readInfo(); await this.request({ action: 'ping' }, 1500); return true }
     catch (error) { this.info = undefined; if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.info('[Terminal] No running host at startup:', message(error)) }
-    try {
-      const saved = JSON.parse(await readFile(path.join(this.options.home, 'sessions.json'), 'utf8'))
-      return saved?.preferences?.restoreOnStartup === true && Array.isArray(saved.sessions) && saved.sessions.length > 0
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.error('[Terminal] Unreadable saved terminals:', message(error))
-      return false
-    }
+    return false
   }
   /** Stop the host and its shells. A host that is already gone counts as stopped, so quitting never waits on it. */
   async detach() {

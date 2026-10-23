@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import { useTranslation } from 'react-i18next'
 import { useSearchParams } from 'react-router-dom'
 import { ArrowRight, Cpu, Database, Wrench } from 'lucide-react'
@@ -8,13 +8,14 @@ import { ModelList } from '@/components/models'
 import { ToolCallingPanel } from '@/components/models/ToolCallingPanel'
 import { ModelMappingConfig } from '@/components/proxy'
 import { useProxyStore } from '@/stores/proxyStore'
+import { useNavigationStore } from '@/stores/navigationStore'
 
 export function Models() {
   const { t } = useTranslation()
   const fetchAppConfig = useProxyStore(state => state.fetchAppConfig)
   const [searchParams, setSearchParams] = useSearchParams()
   const tabFromUrl = searchParams.get('tab')
-  const [activeTab, setActiveTab] = useState(tabFromUrl || 'list')
+  const activeTab = tabFromUrl && ['list', 'mapping', 'prompts'].includes(tabFromUrl) ? tabFromUrl : 'list'
   const hasLoadedRef = useRef(false)
 
   useEffect(() => {
@@ -23,15 +24,8 @@ export function Models() {
     fetchAppConfig()
   }, [fetchAppConfig])
 
-  useEffect(() => {
-    if (tabFromUrl && ['list', 'mapping', 'prompts'].includes(tabFromUrl)) {
-      setActiveTab(tabFromUrl)
-    }
-  }, [tabFromUrl])
-
   const handleTabChange = (value: string) => {
-    setActiveTab(value)
-    setSearchParams({ tab: value })
+    if (value !== activeTab) useNavigationStore.getState().setPendingNavigation(() => setSearchParams({ tab: value }))
   }
 
   return (
@@ -39,18 +33,18 @@ export function Models() {
       <PageHeader icon={Cpu} title={t('models.title')} description={t('models.description')} />
 
       <Tabs value={activeTab} onValueChange={handleTabChange} className="w-full">
-        <TabsList className="grid h-auto w-full grid-cols-3">
+        <TabsList className="flex h-auto w-full flex-wrap">
           <TabsTrigger value="list" className="flex items-center gap-2 py-2">
             <Database className="h-4 w-4" />
-            <span className="hidden sm:inline">{t('models.modelList')}</span>
+            <span>{t('models.modelList')}</span>
           </TabsTrigger>
           <TabsTrigger value="mapping" className="flex items-center gap-2 py-2">
             <ArrowRight className="h-4 w-4" />
-            <span className="hidden sm:inline">{t('models.modelMapping')}</span>
+            <span>{t('models.modelMapping')}</span>
           </TabsTrigger>
           <TabsTrigger value="prompts" className="flex items-center gap-2 py-2">
             <Wrench className="h-4 w-4" />
-            <span className="hidden sm:inline">{t('models.prompts')}</span>
+            <span>{t('models.prompts')}</span>
           </TabsTrigger>
         </TabsList>
 

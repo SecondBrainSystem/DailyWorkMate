@@ -12,6 +12,7 @@ import { isOllamaModelUsable } from '../../shared/ollamaAvailability'
 import { app, safeStorage, BrowserWindow } from 'electron'
 import { internalProxyKey } from '../proxy/internalAuth'
 import { localDateKey } from '../../shared/localDate'
+import { MIN_USAGE_HISTORY_DAYS, usageHistoryStart } from '../../shared/usageHistory'
 import { redactSecrets } from '../../shared/redaction'
 import { readFileSync, existsSync } from 'node:fs'
 import { homedir } from 'os'
@@ -256,6 +257,13 @@ export class StoreManager {
         defaults: this.getDefaultData(),
         encryptionKey: this.getEncryptionKey(),
       }))
+
+      // Legacy files cannot prove whether absent dates were idle or already pruned.
+      // Preserve every retained day, and record zero-usage coverage prospectively.
+      const statistics = this.store.get('statistics') || DEFAULT_STATISTICS
+      if (!usageHistoryStart(statistics.dailyStatsAvailableFrom)) {
+        this.store.set('statistics', { ...statistics, dailyStatsAvailableFrom: localDateKey() })
+      }
 
       await this.initializeAppLogManager(storagePath)
       await this.initializeRequestLogManager(storagePath)
@@ -1138,6 +1146,7 @@ export class StoreManager {
     return {
       ...DEFAULT_STATISTICS,
       ...stored,
+      dailyStatsAvailableFrom: usageHistoryStart(stored.dailyStatsAvailableFrom) || localDateKey(),
       modelUsage: { ...(stored.modelUsage || {}) },
       modelTokenUsage: { ...(stored.modelTokenUsage || {}) },
       providerUsage: { ...(stored.providerUsage || {}) },
@@ -1266,22 +1275,29 @@ export class StoreManager {
   }
 
   /**
-   * Clean Old Daily Statistics (older than 30 days)
+   * Clean daily aggregates while retaining both monitor comparison periods.
    */
   cleanOldDailyStats(): void {
     this.ensureInitialized()
     this.flushUsage()
     const stats = this.store!.get('statistics') || DEFAULT_STATISTICS
     const filtered = this.withoutExpiredDailyStats(stats)
-    if (Object.keys(filtered.dailyStats).length !== Object.keys(stats.dailyStats || {}).length) {
+    if (filtered.dailyStatsAvailableFrom !== stats.dailyStatsAvailableFrom || Object.keys(filtered.dailyStats).length !== Object.keys(stats.dailyStats || {}).length) {
       this.store!.set('statistics', filtered)
     }
   }
 
-  /** Daily statistics are kept for max(30 days, log retention). */
+  /** Aggregates outlive detailed logs; never claim coverage for days already pruned. */
   private withoutExpiredDailyStats(stats: PersistentStatistics): PersistentStatistics {
-    const cutoffDate = localDateKey(Date.now() - Math.max(30, this.storedConfig().logRetentionDays) * 24 * 60 * 60 * 1000)
-    return { ...stats, dailyStats: Object.fromEntries(Object.entries(stats.dailyStats || {}).filter(([date]) => date >= cutoffDate)) }
+    const cutoff = new Date()
+    cutoff.setDate(cutoff.getDate() - Math.max(MIN_USAGE_HISTORY_DAYS, this.storedConfig().logRetentionDays) + 1)
+    const cutoffDate = localDateKey(cutoff)
+    const availableFrom = usageHistoryStart(stats.dailyStatsAvailableFrom) || localDateKey()
+    return {
+      ...stats,
+      dailyStatsAvailableFrom: availableFrom > cutoffDate ? availableFrom : cutoffDate,
+      dailyStats: Object.fromEntries(Object.entries(stats.dailyStats || {}).filter(([date]) => date >= cutoffDate)),
+    }
   }
 
   // ==================== System Prompts Operations ====================
@@ -1822,6 +1838,7 @@ export class StoreManager {
     this.appLogManager?.clearLogs()
     this.appLogManager?.flushSync()
     this.store!.clear()
+    this.store!.set('statistics', { ...DEFAULT_STATISTICS, dailyStatsAvailableFrom: localDateKey() })
     this.resetConfig()
     this.requestLogManager?.clearRequestLogs()
     this.requestLogManager?.flushSync()

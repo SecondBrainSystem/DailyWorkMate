@@ -7,7 +7,6 @@ import {
   Settings,
   Key,
   Cpu,
-  Info,
   Network,
   Bot,
   Sparkles,
@@ -36,29 +35,41 @@ export const navGroups: NavGroup[] = [
   {
     labelKey: 'nav.groupMonitor',
     items: [
-      { titleKey: 'nav.dashboard', href: '/dashboard', icon: LayoutDashboard },
-      { titleKey: 'nav.logs', href: '/logs', icon: FileText },
+      { titleKey: 'nav.monitor', href: '/monitor', icon: LayoutDashboard },
     ],
   },
   {
     labelKey: 'nav.groupGateway',
     items: [
-      { titleKey: 'nav.providers', href: '/providers', icon: Server },
-      { titleKey: 'nav.models', href: '/models', icon: Cpu },
-      { titleKey: 'nav.ollama', href: '/ollama', icon: Network },
-      { titleKey: 'nav.proxy', href: '/proxy', icon: Settings2 },
-      { titleKey: 'nav.apiKeys', href: '/api-keys', icon: Key },
+      { titleKey: 'nav.connections', href: '/connections', icon: Network },
+      { titleKey: 'nav.apiService', href: '/api', icon: Settings2 },
     ],
   },
   {
     labelKey: 'nav.groupSystem',
     items: [
       { titleKey: 'nav.settings', href: '/settings', icon: Settings },
-      { titleKey: 'nav.about', href: '/about', icon: Info },
     ],
   },
 ]
 
 export function findNavGroup(pathname: string): NavGroup | undefined {
-  return navGroups.find(group => group.items.some(item => item.href === pathname))
+  return navGroups.find(group => group.items.some(item => item.href === pathname || (item.href !== '/' && pathname.startsWith(item.href + '/'))))
+}
+
+export const sectionNavigation: Record<'monitor' | 'connections' | 'api', NavItem[]> = {
+  monitor: [
+    { titleKey: 'nav.usage', href: '/monitor/usage', icon: LayoutDashboard },
+    { titleKey: 'logs.requestLogs', href: '/monitor/requests', icon: FileText },
+    { titleKey: 'logs.appLogs', href: '/monitor/events', icon: FileText },
+  ],
+  connections: [
+    { titleKey: 'nav.providers', href: '/connections/providers', icon: Server },
+    { titleKey: 'nav.ollama', href: '/connections/ollama', icon: Network },
+    { titleKey: 'nav.models', href: '/connections/models', icon: Cpu },
+  ],
+  api: [
+    { titleKey: 'nav.proxy', href: '/api/service', icon: Settings2 },
+    { titleKey: 'nav.apiKeys', href: '/api/keys', icon: Key },
+  ],
 }

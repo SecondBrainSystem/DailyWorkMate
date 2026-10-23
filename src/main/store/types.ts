@@ -449,6 +449,8 @@ export interface DailyStatistics {
  * Statistics that persist across app restarts
  */
 export interface PersistentStatistics {
+  /** Missing dates on or after this local date are known to have zero usage. Earlier gaps are unknown. */
+  dailyStatsAvailableFrom?: string
   /** Total requests (all time) */
   totalRequests: number
   /** Successful requests (all time) */

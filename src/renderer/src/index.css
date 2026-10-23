@@ -4,6 +4,14 @@
 @tailwind components;
 @tailwind utilities;
 
+.section-layout { display: flex; flex-direction: column; gap: 1.25rem; min-width: 0; }
+.section-navigation { display: flex; gap: 0.25rem; overflow-x: auto; padding: 0.25rem; border-bottom: 1px solid var(--glass-border); scrollbar-width: thin; }
+.section-navigation-link { display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem; flex-shrink: 0; padding: 0.6rem 0.9rem; border-radius: 8px; color: var(--text-muted); font-size: 0.8rem; transition: background 150ms, color 150ms; }
+.section-navigation-link svg { width: 1rem; height: 1rem; }
+.section-navigation-link:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+.section-navigation-link.is-active { color: var(--accent-primary); background: var(--accent-soft); box-shadow: inset 0 -2px var(--accent-primary); }
+.section-navigation-link:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
+
 /* App text is selectable, including headings, metadata and labels. xterm owns its own selection. */
 body { user-select: text; -webkit-user-select: text; }
 :where(h1, h2, h3, h4, p, label, dt, dd, th, td, pre, code, summary) { user-select: text; }
@@ -601,6 +609,11 @@ body {
   }
 }
 
+@media (min-width: 768px) and (max-width: 1100px) {
+  .app-sidebar:not(.is-collapsed) + .app-main .workspace-switch-tab span,
+  .app-sidebar:not(.is-collapsed) + .app-main .proxy-pill-label { display: none; }
+}
+
 .proxy-pill {
   display: flex;
   align-items: center;
@@ -676,6 +689,9 @@ body {
   .proxy-pill-label {
     display: none;
   }
+  .proxy-pill-state { display: none; }
+  .app-topbar { gap: 0.4rem; padding-inline: 0.6rem; }
+  .proxy-pill { flex-shrink: 0; padding-left: 0.6rem; }
 }
 
 .proxy-toggle-active .proxy-pill-label {

@@ -5,6 +5,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const http = require('node:http')
 const { buildSync } = require('esbuild')
+const labels = require('../src/renderer/src/i18n/locales/en-US.json')
 const root = path.resolve(__dirname, '..')
 const scratch = fs.mkdtempSync(path.join(root, 'tmp', 'companion-work-ui-'))
 const workspace = path.join(scratch, 'workspace')
@@ -12,9 +13,11 @@ fs.mkdirSync(path.join(workspace, 'docs'), { recursive: true })
 fs.writeFileSync(path.join(workspace, 'hello.txt'), 'NATIVE_UI_FILE_CONTENT')
 app.setPath('userData', path.join(scratch, 'profile'))
 app.disableHardwareAcceleration()
+// Finish asynchronous PTY cleanup and retain assertion failures when the hidden window closes.
+app.on('window-all-closed', () => {})
 buildSync({ stdin: { contents: "export { OpenCodeService } from './src/main/companion/opencode.ts'; export { OpenCodeTerminalService } from './src/main/companion/terminal.ts';", resolveDir: root }, outfile: path.join(scratch, 'service.cjs'), bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
 const { OpenCodeService, OpenCodeTerminalService } = require(path.join(scratch, 'service.cjs'))
-let window, terminal, agent, terminalOutput = '', closing = false
+let window, terminal, agent, terminalOutput = '', closing = false, completedAccessRefreshes = 0
 const calls = [], requests = [], errors = [], consoleMessages = []
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 const server = http.createServer(async (req, res) => {
@@ -74,7 +77,7 @@ app.whenReady().then(async () => {
   const storage = { home: scratch, get: () => js('window.electronAPI.companion.get()') }
   agent = new OpenCodeService(storage, () => ({ proxyHost: '127.0.0.1', proxyPort: server.address().port, enableApiKey: false, apiKeys: [] }), path.join(root, 'companion/runtime/opencode-v2/node_modules/@opencode/cli/bin/opencode.exe'))
   terminal = new OpenCodeTerminalService(agent, scratch)
-  const operations = { openTerminal: input => terminal.open(input), pollTerminal: (id, cursor) => { const state = terminal.poll(id, cursor); terminalOutput += state.data; return state }, writeTerminal: (id, data) => terminal.write(id, data), resizeTerminal: (id, cols, rows) => terminal.resize(id, cols, rows), closeTerminal: id => terminal.close(id), refreshAccess: () => terminal.refreshAccess() }
+  const operations = { openTerminal: input => terminal.open(input), pollTerminal: (id, cursor) => { const state = terminal.poll(id, cursor); terminalOutput += state.data; return state }, writeTerminal: (id, data) => terminal.write(id, data), resizeTerminal: (id, cols, rows) => terminal.resize(id, cols, rows), closeTerminal: id => terminal.close(id), refreshAccess: async () => { await terminal.refreshAccess(); completedAccessRefreshes++ } }
   for (const [name, operation] of Object.entries(operations)) ipcMain.handle('qa:' + name, (event, ...args) => {
     // Work tabs keep polling until the window goes away; ignore them during teardown.
     if (closing) return undefined
@@ -148,7 +151,7 @@ app.whenReady().then(async () => {
   // Another folder opens straight from Folder access, beside the first and on its own server.
   await click(openFolders)
   await click(`[...document.querySelectorAll('[data-authorized-folder="qa-folder-1"] button')].find(el => el.textContent.trim() === 'New session')`)
-  await wait(`!document.querySelector('[role="dialog"]') && document.querySelectorAll('.work-session-tab').length === 2 && ${visibleState} === 'Connected'`, 'second folder session connects')
+  await wait(`!document.querySelector('[role="dialog"][data-state="open"]') && document.querySelectorAll('.work-session-tab').length === 2 && ${visibleState} === 'Connected'`, 'second folder session connects')
   assert.equal(calls.filter(call => call.operation === 'openTerminal').at(-1).input[0].workspaceId, 'qa-folder-1')
   // A third session is narrowed to a subfolder, which turns commands off.
   await click(button('New session')); await wait(`!!document.querySelector('select[aria-label="Work folder"]')`, 'new session dialog')
@@ -167,23 +170,43 @@ app.whenReady().then(async () => {
   assert.equal(calls.filter(call => call.operation === 'openTerminal').length, openCount, 'switching tabs must not reconnect')
   assert.equal(await js(`[...document.querySelectorAll('.companion-terminal-state')].filter(el => el.textContent === 'Connected').length`), 3)
   await screenshot('work-three-sessions')
-  // Making Project editable reconnects only its two sessions, which resume their conversations.
+  // A permission change stops only affected sessions. Starting again is an explicit action.
   const before = await saved()
   const [projectSession, , docsSession] = before.open
   const otherTerminal = calls.filter(call => call.operation === 'openTerminal').filter(call => call.input[0].workspaceId === 'qa-folder-1').at(-1).input[0].terminalId
+  const refreshesBeforeChange = completedAccessRefreshes
   // Exercise the application confirmation, including its nested folder dialog.
   await click(openFolders)
   await select('select[aria-label="Project access"]', 'write')
   await click(button('Confirm'))
   await click(button('Close'))
-  const reconnectDeadline = Date.now() + 60000
-  while (calls.filter(call => call.operation === 'openTerminal').length < openCount + 2) { if (Date.now() > reconnectDeadline) throw new Error('Timed out: sessions reconnect after a permission change'); await sleep(100) }
+  await wait(`[...document.querySelectorAll('.companion-terminal-state')].filter(el => ['closed', 'error'].includes(el.dataset.phase)).length === 2`, 'affected sessions stop after a permission change')
+  // A stopped tab can render before asynchronous cleanup finishes for every affected tab.
+  const refreshDeadline = Date.now() + 40000
+  while (completedAccessRefreshes === refreshesBeforeChange) {
+    if (Date.now() > refreshDeadline) throw new Error('Timed out: folder permission refresh')
+    await sleep(100)
+  }
+  // Check the service itself as well: both affected tasks must have stopped under the old grant.
+  for (const call of calls.filter(call => call.operation === 'openTerminal' && call.input[0].workspaceId === 'qa-folder')) {
+    const state = terminal.poll(call.input[0].terminalId, 0)
+    assert.equal(state.running, false)
+    assert.equal(state.accessChanged, true)
+  }
+  assert.equal(calls.filter(call => call.operation === 'openTerminal').length, openCount, 'permission changes must not silently restart old tasks')
+  assert.equal(await js(`[...document.querySelectorAll('.companion-terminal-state')].filter(el => el.dataset.phase === 'running').length`), 1, 'the other folder stays connected')
+  for (const title of ['Project', 'docs']) {
+    await click(tab(title))
+    await click(`[...document.querySelectorAll('.companion-terminal:not([hidden]) button')].find(el => el.textContent.trim() === ${JSON.stringify(labels.terminal.work.startAgain)})`)
+    await wait(`${visibleState} === 'Connected'`, 'explicit restart of ' + title)
+  }
   await wait(`[...document.querySelectorAll('.companion-terminal-state')].filter(el => el.textContent === 'Connected').length === 3`, 'all sessions connected again')
   const reopened = calls.filter(call => call.operation === 'openTerminal').slice(openCount).map(call => call.input[0])
   assert.deepEqual(reopened.map(item => item.workspaceId), ['qa-folder', 'qa-folder'])
   assert.deepEqual(reopened.map(item => item.sessionId).sort(), [projectSession.sessionId, docsSession.sessionId].sort(), 'affected sessions keep their own native conversation')
   assert.ok(reopened.every(item => !item.newSession))
   assert.ok(!calls.some(call => call.operation === 'closeTerminal' && call.input[0] === otherTerminal), 'the other folder kept running')
+  await click(tab('Project'))
   assert.ok(await js(`/Project.*Can edit/.test(document.querySelector('.work-session-tab.is-active').textContent)`))
   // Closing a tab ends it; Recent sessions reopens the same conversation.
   await click(tab('docs')); await wait(`${visibleState} === 'Connected'`, 'docs session shown')
@@ -222,11 +245,20 @@ app.whenReady().then(async () => {
   assert.equal(agent.isBusy(), true, 'Work sessions stay connected while chatting')
   assert.equal(errors.length, 0, errors.join('\n'))
   assert.equal(consoleMessages.length, 0, consoleMessages.join('\n'))
-  fs.writeFileSync(path.join(scratch, 'report.json'), JSON.stringify({ passed: true, requests: requests.length, operations: calls.filter(call => !['writeTerminal', 'resizeTerminal'].includes(call.operation)), checks: ['speech switch', 'empty Work view', 'new session dialog', 'native Electron PTY', 'Unicode keyboard input', 'guarded read', 'session from Folder access', 'subfolder session', 'three servers side by side', 'targeted permission reconnect', 'close and reopen from Recent', 'Work stays connected in Chat', 'chat restore', 'desktop/mobile', 'light/dark'] }, null, 2))
-  console.log('PASS: real Electron PTY, folder-bound Work sessions side by side, permission changes reconnect only affected sessions, close/reopen from Recent, chat restore and light/dark responsive layouts')
+  fs.writeFileSync(path.join(scratch, 'report.json'), JSON.stringify({ passed: true, requests: requests.length, operations: calls.filter(call => !['writeTerminal', 'resizeTerminal'].includes(call.operation)), checks: ['speech switch', 'empty Work view', 'new session dialog', 'native Electron PTY', 'Unicode keyboard input', 'guarded read', 'session from Folder access', 'subfolder session', 'three servers side by side', 'permission changes stop affected sessions until explicit restart', 'close and reopen from Recent', 'Work stays connected in Chat', 'chat restore', 'desktop/mobile', 'light/dark'] }, null, 2))
+  console.log('PASS: real Electron PTY, folder-bound Work sessions side by side, permission changes stop only affected sessions until explicit restart, close/reopen from Recent, chat restore and light/dark responsive layouts')
 }).catch(async error => {
   console.error(error); process.exitCode = 1
-  if (window && !window.isDestroyed()) { fs.writeFileSync(path.join(scratch, 'failure.json'), JSON.stringify({ error: error.stack, text: await js('document.body.innerText'), calls, requests, errors, consoleMessages }, null, 2)); await screenshot('failure') }
+  if (window && !window.isDestroyed()) {
+    const terminalStates = calls.filter(call => call.operation === 'openTerminal').map(call => {
+      const input = call.input[0]
+      try { const { data, ...state } = terminal.poll(input.terminalId, 0); return { input, state } }
+      catch (failure) { return { input, error: failure.message } }
+    })
+    const terminalViews = await js(`[...document.querySelectorAll('.companion-terminal')].map(el => ({ hidden: el.hidden, state: el.querySelector('.companion-terminal-state')?.textContent, error: el.querySelector('.companion-terminal-error')?.textContent }))`)
+    fs.writeFileSync(path.join(scratch, 'failure.json'), JSON.stringify({ error: error.stack, terminalStates, terminalViews, text: await js('document.body.innerText'), calls, requests, errors, consoleMessages }, null, 2))
+    await screenshot('failure')
+  }
 }).finally(async () => {
   closing = true; window?.destroy(); await terminal?.close(); await agent?.dispose()
   server.closeAllConnections(); server.close()

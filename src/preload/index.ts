@@ -418,6 +418,7 @@ const requestLogsAPI = {
 }
 
 interface PersistentStatistics {
+  dailyStatsAvailableFrom?: string
   totalRequests: number
   successRequests: number
   failedRequests: number

@@ -4,6 +4,7 @@ import { mkdir, rm } from 'node:fs/promises'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
+import { localDateKey } from '../../src/shared/localDate.ts'
 
 const output = path.resolve('tmp/qa/usage-buffer.mjs')
 let module, disk, writes, store
@@ -89,6 +90,37 @@ test('client model names cannot grow statistics without bound', () => {
   const stats = module.storeManager.getStatistics()
   assert.equal(Object.keys(stats.modelUsage).length, 201)
   assert.equal(stats.modelUsage.other, 60)
+})
+
+test('aggregate cleanup retains two full 90-day periods regardless of log retention', () => {
+  const dateAgo = offset => { const date = new Date(); date.setDate(date.getDate() - offset); return localDateKey(date) }
+  const dailyStats = Object.fromEntries(Array.from({ length: 201 }, (_, offset) => [dateAgo(offset), { date: dateAgo(offset), totalTokens: 100 }]))
+  store.set('config', { ...module.DEFAULT_CONFIG, logRetentionDays: 1 })
+  store.set('statistics', { ...module.storeManager.getStatistics(), dailyStatsAvailableFrom: dateAgo(200), totalTokens: 20100, dailyStats })
+  module.storeManager.cleanOldDailyStats()
+  const stats = module.storeManager.getStatistics()
+  assert.equal(Object.keys(stats.dailyStats).length, 180)
+  assert.equal(stats.dailyStats[dateAgo(179)].totalTokens, 100)
+  assert.equal(stats.dailyStats[dateAgo(180)], undefined)
+  assert.equal(stats.dailyStatsAvailableFrom, dateAgo(179))
+  assert.equal(stats.totalTokens, 20100, 'cleanup must not rewrite lifetime totals')
+  assert.equal(disk.statistics.dailyStatsAvailableFrom, dateAgo(179))
+})
+
+test('legacy coverage is recorded once, preserved across flushes, and reset when history is cleared', () => {
+  const today = localDateKey()
+  const before = module.storeManager.getStatistics()
+  assert.equal(before.dailyStatsAvailableFrom, today)
+  module.storeManager.cleanOldDailyStats()
+  assert.equal(disk.statistics.dailyStatsAvailableFrom, today)
+  const older = new Date(); older.setDate(older.getDate() - 5)
+  store.set('statistics', { ...before, dailyStatsAvailableFrom: localDateKey(older) })
+  module.storeManager.recordTokenUsage('m', 15)
+  module.storeManager.flushUsage()
+  assert.equal(disk.statistics.dailyStatsAvailableFrom, localDateKey(older))
+  module.storeManager.clearAll()
+  assert.equal(module.storeManager.getStatistics().dailyStatsAvailableFrom, today)
+  assert.deepEqual(module.storeManager.getStatistics().dailyStats, {})
 })
 
 test('credentials are decrypted once per ciphertext and routing reads do not copy through each other', () => {

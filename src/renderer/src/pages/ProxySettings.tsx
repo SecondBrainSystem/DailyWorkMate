@@ -15,6 +15,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ModelFeatureConfig } from '@/components/proxy/ModelFeatureConfig'
 import { ProxyListeners } from '@/components/proxy/ProxyListeners'
+import { useNavigationStore } from '@/stores/navigationStore'
 
 const TABS = ['basic', 'loadbalance', 'session', 'advanced'] as const
 type ProxyTab = typeof TABS[number]
@@ -64,12 +65,12 @@ export function ProxySettings() {
     <div className="space-y-6">
       <PageHeader icon={Settings2} title={t('proxy.title')} description={t('proxy.description')} />
 
-      <Tabs value={activeTab} onValueChange={(value) => setSearchParams({ tab: value }, { replace: true })} className="w-full">
+      <Tabs value={activeTab} onValueChange={value => { if (value !== activeTab) useNavigationStore.getState().setPendingNavigation(() => setSearchParams({ tab: value })) }} className="w-full">
         <TabsList className="flex flex-wrap w-full gap-1 h-auto p-1">
           {tabs.map(({ value, icon: Icon, label }) => (
-            <TabsTrigger key={value} value={value} className="flex items-center gap-2 py-2 px-3 flex-1 min-w-0">
+            <TabsTrigger key={value} value={value} className="flex items-center gap-2 py-2 px-3 flex-auto min-w-0 max-w-full" title={label}>
               <Icon className="h-4 w-4 flex-shrink-0" />
-              <span className="hidden md:inline truncate">{label}</span>
+              <span className="truncate">{label}</span>
             </TabsTrigger>
           ))}
         </TabsList>

@@ -23,6 +23,8 @@ html{--terminal-bg:#16181d;--terminal-fg:#e4e4e7;--terminal-strong:#f4f4f5;--ter
 .is-speaking .companion-mouth{display:block;animation:companion-talk .22s ease-in-out infinite alternate}.is-speaking .companion-smile{display:none}
 .is-listening .companion-head{transform:rotate(-7deg);animation:none}.is-thinking .companion-head,.is-working .companion-head{animation:companion-think 2.5s ease-in-out infinite}
 .companion-custom-avatar{height:300px;max-width:100%;object-fit:contain;z-index:1;animation:companion-breathe 4s ease-in-out infinite}.is-speaking .companion-custom-avatar{filter:drop-shadow(0 0 18px color-mix(in srgb,var(--companion-glow) 45%,transparent))}
+/* An idle companion should not keep repainting the whole window, especially with software compositing. */
+.companion-avatar.is-idle :is(.companion-custom-avatar,.companion-orbit,.companion-spark,.companion-body,.companion-head,.companion-eyes){animation-play-state:paused}
 .companion-avatar-shadow{position:absolute;width:130px;height:15px;bottom:0;border-radius:50%;background:#0f394128;filter:blur(7px)}
 .companion-orbit{position:absolute;border:1px solid color-mix(in srgb,var(--companion-accent) 16%,transparent);width:265px;height:265px;border-radius:50%;top:30px}.orbit-two{width:310px;height:310px;top:7px;border-style:dashed;animation:companion-orbit 60s linear infinite}
 .is-listening .orbit-one{transform:scale(calc(1 + var(--voice-level)*.2));background:var(--companion-accent-faint)}.companion-spark{position:absolute;color:var(--companion-glow);font-size:26px;animation:companion-breathe 4s ease-in-out infinite}.spark-one{top:44px;right:14px}.spark-two{top:208px;left:12px;font-size:18px}

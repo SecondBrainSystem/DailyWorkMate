@@ -48,7 +48,7 @@ if (process.platform === 'darwin' && process.arch === 'arm64') {
   app.commandLine.appendSwitch('disable-gpu-sandbox')
 }
 
-// Software compositing saves ~120–150 MB of GPU-process memory; Settings can turn GPU compositing back on.
+// Use Chromium's accelerated compositor by default; Settings retains a driver-compatibility fallback.
 if (!readStartupOptions().gpuCompositing) app.commandLine.appendSwitch('disable-gpu-compositing')
 
 // Automatically add --no-sandbox flag when running as root user

@@ -2,25 +2,19 @@ import { useShallow } from 'zustand/react/shallow'
 import { Card, CardContent, CardHeading } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Label } from '@/components/ui/label'
-import { Switch } from '@/components/ui/switch'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { SettingList, SettingRow } from '@/components/ui/setting-row'
 import { useSettingsStore } from '@/stores/settingsStore'
-import { PanelLeft, Type } from 'lucide-react'
+import { Type } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import { DEFAULT_TYPOGRAPHY, type TypographySettings } from '../../../../shared/typography'
 
 /** Theme and language are switched from the top bar; this tab holds the remaining display preferences. */
 export function AppearanceSettings() {
   const { t } = useTranslation()
-  const { theme, setTheme, language, setLanguage, sidebarCollapsed, setSidebarCollapsed, uiTypography, updateConfig, isSaving } = useSettingsStore(useShallow(state => ({ theme: state.theme, setTheme: state.setTheme, language: state.language, setLanguage: state.setLanguage, sidebarCollapsed: state.sidebarCollapsed, setSidebarCollapsed: state.setSidebarCollapsed, uiTypography: state.uiTypography, updateConfig: state.updateConfig, isSaving: state.isSaving })))
+  const { uiTypography, updateConfig, isSaving } = useSettingsStore(useShallow(state => ({ uiTypography: state.uiTypography, updateConfig: state.updateConfig, isSaving: state.isSaving })))
 
   return (
 <div className="space-y-6">
-      <Card><CardHeading icon={Type} title={t('settings.appearance')} /><CardContent className="grid gap-4 sm:grid-cols-2">
-        <label className="space-y-2">{t('settings.theme')}<Select value={theme} onValueChange={value => setTheme(value as 'light' | 'dark' | 'system')}><SelectTrigger aria-label={t('settings.theme')}><SelectValue /></SelectTrigger><SelectContent>{['light', 'dark', 'system'].map(value => <SelectItem key={value} value={value}>{t('theme.' + value)}</SelectItem>)}</SelectContent></Select></label>
-        <label className="space-y-2">{t('settings.language')}<Select value={language} onValueChange={value => setLanguage(value as 'zh-CN' | 'en-US')}><SelectTrigger aria-label={t('settings.language')}><SelectValue /></SelectTrigger><SelectContent><SelectItem value="zh-CN">中文</SelectItem><SelectItem value="en-US">English</SelectItem></SelectContent></Select></label>
-      </CardContent></Card>
       <Card>
         <CardHeading icon={Type} title={t('settings.typography')} description={t('settings.typographyDescription')} />
         <CardContent className="space-y-5">
@@ -49,20 +43,6 @@ export function AppearanceSettings() {
         </CardContent>
       </Card>
 
-      <Card>
-        <CardHeading icon={PanelLeft} title={t('settings.sidebar')} />
-        <CardContent>
-          <SettingList>
-            <SettingRow label={t('settings.sidebarCollapsed')} htmlFor="sidebar-collapsed" description={t('settings.sidebarCollapsedHelp')}>
-              <Switch
-                id="sidebar-collapsed"
-                checked={sidebarCollapsed}
-                onCheckedChange={setSidebarCollapsed}
-              />
-            </SettingRow>
-          </SettingList>
-        </CardContent>
-      </Card>
     </div>
   )
 }

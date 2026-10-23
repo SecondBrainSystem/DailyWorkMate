@@ -5,6 +5,7 @@ import { TrayView } from '@/components/Tray/TrayView'
 import { Toaster } from '@/components/ui/toaster'
 import { Skeleton } from '@/components/ui/skeleton'
 import { ConfirmationProvider } from '@/components/ui/confirmation-provider'
+import { SectionLayout, LegacyRedirect } from '@/components/layout/SectionLayout'
 
 const Dashboard = lazy(() => import('@/pages/Dashboard').then(m => ({ default: m.Dashboard })))
 const Providers = lazy(() => import('@/pages/Providers').then(m => ({ default: m.Providers })))
@@ -13,7 +14,6 @@ const Models = lazy(() => import('@/pages/Models').then(m => ({ default: m.Model
 const ApiKeys = lazy(() => import('@/pages/ApiKeys'))
 const Logs = lazy(() => import('@/pages/Logs'))
 const Settings = lazy(() => import('@/pages/Settings').then(m => ({ default: m.Settings })))
-const About = lazy(() => import('@/pages/About').then(m => ({ default: m.About })))
 const OllamaNodes = lazy(() => import('@/pages/OllamaNodes').then(m => ({ default: m.OllamaNodes })))
 const Chat = lazy(() => import('@/pages/Chat').then(m => ({ default: m.Chat })))
 
@@ -37,17 +37,34 @@ function App() {
         <Route path="/tray" element={<TrayView />} />
         <Route element={<MainLayout />}>
           <Route path="/" element={null} />
-          <Route path="/dashboard" element={<Suspense fallback={<PageLoader />}><Dashboard /></Suspense>} />
-          <Route path="/providers" element={<Suspense fallback={<PageLoader />}><Providers /></Suspense>} />
-          <Route path="/ollama" element={<Suspense fallback={<PageLoader />}><OllamaNodes /></Suspense>} />
           <Route path="/chat" element={<Suspense fallback={<PageLoader />}><Chat /></Suspense>} />
-          <Route path="/proxy" element={<Suspense fallback={<PageLoader />}><ProxySettings /></Suspense>} />
-          <Route path="/models" element={<Suspense fallback={<PageLoader />}><Models /></Suspense>} />
-          <Route path="/api-keys" element={<Suspense fallback={<PageLoader />}><ApiKeys /></Suspense>} />
-          <Route path="/logs" element={<Suspense fallback={<PageLoader />}><Logs /></Suspense>} />
-          <Route path="/session" element={<Navigate to="/proxy?tab=session" replace />} />
+          <Route path="/monitor" element={<SectionLayout section="monitor" />}>
+            <Route index element={<Navigate to="usage" replace />} />
+            <Route path="usage" element={<Dashboard />} />
+            <Route path="requests" element={<Logs kind="request" />} />
+            <Route path="events" element={<Logs kind="app" />} />
+          </Route>
+          <Route path="/connections" element={<SectionLayout section="connections" />}>
+            <Route index element={<Navigate to="providers" replace />} />
+            <Route path="providers" element={<Providers />} />
+            <Route path="ollama" element={<OllamaNodes />} />
+            <Route path="models" element={<Models />} />
+          </Route>
+          <Route path="/api" element={<SectionLayout section="api" />}>
+            <Route index element={<Navigate to="service" replace />} />
+            <Route path="service" element={<ProxySettings />} />
+            <Route path="keys" element={<ApiKeys />} />
+          </Route>
+          <Route path="/dashboard" element={<LegacyRedirect to="/monitor/usage" />} />
+          <Route path="/providers" element={<LegacyRedirect to="/connections/providers" />} />
+          <Route path="/ollama" element={<LegacyRedirect to="/connections/ollama" />} />
+          <Route path="/models" element={<LegacyRedirect to="/connections/models" />} />
+          <Route path="/proxy" element={<LegacyRedirect to="/api/service" />} />
+          <Route path="/api-keys" element={<LegacyRedirect to="/api/keys" />} />
+          <Route path="/logs" element={<LegacyRedirect to="/monitor/requests" logs />} />
+          <Route path="/session" element={<LegacyRedirect to="/api/service?tab=session" />} />
           <Route path="/settings" element={<Suspense fallback={<PageLoader />}><Settings /></Suspense>} />
-          <Route path="/about" element={<Suspense fallback={<PageLoader />}><About /></Suspense>} />
+          <Route path="/about" element={<LegacyRedirect to="/settings?tab=about" />} />
         </Route>
       </Routes>
       <Toaster />

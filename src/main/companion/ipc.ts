@@ -175,11 +175,11 @@ export function registerCompanionHandlers(window: BrowserWindow) {
     resetAvatarModel: async () => { await storage.resetAvatarModel(); return snapshot() },
     addWorkspace: async () => {
       const result = await withWindowInputFocus(window, () => dialog.showOpenDialog(window, { properties: ['openDirectory'] }))
-      if (!result.canceled && result.filePaths[0]) { await storage.addWorkspace(result.filePaths[0]); await refreshAccess(); await manager.synchronize() }
+      if (!result.canceled && result.filePaths[0]) { await storage.addWorkspace(result.filePaths[0]); await refreshAccess(); await manager.synchronizeIfConnected() }
       return snapshot(false)
     },
     inspectFolders: paths => storage.inspectFolders(paths),
-    importWorkspaces: async input => { await storage.importWorkspaces(input); await refreshAccess(); await manager.synchronize(); return snapshot(false) },
+    importWorkspaces: async input => { await storage.importWorkspaces(input); await refreshAccess(); await manager.synchronizeIfConnected(); return snapshot(false) },
     openWorkspace: async (id, relativePath = '') => openLocalDirectory(await resolveWorkspacePath(await storage.grant(id), relativePath), directory => shell.openPath(directory)),
     openTerminalDirectory: async id => {
       const checked = terminalId(id)
@@ -189,9 +189,9 @@ export function registerCompanionHandlers(window: BrowserWindow) {
       await openLocalDirectory(session.directory, directory => shell.openPath(directory))
     },
     // Only Work tabs whose folder permissions changed reconnect; the rest keep running.
-    updateWorkspace: async (id: string, writable: boolean | null) => { await storage.updateWorkspace(id, writable); await refreshAccess(); await manager.synchronize(); return snapshot(false) },
-    saveWorkspaceGroup: async input => { await storage.saveWorkspaceGroup(input); await refreshAccess(); await manager.synchronize(); return snapshot(false) },
-    deleteWorkspaceGroup: async id => { await storage.deleteWorkspaceGroup(id); await refreshAccess(); await manager.synchronize(); return snapshot(false) },
+    updateWorkspace: async (id: string, writable: boolean | null) => { await storage.updateWorkspace(id, writable); await refreshAccess(); await manager.synchronizeIfConnected(); return snapshot(false) },
+    saveWorkspaceGroup: async input => { await storage.saveWorkspaceGroup(input); await refreshAccess(); await manager.synchronizeIfConnected(); return snapshot(false) },
+    deleteWorkspaceGroup: async id => { await storage.deleteWorkspaceGroup(id); await refreshAccess(); await manager.synchronizeIfConnected(); return snapshot(false) },
     listFiles: async (id: string, relativePath: string) => listWorkspaceFiles(await storage.grant(id), relativePath),
     readFile: async (id: string, relativePath: string) => readWorkspaceFile(await storage.grant(id), relativePath),
     readTodo: async (id, relativePath) => readTodo(await storage.grant(id), relativePath),
