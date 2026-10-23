@@ -1,134 +1,121 @@
 <p align="center"><img src="build/icon.png" width="112" alt="DailyWorkMate octopus and DWM logo"></p>
 
 <h1 align="center">DailyWorkMate</h1>
-<p align="center">An AI assistant, your workspaces, and a terminal — together on your desktop.</p>
-<p align="center"><a href="README_CN.md">简体中文</a> · English · <a href="https://github.com/SecondBrainSystem/DailyWorkMate">GitHub</a> · <a href="LICENSE">GPL-3.0</a></p>
+<p align="center">Your AI assistant, workspaces, terminals and model connections in one desktop app.</p>
+<p align="center"><a href="README_CN.md">简体中文</a> · English · <a href="docs/installation.md">Installation guide</a> · <a href="LICENSE">GPL-3.0</a></p>
 
-DailyWorkMate is a desktop companion for everyday work. Talk through a plan, let an AI agent work with folders you authorize, and keep your terminal sessions close at hand. Connect your AI providers or Ollama models and choose the model and working mode for each task.
+DailyWorkMate connects daily planning with actual work. Discuss a task, organize your todos, let an agent work in authorized folders, run commands in a terminal, and manage models and usage from the same window. Connect your API providers, Ollama nodes, or the free model gateways offered by OpenCode and Kilo.
 
-## Highlights
+## At a glance
 
-- **Free models, self-hosted or hosted:** use a local or LAN Ollama node, OpenCode's official free models, or Kilo's account-free model pool. Hosted catalogs and limits are controlled upstream and may change.
-- **Pick up where you left off:** terminal tabs, split panes, shell types and working directories are saved automatically and restored the next time you start the app — no need to reopen terminals and `cd` back after a reboot.
-- **Workspace history:** authorized folders, folder groups and recent Work sessions are kept, so you can reopen a session and continue.
-- **AI that works in your folders:** run OpenCode or Claude Code against folders you authorize, with model, engine and access scope always visible.
-- **One window:** chat and planning, workspace agents and a real terminal in a single desktop app, plus a local OpenAI-compatible proxy for other clients.
+The sidebar groups related features into six destinations, with their settings organized inside each section.
 
-## Assistant
+| Destination | What you can do |
+| --- | --- |
+| **Assistant** | Chat, plan, manage Daily Todo, configure voice and character; switch to Work or Terminal. |
+| **AI Chat** | Use a separate chat interface with task prompts, translation targets, attachments and conversation history. |
+| **Usage monitor** | Explore token usage, trends and model distribution; inspect request and application logs. |
+| **Model connections** | Manage providers and accounts, Ollama nodes, model lists and mappings. |
+| **API service** | Configure listeners, local API keys, load balancing, sessions, context and advanced options. |
+| **Settings** | Adjust theme, language, fonts and display preferences, and view application information. |
+
+## Assistant and Daily Todo
 
 ![Assistant with a sample daily plan](docs/screenshots/assistant.png)
 
-- **Chat and plan:** streaming replies, conversation history, model selection, and an editable assistant name and persona. The default name is **DailyWorkMate**; use the pencil beside it or **Character & voice → Assistant name** to save your own.
-- **Daily Todo note:** mentioning DailyTodo, Daily or Todo in chat, or finding a related folder/document in an authorized workspace, reveals a paper-style note below a smaller avatar. Markdown renders headings, nested checklists, tables, quotes and code. Personal notes and writable workspace files support adding tasks, editing task titles, deleting tasks with confirmation, and switching between To do, Doing and Done. Edits preserve task details and subtasks; deleting a task also removes its details and subtasks. External file changes are detected before saving. **Copy latest** creates a complete copy of the latest version in the same folder and name series; **Copy unfinished**, beside it, keeps To do and Doing tasks and promotes unfinished subtasks of completed parents. Both use today's `YYYY-MM-DD` filename, add a number if needed, and open the new copy without changing the original. If the latest note has no unfinished tasks, no new file is created. Read-only folders remain read only; personal notes are saved locally.
-- **Copy content:** messages and notes have copy buttons. Select text in messages, headings or interface descriptions and copy it with the keyboard or the context menu.
-- **From conversation to action:** chat-only mode can hand file tasks to a workspace agent when a workspace is connected and the model supports the handoff tool.
-- **Voice:** microphone input, optional spoken replies, full or summarized reading, and voice settings. Local recognition and synthesis require the optional speech resources; system voices and compatible speech APIs are also supported.
-- **Your companion:** the included octopus, a custom image, or a supported GLB/GLTF avatar with a 3D viewer.
+- **Chat and plan:** streaming replies, conversation history and model selection, with an editable assistant name and persona.
+- **Todo notes:** a paper-style Markdown note can appear when you mention DailyTodo, Daily or Todo, or when a related document is found in an authorized workspace. Notes support headings, nested checklists, tables, quotes and code.
+- **Manage tasks directly:** add, edit and delete tasks with confirmation; switch between To do, Doing and Done. Edits preserve task details and subtasks, and saving checks for external file changes. Personal notes stay local; workspace notes follow folder permissions.
+- **Carry plans forward:** **Copy latest** duplicates the complete note. **Copy unfinished** carries over open tasks and unfinished subtasks. Copies use today's date and leave the original intact.
+- **Voice and character:** microphone input, an optional spoken-reply switch, full or summarized reading, system voices, optional local speech and compatible speech APIs. Choose the included octopus, a custom image or a supported GLB/GLTF avatar.
+- **Move from discussion to action:** with a workspace connected and a tool-capable model, hand file tasks to a workspace agent.
 
-## Workspaces
+## Workspaces: agents working in authorized folders
 
-![Authorized folders and read/edit permissions](docs/screenshots/workspaces.png)
+![Authorized folders, groups and read/edit permissions](docs/screenshots/workspaces.png)
 
-Drag one or more local folders from your file manager into Work (or use **Add folder**). In the confirmation panel, choose an existing group or create one, and set **read only** or **can edit** access. Each Work tab is a separate agent session bound to a folder or group, with its model, engine and scope visible. Recent sessions can be reopened.
+Drop folders into the app or choose **Add folder**, then grant read-only or editable access. Group related directories together, or narrow a task to a subfolder.
 
-| Feature | Purpose |
-| --- | --- |
-| Open folder | Use the folder icon on the Work tab bar or beside an authorized folder to open its directory in your system file manager. |
-| File browser | Browse authorized text files and attach their contents to a conversation. |
-| Folder groups | Work across related folders, or narrow a task to one subfolder. |
-| OpenCode | Use a native OpenCode v2 session inside the app; install the optional runtime with the setup script. |
-| Claude Code | Use a locally installed Claude Code CLI through the configured model proxy. |
-| Task visibility | Follow responses, tools, errors and permission requests; stop tasks or change models. |
-| Focus mode | Select **Focus mode** in the upper right to make Work fullscreen while keeping session tabs. Select **Exit focus** or press F11 to return; Esc also exits when the focus is outside a terminal. |
-| One control row | Tabs, model picker, tips (**?**) and terminal options share a single row above the sessions; tips and options open as small panels instead of taking rows. The double-chevron button at the end of the row also folds the page title away in Work and Terminal (remembered; Chat always shows it). |
+- **Native agent sessions:** use OpenCode or a locally installed Claude Code CLI. Each Work tab has its own folder or group, with its model, engine and access scope visible.
+- **Parallel tasks:** keep several Work sessions open while switching to chat or other pages.
+- **Files and task progress:** browse authorized text files, attach their contents, follow responses, tools, errors and permission requests, and stop tasks when needed.
+- **History and recovery:** reopen conversations from Recent sessions. If a display disconnects, reattach to its still-running service. Once the service stops, an explicit restart can restore conversation history; it does not automatically resume the old process.
+- **Permission changes:** affected tasks stop until explicitly started again with new permissions; unrelated folder sessions keep running.
+- **Focus mode:** work fullscreen with session tabs and controls available. Fold away the title and keep model selection, tips and terminal options in one row.
 
-Shell commands run with your operating-system account's permissions. Folder rules constrain agent tools; they are not an OS sandbox. Read-only and subfolder scopes disable commands where the engine cannot enforce a narrower boundary.
+Folder rules constrain agent tools. Shell commands run with your operating-system account's permissions; modes that cannot reliably constrain commands to a narrower scope disable them.
 
-## Terminal
+## Terminal: keep your working layout close at hand
 
 ![PowerShell and CMD terminal tabs](docs/screenshots/terminal.png)
 
-The **Terminal** tab is a real PTY terminal with xterm.js. On Windows it supports **PowerShell, CMD and installed WSL distributions**. Choosing OpenCode opens a folder-bound Work session.
+The terminal uses a real PTY. On Windows, it supports **PowerShell, CMD and installed WSL distributions**.
 
-Copy terminal selections with **Ctrl+C / ⌘C, Ctrl+Shift+C or right-click**. Without a selection, Ctrl+C still interrupts the command. Hold **Shift while dragging** to select text when a program captures the mouse. Work terminals use the same shortcuts.
+- **Tabs and split panes:** use up to four independent shells per tab and drag dividers to resize them.
+- **Restore directories and layouts:** save unclosed tabs, panes, shell types and working directories. Restarting the app starts fresh shells as needed; switching pages while the app runs keeps existing processes alive.
+- **Visible activity:** running tasks show an animated indicator, completed tasks show a check, and idle terminals show a quiet ring. Work and Terminal indicators remain visible from chat.
+- **Directory shortcuts:** drop a folder to open a terminal there. The footer follows `cd` changes and opens the current directory in your file manager.
+- **Output controls:** selection copying, adjustable scrollback, display redraw and fullscreen focus mode.
+- **Controlled shutdown:** quitting waits for ordinary terminal and work processes to stop. Detected psmux sessions can be closed or retained, or quitting can be cancelled. Minimizing to the tray keeps the app running.
 
-- Keep multiple terminal tabs open and switch views without restarting their processes. Each tab shows what its terminal is doing: a pulsing dot while a command runs or an agent such as Claude Code, Codex or OpenCode works on a turn, a green check once it has finished (until you type in that terminal), and a quiet ring when idle. Simply having Claude Code, Codex or OpenCode open, or a command that finishes within two seconds, does not light up; only an actual turn or a longer command does. The Work and Terminal tabs above show the same marks, so you can see a finished run from the chat view.
-- Split a tab into up to four panes to run a script in one while working in another: **Split right** (Alt+Shift+=) or **Split down** (Alt+Shift+-). Alt+Arrow moves between panes. Drag a divider, or focus it and use the arrow keys, to resize. Each pane is its own shell, starts in the focused pane's folder, and has its own close button. Narrow windows stack side-by-side panes vertically.
-- Select **Focus mode** in the upper right (or press F11) for a fullscreen terminal. **Exit focus** or F11 restores the layout while the same processes and sessions continue running. Inside a terminal, Esc goes to the shell or TUI (for example Claude Code or vim) instead of leaving fullscreen. Switch between Work and Terminal in fullscreen; returning to Chat exits focus mode.
-- Drop a folder to choose **Open a terminal here** or **Add to authorized workspaces**.
-- Click the folder icon or path in the footer to open the current directory; it follows `cd` changes. Use normal shell history, copy output, and resize the terminal.
-- Scroll back with the mouse wheel. Programs such as Claude Code, Codex or vim may take over the mouse; hold Shift while scrolling to view the terminal's own history instead. **Terminal options → History lines** keeps 10,000 lines by default (1,000–50,000).
-- If a long-running program's display drifts (for example its input box is no longer visible while typing still works), select **Redraw** in the pane's status bar to repaint it.
-- Restore unclosed tabs and directories at startup, with a clean screen for each new shell.
-- Quitting waits for ordinary terminals and work processes to stop. If psmux sessions are detected, choose to close them, retain them, or cancel quitting. Minimizing to the tray keeps the app open.
-
-Screenshots show the real application with fictional demonstration data. The terminal capture uses a real local PowerShell process. No personal accounts or conversations are included.
-
-## Models and integrations
-
-DailyWorkMate includes provider/account management, official API-key presets, Ollama nodes, model mappings, request logs and a local OpenAI-compatible proxy. The separate AI Chat page supports task prompts and translation target languages. Its model selector also lists official free models labeled **OpenCode v2**, using the installed native runtime without importing subscription accounts. This connection currently supports text and text attachments; OpenCode free models using Chat Completions are also available through the local proxy. OpenCode's free-model catalog is provided dynamically; availability and quotas may change. Refresh an expired catalog and wait before retrying a rate limit. In the desktop companion, catalog status, free-model guidance and folder-drop help open from the **?** button in the control row.
-
-Both chat pages also have a **Kilo free models** group, populated from Kilo's current `isFree` catalog without an account or API key. Refresh rechecks free eligibility; expired or failed catalogs block Kilo calls while configured models remain available. AI Chat calls Kilo through main-process inference; workspace engines use the private compatibility bridge, with tool support required. Upstream providers may log prompts and use them to improve services; avoid sensitive content. Both free sources are exposed at `http://127.0.0.1:11434/v1`, with `opencode-free/` and `kilo-free/` IDs in `/v1/models`. Ollama `/api/tags`, `/api/show`, `/api/chat` and Anthropic `/v1/messages` compatibility are also supported. Clients use the local proxy key; the free upstreams need no personal key. See [free model connections](docs/free-models.md).
-
-In **Ollama Nodes → Global Model Routing**, refresh the free catalog, choose an **OpenCode Free** or **Kilo Free** model, and enable **Force selected model** to route API requests to it. Free targets require no Ollama node or account. Desktop chats retain their explicit model selection. An unavailable saved target stays selected and reports an error instead of silently switching models.
-
-Select a free model directly, or configure a provider or Ollama node first. Image, reasoning and tool support depend on the selected provider/model. Speech endpoints are separate from chat endpoints.
-
-See the [provider reference](docs/providers/README.md) for built-in model defaults and provider-specific limitations.
-
-## Run on Windows
-
-**Prefer the folder distribution for everyday use.** Keep the entire folder and run `DailyWorkMate.exe`; its DLLs and `resources/` must stay alongside it. Unlike a single-file portable EXE, this starts without unpacking the application on every launch.
-
-Build from source:
-
-```powershell
-git clone https://github.com/SecondBrainSystem/DailyWorkMate.git
-cd DailyWorkMate
-npm ci
-npm run build:folder
-```
-
-Output: `dist/DailyWorkMate-folder/win-unpacked/DailyWorkMate.exe`. Optional runtimes are bundled only when set up for the target platform before packaging.
-
-## Development
-
-Requires **Node.js 22.18+**, npm and Git. Native dependencies may require platform build tools if compatible prebuilt binaries are unavailable.
-
-```bash
-npm ci
-npm run dev:win       # Windows
-npm run dev           # macOS / Linux
-npm run typecheck
-npm test
-npm run build
-```
-
-| Command | Purpose |
+| Action | Shortcut |
 | --- | --- |
-| `npm run build:folder` | Windows x64 folder distribution, without per-launch extraction. |
-| `npm run build:win` | Windows installer and self-extracting portable EXE. |
-| `npm run build:mac` / `npm run build:linux` | Other platform packages. |
-| `npm run companion:setup` | Download the supported OpenCode runtime. |
-| `npm run companion:speech:setup` | Install optional [local speech resources](docs/speech.md). |
-| `npm run icons` | Generate PNG/ICO assets from the [editable SVG](build/brand.svg). |
+| Copy a terminal selection | Ctrl+C / ⌘C, Ctrl+Shift+C or right-click. Without a selection, Ctrl+C interrupts the command. |
+| Select or scroll when a program captures the mouse | Hold Shift while dragging or scrolling. |
+| Split right / down | Alt+Shift+= / Alt+Shift+-. |
+| Switch panes | Alt+Arrow. |
+| Enter / leave focus mode | F11. Esc inside a terminal continues to reach the running program. |
 
-Windows is the currently exercised desktop target. macOS/Linux build configurations exist, but shell choices and bundled runtimes depend on the platform; Windows feature validation does not imply validation elsewhere.
+## Usage monitor: trends, model distribution and request performance
 
-## Data and upgrades
+![Token usage monitor with fictional demonstration data](docs/screenshots/monitor.png)
 
-- Configuration and accounts: `~/.dailyworkmate/`.
-- UI preferences and conversation databases: Electron's `dailyworkmate` user-data directory.
-- Folder-distribution companion data: `companion/` next to the EXE. Installer builds use user data; development uses the project's `companion/` directory.
-- Set `DAILYWORKMATE_COMPANION_HOME` to reuse an existing companion directory, such as the `companion` folder beside a previous portable EXE.
-- Upgrades import old settings and history while preserving the originals. Legacy encryption identifiers and environment aliases remain for compatibility.
+- **7, 30 and 90-day views:** inspect recorded tokens, requests, failures, success rate and average completion time.
+- **Usage trends:** switch between tokens and requests, inspect dates with the pointer or keyboard, and select a model to filter the chart. Summary cards continue to show all models.
+- **Model distribution:** compare token and request counts, with an expandable model list.
+- **13-week activity heatmap:** explore active dates, daily usage and the period's peak.
+- **History coverage:** retain at least 180 days of usage history. Data removed by earlier versions is marked unavailable; incomplete history disables period comparisons instead of treating missing days as zero.
+- **Linked logs:** open a recent request's details and switch between request and application logs. The visible monitor refreshes every ten seconds and supports manual refresh.
 
-Downloaded runtimes, models, personal data and internal planning records are excluded from Git. Requests go to the providers you select; a desktop client does not make a remote model local.
+The monitor covers usage recorded by this app. Some native direct connections, internal summaries and upstream responses without token data are not fully included. Provider balances and bills remain authoritative for quotas and charges.
 
-## Source layout
+## Model connections and global routing
 
-`src/main/` contains Electron services, agents, terminals and the proxy; `src/preload/` exposes IPC; `src/renderer/` holds the React interface; `src/shared/` defines shared contracts. `scripts/` contains builds and checks, `tests/` holds regression coverage, and `build/` contains branding assets.
+| Source | Features |
+| --- | --- |
+| **Providers and APIs** | Built-in channels, API-key presets, custom compatible endpoints, multiple accounts and model mappings. |
+| **Ollama** | Local or LAN nodes, scanning and bulk import, authentication, model refresh and connection checks. |
+| **OpenCode free models** | A dynamic free catalog and capability information, with supported connections for chat, workspaces or the compatibility proxy. |
+| **Kilo free models** | Models from the upstream free catalog without a personal API key; workspace use requires tool support. |
 
-## License
+**Model connections → Ollama Nodes → Global Model Routing** offers two behaviors:
 
-GPL-3.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for attribution. Electron, OpenCode, Claude Code and optional speech components are separate projects with their own licenses and requirements; runtime setup preserves their notices.
+- **Force selected model:** route applicable API requests to a chosen Ollama or supported free model target.
+- **Route the original request model:** select an available node using the model name requested by the client.
+
+Both options are available in the same configuration; forcing a model takes precedence when enabled. A routing test button checks the configuration. An unavailable saved target stays selected and reports an error. Explicit model selections in desktop chats are preserved.
+
+Free catalogs, availability and quotas are controlled upstream; a listed model does not guarantee available free inference. Image, reasoning, search and tool capabilities depend on the provider and model. See the [provider reference](docs/providers/README.md) and [free model connections](docs/free-models.md).
+
+## API service: share your model setup with other clients
+
+- **Compatible interfaces:** OpenAI Chat Completions, Anthropic Messages, and Ollama model-list and chat endpoints.
+- **Shared connections:** reuse configured providers, Ollama nodes and supported free models from other clients.
+- **Service controls:** manage listen addresses and ports, local API keys, load balancing, retries, timeouts and model mappings.
+- **Context and tool adaptation:** configure tool behavior for provider capabilities and manage context with sliding windows, token limits or summaries.
+
+## Appearance and preferences
+
+Choose English or Chinese, light or dark themes, font settings, a collapsed or hidden sidebar, and GPU compositing preferences that apply after restart. Switch between Assistant, Work and Terminal as the task changes, with layouts that adapt to smaller windows.
+
+Screenshots show the actual app with fictional conversations, directories and usage data. The terminal capture uses local PowerShell. Desktop validation currently focuses on Windows.
+
+## Installation and further reading
+
+The [installation guide](docs/installation.md) covers distribution packages, source setup, builds, optional OpenCode and speech resources, data locations and upgrades.
+
+[Speech guide](docs/speech.md) · [Provider reference](docs/providers/README.md) · [Free model connections](docs/free-models.md)
+
+## License and acknowledgements
+
+GPL-3.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE). Electron, OpenCode, Claude Code and optional speech components have their own licenses and requirements.

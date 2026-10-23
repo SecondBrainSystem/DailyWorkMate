@@ -88,6 +88,9 @@ backup/
 !/docs/screenshots/assistant.png
 !/docs/screenshots/workspaces.png
 !/docs/screenshots/terminal.png
+!/docs/screenshots/monitor.png
+!/docs/installation.md
+!/docs/installation_CN.md
 
 # Current provider reference (not internal plans or bug logs)
 !/docs/providers/

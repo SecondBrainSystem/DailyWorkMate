@@ -11,6 +11,8 @@ const output = path.join(root, 'docs', 'screenshots')
 fs.mkdirSync(workspace); fs.mkdirSync(output, { recursive: true })
 fs.writeFileSync(path.join(workspace, 'weekly-plan.md'), '# Weekly plan\n\n- Review meeting notes\n- Prepare the project brief\n- Choose the next three actions\n')
 fs.writeFileSync(path.join(workspace, 'meeting-notes.md'), '# Meeting notes\n\nA small, local documentation demo.\n')
+const todo = '# 今日计划\n\n- [x] 整理项目评审问题\n- [/] 完成会议纪要\n  - [ ] 确认负责人和下一步行动\n- [ ] 起草本周周报\n'
+fs.writeFileSync(path.join(workspace, 'daily-todo.md'), todo)
 app.on('window-all-closed', () => {})
 app.setPath('userData', path.join(scratch, 'profile')); app.disableHardwareAcceleration()
 buildSync({ stdin: { contents: "export { TerminalClient } from './src/main/terminal/client.ts'; export { DEFAULT_COMPANION_SETTINGS } from './src/shared/companion.ts';", resolveDir: root }, outfile: path.join(scratch, 'modules.cjs'), bundle: true, platform: 'node', format: 'cjs', packages: 'external' })
@@ -27,7 +29,7 @@ const snapshot = {
     { id: 'demo-assistant', role: 'assistant', mode: 'chat', createdAt: Date.now(), model: 'Demo model', content: '早上好！今天可以先安排三件事：\n\n**09:00 · 项目评审**\n列出待确认的问题，记录关键决定。\n\n**11:00 · 会议纪要**\n整理结论、负责人和下一步行动。\n\n**15:00 · 起草周报**\n回顾本周进展，选出下周的优先事项。\n\n需要整理文件时，选择一个授权工作区，我们一起完成。' },
   ], home: 'companion', avatarUrl: '', avatarModelUrl: '', runtimeAvailable: true, claudeCode: { available: true, path: 'claude' },
 }
-fs.writeFileSync(path.join(scratch, 'demo.json'), JSON.stringify({ config, snapshot, version: require('../package.json').version }))
+fs.writeFileSync(path.join(scratch, 'demo.json'), JSON.stringify({ config, snapshot, todo, version: require('../package.json').version }))
 let window, manager
 const errors = []
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
@@ -41,13 +43,14 @@ async function capture(name) {
   fs.writeFileSync(path.join(output, name + '.png'), (await window.webContents.capturePage(undefined, { stayHidden: true, stayAwake: true })).toPNG())
 }
 app.whenReady().then(async () => {
-  manager = new TerminalClient({ home: path.join(scratch, 'terminal'), entry: path.join(root, 'out/main/terminalHost.js'), helper: path.join(root, 'scripts/companion-pty-host.cjs'), ptyModule: path.join(root, 'node_modules/node-pty'), context: async () => ({ workspaces: [], groups: [], persona: '', proxy: config }) })
+  manager = new TerminalClient({ home: path.join(scratch, 'terminal'), entry: path.join(root, 'out/main/terminalHost.js'), helper: path.join(root, 'scripts/companion-pty-host.cjs'), ptyModule: path.join(root, 'node_modules/node-pty'), context: async () => ({ workspaces: [], groups: [], persona: '', executable: '' }) })
   for (const [name, operation] of Object.entries(manager.api(async () => workspace))) ipcMain.handle('readme:terminal:' + name, async (_event, ...args) => { const result = await operation(...args); return result === undefined ? result : JSON.parse(JSON.stringify(result).split(JSON.stringify(workspace).slice(1, -1)).join('C:\\\\Work\\\\DailyNotes')) })
   window = new BrowserWindow({ show: false, width: 1440, height: 940, useContentSize: true, webPreferences: { offscreen: true, sandbox: false, preload: path.join(__dirname, 'readme-preload.cjs'), contextIsolation: true, nodeIntegration: false, backgroundThrottling: false, additionalArguments: ['--readme-data=' + path.join(scratch, 'demo.json')] } })
   window.webContents.on('console-message', (_event, level, message) => { if (level >= 3) errors.push(message) })
   await window.loadFile(path.join(root, 'out/renderer/index.html'))
   await wait(`!!document.querySelector('[data-companion-ready="true"]')`, 'assistant loaded')
   await wait('document.body.textContent.includes("DailyWorkMate") && document.body.textContent.includes("起草周报")', 'demo conversation')
+  await wait('document.body.textContent.includes("整理项目评审问题")', 'demo todo note')
   await js("document.querySelector('.companion-messages').scrollTop = 0"); await capture('assistant')
   await js(`document.querySelector('[aria-label="文件夹权限"]').click()`)
   await wait('document.querySelectorAll("[data-authorized-folder]").length === 2', 'workspace access')
@@ -73,8 +76,13 @@ app.whenReady().then(async () => {
   await sleep(1000)
   await wait('document.querySelector(".xterm-rows")?.textContent.includes("Weekly plan")', 'real shell output rendered')
   await capture('terminal')
+  await js("location.hash = '/monitor/usage'")
+  await wait('!!document.querySelector("[data-monitor-ready=true]")', 'usage monitor')
+  await js("document.documentElement.dataset.theme = 'dark'; document.documentElement.classList.add('dark')")
+  window.setContentSize(1440, 1500)
+  await capture('monitor')
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ screenshots: ['assistant.png', 'workspaces.png', 'terminal.png'], demoData: true, realTerminal: true }))
+  console.log(JSON.stringify({ screenshots: ['assistant.png', 'workspaces.png', 'terminal.png', 'monitor.png'], demoData: true, realTerminal: true }))
 }).catch(error => { console.error(error); console.error(errors); process.exitCode = 1 }).finally(async () => {
   window?.destroy()
   if (manager) {

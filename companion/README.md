@@ -10,4 +10,4 @@ Development uses this directory. The Windows folder distribution uses `companion
 
 Configure voices and microphone input in the assistant settings. Local speech uses the optional bundled resources; API speech sends audio/text to the separately configured speech endpoint. The chat proxy is not a speech endpoint.
 
-See the [main README](../README.md) and [speech guide](../docs/speech.md).
+See the [feature overview](../README.md), [installation guide](../docs/installation.md) and [speech guide](../docs/speech.md).
